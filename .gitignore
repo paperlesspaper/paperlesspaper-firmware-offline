@@ -10,3 +10,5 @@ azure-pipelines - Kopie.yml
 secrets.h
 .env
 /esptools
+*node_modules
+*dist
