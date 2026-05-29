@@ -87,6 +87,23 @@
 #define EEPROM_SETTINGS_ADR 500     // start address to store settings
 #define SOFTWARE_VERSION "0.0.0"    // Software version
 #define EPD_TYPE_IDENTIFIER "epd7-" // Type of device (screen type)
+
+#ifndef ENV_OTA_URL
+#define ENV_OTA_URL ""
+#endif
+
+#ifndef ENV_OTA_URL_DEV
+#define ENV_OTA_URL_DEV ""
+#endif
+
+#ifndef ENV_WIFI_PW_DEPLOY
+#define ENV_WIFI_PW_DEPLOY ""
+#endif
+
+#ifndef ENV_WIFI_SSID_DEPLOY
+#define ENV_WIFI_SSID_DEPLOY ""
+#endif
+
 #define OTA_URL ENV_OTA_URL
 #define OTA_URL_DEV ENV_OTA_URL_DEV
 #define DEFAULT_WIFI_PW ENV_WIFI_PW_DEPLOY
