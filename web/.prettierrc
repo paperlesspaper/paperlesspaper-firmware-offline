@@ -1,4 +1,4 @@
 {
-  "printWidth": 120,
-  "htmlWhitespaceSensitivity": "css"
+  "printWidth": 2000,
+  "htmlWhitespaceSensitivity": "ignore"
 }

@@ -1,11 +1,4 @@
-import {
-  ditherImage,
-  aitjcizeSpectra6Palette,
-  acepPalette,
-  replaceColors,
-  suggestCanvasProcessingOptions,
-  getProcessingPresetOptions,
-} from "epdoptimize";
+import { ditherImage, aitjcizeSpectra6Palette, acepPalette, replaceColors, suggestCanvasProcessingOptions, getProcessingPresetOptions } from "epdoptimize";
 
 // BLE UUIDs
 const WIFI_SERVICE_UUID = "0515c086-7b0c-11ed-a1eb-0242ac120002";
@@ -52,9 +45,7 @@ const btnSaveSettings = document.getElementById("btnSaveSettings");
 const settingTimeout = document.getElementById("settingTimeout");
 const settingUrl = document.getElementById("settingUrl");
 const settingHttpAuthUser = document.getElementById("settingHttpAuthUser");
-const settingHttpAuthPassword = document.getElementById(
-  "settingHttpAuthPassword",
-);
+const settingHttpAuthPassword = document.getElementById("settingHttpAuthPassword");
 const btnToggleHttpAuthPass = document.getElementById("btnToggleHttpAuthPass");
 const eyeHttpAuthIconOpen = document.getElementById("eyeHttpAuthIconOpen");
 const eyeHttpAuthIconClosed = document.getElementById("eyeHttpAuthIconClosed");
@@ -131,11 +122,8 @@ async function connectToDevice() {
 
     // Lade verfügbare WLANs herunter
     try {
-      const deviceDataService = await server.getPrimaryService(
-        DEVICE_DATA_SERVICE_UUID,
-      );
-      const scanChar =
-        await deviceDataService.getCharacteristic(WIFI_SCAN_UUID);
+      const deviceDataService = await server.getPrimaryService(DEVICE_DATA_SERVICE_UUID);
+      const scanChar = await deviceDataService.getCharacteristic(WIFI_SCAN_UUID);
       const scanData = await scanChar.readValue();
       const scanText = new TextDecoder().decode(scanData);
 
@@ -182,18 +170,11 @@ btnConnect.addEventListener("click", async () => {
       setStatus("Fordere Bluetooth-Kopplung an...", "text-blue-500");
       bleDevice = await navigator.bluetooth.requestDevice({
         filters: [{ namePrefix: "epd" }],
-        optionalServices: [
-          SETTINGS_SERVICE_UUID,
-          WIFI_SERVICE_UUID,
-          DEVICE_DATA_SERVICE_UUID,
-        ],
+        optionalServices: [SETTINGS_SERVICE_UUID, WIFI_SERVICE_UUID, DEVICE_DATA_SERVICE_UUID],
       });
 
       bleDevice.addEventListener("gattserverdisconnected", () => {
-        setStatus(
-          "Gerät getrennt. E-Paper aktualisiert sich...",
-          "text-orange-500",
-        );
+        setStatus("Gerät getrennt. E-Paper aktualisiert sich...", "text-orange-500");
         controls.classList.add("hidden", "opacity-0");
         settingsService = null;
         wifiService = null;
@@ -205,10 +186,7 @@ btnConnect.addEventListener("click", async () => {
     await connectToDevice();
   } catch (error) {
     console.error(error);
-    setStatus(
-      "Kopplung abgebrochen oder Fehler: " + error.message,
-      "text-red-500",
-    );
+    setStatus("Kopplung abgebrochen oder Fehler: " + error.message, "text-red-500");
   }
 });
 
@@ -232,11 +210,8 @@ btnSaveWifi.addEventListener("click", async () => {
     setStatus("Prüfe WLAN-Verbindung...", "text-yellow-500");
 
     // Poll the connection status
-    const deviceDataService = await bleDevice.gatt.getPrimaryService(
-      DEVICE_DATA_SERVICE_UUID,
-    );
-    const connectedChar =
-      await deviceDataService.getCharacteristic(WIFI_CONNECTED_UUID);
+    const deviceDataService = await bleDevice.gatt.getPrimaryService(DEVICE_DATA_SERVICE_UUID);
+    const connectedChar = await deviceDataService.getCharacteristic(WIFI_CONNECTED_UUID);
 
     let isConnected = false;
     for (let i = 0; i < 20; i++) {
@@ -256,10 +231,7 @@ btnSaveWifi.addEventListener("click", async () => {
     }
 
     if (isConnected) {
-      setStatus(
-        "WLAN gespeichert & Erfolgreich Verbunden! ✅",
-        "text-green-600",
-      );
+      setStatus("WLAN gespeichert & Erfolgreich Verbunden! ✅", "text-green-600");
 
       // Wenn ein WLAN erfolgreich verbunden ist, setze den Modus direkt auf WLAN (1)
       try {
@@ -269,10 +241,7 @@ btnSaveWifi.addEventListener("click", async () => {
         console.warn("Modus konnte nicht auf WLAN gesetzt werden:", err);
       }
     } else {
-      setStatus(
-        "WLAN gespeichert, aber Verbindung fehlgeschlagen (Passwort falsch?)",
-        "text-red-500",
-      );
+      setStatus("WLAN gespeichert, aber Verbindung fehlgeschlagen (Passwort falsch?)", "text-red-500");
     }
   } catch (e) {
     console.error(e);
@@ -298,18 +267,11 @@ btnSaveSettings.addEventListener("click", async () => {
       }
     }
 
-    const httpAuthUserChar =
-      await settingsService.getCharacteristic(HTTP_AUTH_USER_UUID);
-    await httpAuthUserChar.writeValue(
-      encodeText(settingHttpAuthUser.value || ""),
-    );
+    const httpAuthUserChar = await settingsService.getCharacteristic(HTTP_AUTH_USER_UUID);
+    await httpAuthUserChar.writeValue(encodeText(settingHttpAuthUser.value || ""));
 
-    const httpAuthPasswordChar = await settingsService.getCharacteristic(
-      HTTP_AUTH_PASSWORD_UUID,
-    );
-    await httpAuthPasswordChar.writeValue(
-      encodeText(settingHttpAuthPassword.value || ""),
-    );
+    const httpAuthPasswordChar = await settingsService.getCharacteristic(HTTP_AUTH_PASSWORD_UUID);
+    await httpAuthPasswordChar.writeValue(encodeText(settingHttpAuthPassword.value || ""));
 
     const timeoutChar = await settingsService.getCharacteristic(TIMEOUT_UUID);
     await timeoutChar.writeValue(encodeText(settingTimeout.value || "3600"));
@@ -317,10 +279,7 @@ btnSaveSettings.addEventListener("click", async () => {
     setStatus("Einstellungen gespeichert!", "text-green-600");
   } catch (e) {
     console.error(e);
-    setStatus(
-      "Fehler: Sind die neuen UUIDs bereits in main.cpp enthalten?",
-      "text-red-500",
-    );
+    setStatus("Fehler: Sind die neuen UUIDs bereits in main.cpp enthalten?", "text-red-500");
   }
 });
 
@@ -346,9 +305,7 @@ function getClosestColorIndex(r, g, b) {
   return bestIdx;
 }
 
-const mySpectra6Palette = aitjcizeSpectra6Palette.filter(
-  (color) => color.name !== "orange" && color.name !== "cleanOrange",
-);
+const mySpectra6Palette = aitjcizeSpectra6Palette.filter((color) => color.name !== "orange" && color.name !== "cleanOrange");
 
 async function updatePreviewAndBuffer(options = {}) {
   if (!originalImage) return;
@@ -357,10 +314,7 @@ async function updatePreviewAndBuffer(options = {}) {
   ctx.fillStyle = "white";
   ctx.fillRect(0, 0, EPD_WIDTH, EPD_HEIGHT);
 
-  let scale = Math.max(
-    EPD_WIDTH / originalImage.width,
-    EPD_HEIGHT / originalImage.height,
-  );
+  let scale = Math.max(EPD_WIDTH / originalImage.width, EPD_HEIGHT / originalImage.height);
   let w = originalImage.width * scale,
     h = originalImage.height * scale;
   let dx = (EPD_WIDTH - w) / 2,
@@ -379,10 +333,7 @@ async function updatePreviewAndBuffer(options = {}) {
   const contrastInt = parseInt(processingContrast.value, 10);
   const saturationInt = parseInt(processingSaturation.value, 10);
 
-  const toneMappingMode =
-    brightnessInt !== 0 || contrastInt !== 0 || saturationInt !== 0
-      ? "contrast"
-      : "off";
+  const toneMappingMode = brightnessInt !== 0 || contrastInt !== 0 || saturationInt !== 0 ? "contrast" : "off";
 
   const ditherOptions = {
     ...options, // Damit btnAutoDither das überschreiben kann
@@ -458,10 +409,7 @@ btnAutoDither.addEventListener("click", () => {
   // Hintergrund rendern temporär fürs Auto-Testing
   ctx.fillStyle = "white";
   ctx.fillRect(0, 0, EPD_WIDTH, EPD_HEIGHT);
-  let scale = Math.max(
-    EPD_WIDTH / originalImage.width,
-    EPD_HEIGHT / originalImage.height,
-  );
+  let scale = Math.max(EPD_WIDTH / originalImage.width, EPD_HEIGHT / originalImage.height);
   let w = originalImage.width * scale,
     h = originalImage.height * scale;
   let dx = (EPD_WIDTH - w) / 2,
@@ -476,39 +424,27 @@ btnAutoDither.addEventListener("click", () => {
 
     // Wenn ein Preset zurückkommt, dessen Werte für die UI entpacken
     if (resolvedOptions.processingPreset) {
-      const presetValues = getProcessingPresetOptions(
-        resolvedOptions.processingPreset,
-      );
+      const presetValues = getProcessingPresetOptions(resolvedOptions.processingPreset);
       resolvedOptions = { ...presetValues, ...resolvedOptions };
     }
 
     // UI nach Vorschlag updaten
     ditheringType.value = resolvedOptions.ditheringType || "errorDiffusion";
-    errorDiffusionMatrix.value =
-      resolvedOptions.errorDiffusionMatrix || "floydSteinberg";
+    errorDiffusionMatrix.value = resolvedOptions.errorDiffusionMatrix || "floydSteinberg";
     serpentine.checked = resolvedOptions.serpentine ?? true;
     colorMatchingMode.value = resolvedOptions.colorMatchingMode || "rgb";
 
     if (resolvedOptions.toneMapping) {
-      processingBrightness.value =
-        Math.round(((resolvedOptions.toneMapping.exposure ?? 1) - 1) * 100) ||
-        0;
-      processingContrast.value =
-        Math.round(((resolvedOptions.toneMapping.contrast ?? 1) - 1) * 100) ||
-        0;
-      processingSaturation.value =
-        Math.round(((resolvedOptions.toneMapping.saturation ?? 1) - 1) * 100) ||
-        0;
+      processingBrightness.value = Math.round(((resolvedOptions.toneMapping.exposure ?? 1) - 1) * 100) || 0;
+      processingContrast.value = Math.round(((resolvedOptions.toneMapping.contrast ?? 1) - 1) * 100) || 0;
+      processingSaturation.value = Math.round(((resolvedOptions.toneMapping.saturation ?? 1) - 1) * 100) || 0;
     } else {
       processingBrightness.value = 0;
       processingContrast.value = 0;
       processingSaturation.value = 0;
     }
 
-    setStatus(
-      `Automatisches Setting gefunden: ${suggestion.classification.style}, Typ: ${suggestion.imageKind}`,
-      "text-blue-500",
-    );
+    setStatus(`Automatisches Setting gefunden: ${suggestion.classification.style}, Typ: ${suggestion.imageKind}`, "text-blue-500");
 
     // Anwenden ohne Preset Name, da wir die Parameter explizit manuell setzen
     // und so dem Benutzer weitere Anpassungen ermöglichen
@@ -612,11 +548,7 @@ btnUploadImage.addEventListener("click", async () => {
 
     // Upload in 240 Byte Chunks (passend für NimBLE, vermeidet Overflow)
     const chunkSize = 240;
-    for (
-      let offset = 0;
-      offset < processedImageBuffer.length;
-      offset += chunkSize
-    ) {
+    for (let offset = 0; offset < processedImageBuffer.length; offset += chunkSize) {
       let chunk = processedImageBuffer.slice(offset, offset + chunkSize);
       let idx = Math.floor(offset / chunkSize);
 
@@ -635,9 +567,7 @@ btnUploadImage.addEventListener("click", async () => {
 
       // UI nur gelegentlich updaten für noch mehr Performance
       if (idx % 20 === 0) {
-        let percent = Math.round(
-          ((offset + chunkSize) / processedImageBuffer.length) * 100,
-        );
+        let percent = Math.round(((offset + chunkSize) / processedImageBuffer.length) * 100);
         progressBar.style.width = percent + "%";
         setStatus(`Sende Daten... ${percent}%`, "text-green-500");
       }
