@@ -6,13 +6,9 @@
     <title>E-Paper Konfiguration</title>
     <script src="https://cdn.tailwindcss.com"></script>
   </head>
-  <body
-    class="bg-gray-50 text-gray-800 font-sans p-4 sm:p-6 lg:p-8 flex flex-col items-center min-h-screen"
-  >
+  <body class="bg-gray-50 text-gray-800 font-sans p-4 sm:p-6 lg:p-8 flex flex-col items-center min-h-screen">
     <div class="max-w-xl w-full bg-white p-6 sm:p-8 rounded-2xl shadow-xl">
-      <h1 class="text-3xl font-bold mb-6 text-center text-blue-600">
-        E-Paper Setup
-      </h1>
+      <h1 class="text-3xl font-bold mb-6 text-center text-blue-600">E-Paper Setup</h1>
 
       <div class="flex border-b border-gray-200 mb-6">
         <button
@@ -49,19 +45,12 @@
               Trennen
             </button>
           </div>
-          <div id="statusText" class="mt-4 text-sm font-semibold text-gray-400">
-            Warte auf Verbindung...
-          </div>
+          <div id="statusText" class="mt-4 text-sm font-semibold text-gray-400">Warte auf Verbindung...</div>
         </div>
 
-        <div
-          id="controls"
-          class="hidden space-y-6 opacity-0 transition-opacity duration-500"
-        >
+        <div id="controls" class="hidden space-y-6 opacity-0 transition-opacity duration-500">
           <div class="bg-blue-50/50 p-5 rounded-xl border border-blue-100">
-            <h2 class="text-xl font-bold mb-4 text-gray-700">
-              WLAN Zugangsdaten
-            </h2>
+            <h2 class="text-xl font-bold mb-4 text-gray-700">WLAN Zugangsdaten</h2>
             <div class="space-y-3">
               <input
                 type="text"
@@ -132,13 +121,9 @@
           </div>
 
           <div class="bg-purple-50/50 p-5 rounded-xl border border-purple-100">
-            <h2 class="text-xl font-bold mb-4 text-gray-700">
-              Geräte-Einstellungen
-            </h2>
+            <h2 class="text-xl font-bold mb-4 text-gray-700">Geräte-Einstellungen</h2>
             <div class="space-y-3">
-              <label class="block text-sm text-gray-600"
-                >Download URL (Bild vom Server laden)</label
-              >
+              <label class="block text-sm text-gray-600">Download URL (Bild vom Server laden)</label>
               <input
                 type="text"
                 id="settingUrl"
@@ -146,9 +131,7 @@
                 class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none transition mb-2"
               />
 
-              <label class="block text-sm text-gray-600"
-                >HTTP Auth Benutzername (optional)</label
-              >
+              <label class="block text-sm text-gray-600">HTTP Auth Benutzername (optional)</label>
               <input
                 type="text"
                 id="settingHttpAuthUser"
@@ -156,9 +139,7 @@
                 class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none transition mb-2"
               />
 
-              <label class="block text-sm text-gray-600"
-                >HTTP Auth Passwort (optional)</label
-              >
+              <label class="block text-sm text-gray-600">HTTP Auth Passwort (optional)</label>
               <div class="relative mb-2">
                 <input
                   type="password"
@@ -210,9 +191,7 @@
                 </button>
               </div>
 
-              <label class="block text-sm text-gray-600"
-                >Aktualisierungsintervall (Sekunden)</label
-              >
+              <label class="block text-sm text-gray-600">Aktualisierungsintervall (Sekunden)</label>
               <input
                 type="number"
                 id="settingTimeout"
@@ -234,19 +213,12 @@
       </div>
 
       <div id="viewEditor" class="hidden space-y-6">
-        <p class="text-center text-gray-500 text-sm -mt-2">
-          Erstelle eine kompatible BMP Datei für deinen Webserver
-        </p>
+        <p class="text-center text-gray-500 text-sm -mt-2">Erstelle eine kompatible BMP Datei für deinen Webserver</p>
         <div id="editorContainerSlot"></div>
       </div>
 
-      <div
-        id="sharedImageContainer"
-        class="bg-indigo-50/50 p-5 rounded-xl border border-indigo-100 mt-6"
-      >
-        <h2 id="imageSecTitle" class="text-xl font-bold mb-1 text-gray-700">
-          Bild laden & bearbeiten
-        </h2>
+      <div id="sharedImageContainer" class="bg-indigo-50/50 p-5 rounded-xl border border-indigo-100 mt-6">
+        <h2 id="imageSecTitle" class="text-xl font-bold mb-1 text-gray-700">Bild laden & bearbeiten</h2>
         <p id="imageSecDesc" class="text-xs text-gray-500 mb-4">
           Lade ein Bild. Es wird automatisch für das E-Paper aufbereitet.
         </p>
@@ -258,59 +230,32 @@
           class="w-full mb-4 text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:font-semibold file:bg-indigo-100 file:text-indigo-700 hover:file:bg-indigo-200 cursor-pointer"
         />
 
-        <div
-          id="expertControls"
-          class="hidden my-4 space-y-3 bg-white p-4 rounded-lg shadow-sm border border-gray-200"
-        >
+        <div id="expertControls" class="hidden my-4 space-y-3 bg-white p-4 rounded-lg shadow-sm border border-gray-200">
           <div class="grid grid-cols-2 gap-4">
             <div>
-              <label class="block text-xs font-semibold text-gray-600 mb-1"
-                >Dithering</label
-              >
-              <select
-                id="ditheringType"
-                class="w-full text-sm border border-gray-300 rounded p-2"
-              >
+              <label class="block text-xs font-semibold text-gray-600 mb-1">Dithering</label>
+              <select id="ditheringType" class="w-full text-sm border border-gray-300 rounded p-2">
                 <option value="errorDiffusion">Error Diffusion</option>
                 <option value="ordered">Ordered (Bayer)</option>
                 <option value="blueNoise">Blue Noise</option>
               </select>
             </div>
             <div>
-              <label class="block text-xs font-semibold text-gray-600 mb-1"
-                >Matrix</label
-              >
-              <select
-                id="errorDiffusionMatrix"
-                class="w-full text-sm border border-gray-300 rounded p-2"
-              >
+              <label class="block text-xs font-semibold text-gray-600 mb-1">Matrix</label>
+              <select id="errorDiffusionMatrix" class="w-full text-sm border border-gray-300 rounded p-2">
                 <option value="floydSteinberg">Floyd-Steinberg</option>
                 <option value="atkinson">Atkinson</option>
                 <option value="jarvisJudiceNinke">Jarvis-Judice-Ninke</option>
               </select>
             </div>
-            <div
-              class="col-span-2 flex justify-between items-center bg-gray-50 p-2 rounded"
-            >
-              <label
-                class="flex items-center text-sm text-gray-600 font-medium"
-              >
-                <input
-                  type="checkbox"
-                  id="serpentine"
-                  checked
-                  class="mr-2 h-4 w-4 text-indigo-600 rounded"
-                />
+            <div class="col-span-2 flex justify-between items-center bg-gray-50 p-2 rounded">
+              <label class="flex items-center text-sm text-gray-600 font-medium">
+                <input type="checkbox" id="serpentine" checked class="mr-2 h-4 w-4 text-indigo-600 rounded" />
                 Serpentine Dithering
               </label>
               <div class="flex items-center text-sm">
-                <label class="mr-2 text-xs font-semibold text-gray-600"
-                  >Farbraum:</label
-                >
-                <select
-                  id="colorMatchingMode"
-                  class="text-sm border border-gray-300 rounded p-1 bg-white"
-                >
+                <label class="mr-2 text-xs font-semibold text-gray-600">Farbraum:</label>
+                <select id="colorMatchingMode" class="text-sm border border-gray-300 rounded p-1 bg-white">
                   <option value="rgb">RGB</option>
                   <option value="lab">LAB</option>
                 </select>
@@ -320,9 +265,7 @@
           <hr />
           <div class="space-y-3 pt-1">
             <div class="flex items-center">
-              <label class="w-24 text-xs font-semibold text-gray-600"
-                >Helligkeit</label
-              >
+              <label class="w-24 text-xs font-semibold text-gray-600">Helligkeit</label>
               <input
                 type="range"
                 id="processingBrightness"
@@ -333,9 +276,7 @@
               />
             </div>
             <div class="flex items-center">
-              <label class="w-24 text-xs font-semibold text-gray-600"
-                >Kontrast</label
-              >
+              <label class="w-24 text-xs font-semibold text-gray-600">Kontrast</label>
               <input
                 type="range"
                 id="processingContrast"
@@ -346,9 +287,7 @@
               />
             </div>
             <div class="flex items-center">
-              <label class="w-24 text-xs font-semibold text-gray-600"
-                >Sättigung</label
-              >
+              <label class="w-24 text-xs font-semibold text-gray-600">Sättigung</label>
               <input
                 type="range"
                 id="processingSaturation"
@@ -376,10 +315,7 @@
         </div>
 
         <div class="flex justify-center mb-4">
-          <canvas
-            id="previewCanvas"
-            class="border border-gray-300 shadow-sm rounded max-w-full bg-white"
-          ></canvas>
+          <canvas id="previewCanvas" class="border border-gray-300 shadow-sm rounded max-w-full bg-white"></canvas>
         </div>
 
         <button
@@ -398,15 +334,8 @@
           Herunterladen & Speichern (*.bmp)
         </button>
 
-        <div
-          id="progressContainer"
-          class="hidden w-full bg-gray-200 rounded-full h-2.5 mt-4"
-        >
-          <div
-            id="progressBar"
-            class="bg-green-600 h-2.5 rounded-full"
-            style="width: 0%"
-          ></div>
+        <div id="progressContainer" class="hidden w-full bg-gray-200 rounded-full h-2.5 mt-4">
+          <div id="progressBar" class="bg-green-600 h-2.5 rounded-full" style="width: 0%"></div>
         </div>
       </div>
     </div>
@@ -417,15 +346,9 @@
       const tabEditor = document.getElementById("tabEditor");
       const viewConnect = document.getElementById("viewConnect");
       const viewEditor = document.getElementById("viewEditor");
-      const sharedImageContainer = document.getElementById(
-        "sharedImageContainer",
-      );
-      const bleUploadContainerSlot = document.getElementById(
-        "bleUploadContainerSlot",
-      );
-      const editorContainerSlot = document.getElementById(
-        "editorContainerSlot",
-      );
+      const sharedImageContainer = document.getElementById("sharedImageContainer");
+      const bleUploadContainerSlot = document.getElementById("bleUploadContainerSlot");
+      const editorContainerSlot = document.getElementById("editorContainerSlot");
 
       const expertControls = document.getElementById("expertControls");
       const btnUploadImage = document.getElementById("btnUploadImage");
@@ -444,11 +367,9 @@
 
         bleUploadContainerSlot.appendChild(sharedImageContainer);
 
-        sharedImageContainer.className =
-          "bg-green-50/50 p-5 rounded-xl border border-green-100";
+        sharedImageContainer.className = "bg-green-50/50 p-5 rounded-xl border border-green-100";
         imageSecTitle.innerText = "Lokales Bild per BLE laden";
-        imageSecDesc.innerText =
-          "Wähle ein Bild. Es wird automatisch für das E-Paper aufbereitet und gesendet.";
+        imageSecDesc.innerText = "Wähle ein Bild. Es wird automatisch für das E-Paper aufbereitet und gesendet.";
 
         expertControls.classList.add("hidden");
         btnDownloadBin.classList.add("hidden");
@@ -470,8 +391,7 @@
 
         editorContainerSlot.appendChild(sharedImageContainer);
 
-        sharedImageContainer.className =
-          "bg-indigo-50/50 p-5 rounded-xl border border-indigo-100";
+        sharedImageContainer.className = "bg-indigo-50/50 p-5 rounded-xl border border-indigo-100";
         imageSecTitle.innerText = "Bild Editor (epdoptimize) & BMP Export";
         imageSecDesc.innerText =
           "Optimiere ein Bild mit Profi-Einstellungen und speichere es als kompatibles 4-Bit BMP-Format.";
