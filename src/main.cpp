@@ -204,9 +204,11 @@ struct settings
    bool showWifiWarning;
    bool sleepDisabled;
    String downloadUrl;
+   String httpAuthUser;
+   String httpAuthPassword;
    String lastModified;
    int imageMode;
-} settings = {.timeout = DEFAULT_SLEEP, .lut = "default", .clearscreen = true, .showBatteryWarning = true, .showWifiWarning = true, .sleepDisabled = false, .downloadUrl = "", .lastModified = "", .imageMode = 1};
+} settings = {.timeout = DEFAULT_SLEEP, .lut = "default", .clearscreen = true, .showBatteryWarning = true, .showWifiWarning = true, .sleepDisabled = false, .downloadUrl = "", .httpAuthUser = "", .httpAuthPassword = "", .lastModified = "", .imageMode = 1};
 
 // system read data
 struct systemData
@@ -505,6 +507,8 @@ void saveSettingsToFlash(int startAddr)
    writeIntToFlash(settings.imageMode, startAddr + 20);
    writeStringToFlash(settings.downloadUrl.c_str(), startAddr + 25);
    writeStringToFlash(settings.lastModified.c_str(), startAddr + 155);
+   writeStringToFlash(settings.httpAuthUser.c_str(), startAddr + 285);
+   writeStringToFlash(settings.httpAuthPassword.c_str(), startAddr + 415);
    Serial.println("[MEM] Settings saved to EEPROM");
 }
 
@@ -517,6 +521,8 @@ void restoreSettingsToFlash(int startAddr)
    settings.imageMode = readIntFromFlash(startAddr + 20);
    settings.downloadUrl = readStringFromFlash(startAddr + 25);
    settings.lastModified = readStringFromFlash(startAddr + 155);
+   settings.httpAuthUser = readStringFromFlash(startAddr + 285);
+   settings.httpAuthPassword = readStringFromFlash(startAddr + 415);
    Serial.println("[MEM] Settings restored from EEPROM");
    if (DEBUG_FLAG)
    {
@@ -538,6 +544,12 @@ String getRedirect(String url)
    {
       http.begin(url);
    }
+
+   if (settings.httpAuthUser.length() > 0)
+   {
+      http.setAuthorization(settings.httpAuthUser.c_str(), settings.httpAuthPassword.c_str());
+   }
+
    const char *headerkeys[] = {"Location"};
    size_t headerkeyssize = sizeof(headerkeys) / sizeof(char *);
    http.collectHeaders(headerkeys, headerkeyssize);
@@ -617,6 +629,18 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
       {
          settings.downloadUrl = pCharacteristic->getValue();
          Serial.printf("[BLE] Set URL: %s\n", settings.downloadUrl.c_str());
+         saveSettingsToFlash(EEPROM_SETTINGS_ADR);
+      }
+      else if (uuidStr == "10000007-0000-0000-0000-000000000001")
+      {
+         settings.httpAuthUser = pCharacteristic->getValue();
+         Serial.printf("[BLE] Set HTTP Auth user: %s\n", settings.httpAuthUser.c_str());
+         saveSettingsToFlash(EEPROM_SETTINGS_ADR);
+      }
+      else if (uuidStr == "10000008-0000-0000-0000-000000000001")
+      {
+         settings.httpAuthPassword = pCharacteristic->getValue();
+         Serial.println("[BLE] Set HTTP Auth password");
          saveSettingsToFlash(EEPROM_SETTINGS_ADR);
       }
       else if (uuidStr == "10000002-0000-0000-0000-000000000001")
@@ -839,6 +863,8 @@ bool BleInit(String deviceId, bool enable)
    NimBLECharacteristic *uploadCmdCharacteristic = epaperSettingsService->createCharacteristic("10000004-0000-0000-0000-000000000001", NIMBLE_PROPERTY::WRITE);
    NimBLECharacteristic *timeoutCharacteristic = epaperSettingsService->createCharacteristic("10000005-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
    NimBLECharacteristic *clearscreenCharacteristic = epaperSettingsService->createCharacteristic("10000006-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+   NimBLECharacteristic *httpAuthUserCharacteristic = epaperSettingsService->createCharacteristic("10000007-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+   NimBLECharacteristic *httpAuthPasswordCharacteristic = epaperSettingsService->createCharacteristic("10000008-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
 
    urlCharacteristic->setCallbacks(&chrCallbacks);
    imageModeCharacteristic->setCallbacks(&chrCallbacks);
@@ -846,6 +872,8 @@ bool BleInit(String deviceId, bool enable)
    uploadCmdCharacteristic->setCallbacks(&chrCallbacks);
    timeoutCharacteristic->setCallbacks(&chrCallbacks);
    clearscreenCharacteristic->setCallbacks(&chrCallbacks);
+   httpAuthUserCharacteristic->setCallbacks(&chrCallbacks);
+   httpAuthPasswordCharacteristic->setCallbacks(&chrCallbacks);
 
    wifiDataService->start();
    deviceDataService->start();
@@ -867,6 +895,8 @@ bool BleInit(String deviceId, bool enable)
    timeoutCharacteristic->setValue(timeoutStr);
 
    clearscreenCharacteristic->setValue(settings.clearscreen ? "1" : "0");
+   httpAuthUserCharacteristic->setValue(settings.httpAuthUser.c_str());
+   httpAuthPasswordCharacteristic->setValue(settings.httpAuthPassword.c_str());
 
    pAdvertising = NimBLEDevice::getAdvertising();
    pAdvertising->setName(deviceId.c_str());
@@ -885,7 +915,7 @@ int downloadAndSaveFile(String fileName, String url)
 {
    bool success = 0;
    int systemFileSize = 0;
-   WiFi.setSleep(false);
+   WiFi.setSleep(false); 
    WiFiClientSecure secureClient;
    secureClient.setInsecure();
    HTTPClient http;
@@ -901,6 +931,12 @@ int downloadAndSaveFile(String fileName, String url)
    {
       Serial.println("[DL] Download HTTP");
       http.begin(url);
+   }
+
+   if (settings.httpAuthUser.length() > 0)
+   {
+      http.setAuthorization(settings.httpAuthUser.c_str(), settings.httpAuthPassword.c_str());
+      Serial.println("[DL] HTTP Auth enabled");
    }
 
    const char *headerKeys[] = {"Last-Modified"};

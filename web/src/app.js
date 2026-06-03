@@ -1,11 +1,4 @@
-import {
-  ditherImage,
-  aitjcizeSpectra6Palette,
-  acepPalette,
-  replaceColors,
-  suggestCanvasProcessingOptions,
-  getProcessingPresetOptions,
-} from "epdoptimize";
+import { ditherImage, aitjcizeSpectra6Palette, acepPalette, replaceColors, suggestCanvasProcessingOptions, getProcessingPresetOptions } from "epdoptimize";
 
 // BLE UUIDs
 const WIFI_SERVICE_UUID = "0515c086-7b0c-11ed-a1eb-0242ac120002";
@@ -18,6 +11,8 @@ const MODE_UUID = "10000002-0000-0000-0000-000000000001";
 const UPLOAD_DATA_UUID = "10000003-0000-0000-0000-000000000001"; // WRITE_NR
 const UPLOAD_CMD_UUID = "10000004-0000-0000-0000-000000000001"; // WRITE
 const TIMEOUT_UUID = "10000005-0000-0000-0000-000000000001";
+const HTTP_AUTH_USER_UUID = "10000007-0000-0000-0000-000000000001";
+const HTTP_AUTH_PASSWORD_UUID = "10000008-0000-0000-0000-000000000001";
 
 const DEVICE_DATA_SERVICE_UUID = "7f74170e-7b0e-11ed-a1eb-0242ac120002";
 const WIFI_SCAN_UUID = "5131a3fc-7b0e-11ed-a1eb-0242ac120002";
@@ -49,6 +44,11 @@ const eyeIconClosed = document.getElementById("eyeIconClosed");
 const btnSaveSettings = document.getElementById("btnSaveSettings");
 const settingTimeout = document.getElementById("settingTimeout");
 const settingUrl = document.getElementById("settingUrl");
+const settingHttpAuthUser = document.getElementById("settingHttpAuthUser");
+const settingHttpAuthPassword = document.getElementById("settingHttpAuthPassword");
+const btnToggleHttpAuthPass = document.getElementById("btnToggleHttpAuthPass");
+const eyeHttpAuthIconOpen = document.getElementById("eyeHttpAuthIconOpen");
+const eyeHttpAuthIconClosed = document.getElementById("eyeHttpAuthIconClosed");
 
 const fileInput = document.getElementById("fileInput");
 const btnUploadImage = document.getElementById("btnUploadImage");
@@ -82,6 +82,20 @@ if (btnTogglePass) {
       wifiPass.type = "password";
       eyeIconOpen.classList.add("hidden");
       eyeIconClosed.classList.remove("hidden");
+    }
+  });
+}
+
+if (btnToggleHttpAuthPass) {
+  btnToggleHttpAuthPass.addEventListener("click", () => {
+    if (settingHttpAuthPassword.type === "password") {
+      settingHttpAuthPassword.type = "text";
+      eyeHttpAuthIconOpen.classList.remove("hidden");
+      eyeHttpAuthIconClosed.classList.add("hidden");
+    } else {
+      settingHttpAuthPassword.type = "password";
+      eyeHttpAuthIconOpen.classList.add("hidden");
+      eyeHttpAuthIconClosed.classList.remove("hidden");
     }
   });
 }
@@ -253,6 +267,12 @@ btnSaveSettings.addEventListener("click", async () => {
       }
     }
 
+    const httpAuthUserChar = await settingsService.getCharacteristic(HTTP_AUTH_USER_UUID);
+    await httpAuthUserChar.writeValue(encodeText(settingHttpAuthUser.value || ""));
+
+    const httpAuthPasswordChar = await settingsService.getCharacteristic(HTTP_AUTH_PASSWORD_UUID);
+    await httpAuthPasswordChar.writeValue(encodeText(settingHttpAuthPassword.value || ""));
+
     const timeoutChar = await settingsService.getCharacteristic(TIMEOUT_UUID);
     await timeoutChar.writeValue(encodeText(settingTimeout.value || "3600"));
 
@@ -285,9 +305,7 @@ function getClosestColorIndex(r, g, b) {
   return bestIdx;
 }
 
-const mySpectra6Palette = aitjcizeSpectra6Palette.filter(
-  (color) => color.name !== "orange" && color.name !== "cleanOrange"
-);
+const mySpectra6Palette = aitjcizeSpectra6Palette.filter((color) => color.name !== "orange" && color.name !== "cleanOrange");
 
 async function updatePreviewAndBuffer(options = {}) {
   if (!originalImage) return;
@@ -334,7 +352,10 @@ async function updatePreviewAndBuffer(options = {}) {
   setStatus("Erzeuge Dithering...", "text-yellow-600");
 
   try {
-    await ditherImage(canvas, canvas, { ...ditherOptions, palette: mySpectra6Palette });
+    await ditherImage(canvas, canvas, {
+      ...ditherOptions,
+      palette: mySpectra6Palette,
+    });
 
     const ditheredData = ctx.getImageData(0, 0, EPD_WIDTH, EPD_HEIGHT);
 
@@ -395,7 +416,9 @@ btnAutoDither.addEventListener("click", () => {
     dy = (EPD_HEIGHT - h) / 2;
   ctx.drawImage(originalImage, dx, dy, w, h);
 
-  const suggestion = suggestCanvasProcessingOptions(canvas, mySpectra6Palette, { intent: "natural" });
+  const suggestion = suggestCanvasProcessingOptions(canvas, mySpectra6Palette, {
+    intent: "natural",
+  });
   if (suggestion && suggestion.ditherOptions) {
     let resolvedOptions = suggestion.ditherOptions;
 
@@ -421,10 +444,7 @@ btnAutoDither.addEventListener("click", () => {
       processingSaturation.value = 0;
     }
 
-    setStatus(
-      `Automatisches Setting gefunden: ${suggestion.classification.style}, Typ: ${suggestion.imageKind}`,
-      "text-blue-500"
-    );
+    setStatus(`Automatisches Setting gefunden: ${suggestion.classification.style}, Typ: ${suggestion.imageKind}`, "text-blue-500");
 
     // Anwenden ohne Preset Name, da wir die Parameter explizit manuell setzen
     // und so dem Benutzer weitere Anpassungen ermöglichen
