@@ -79,7 +79,6 @@
 
 #define EPD_WIDTH 800
 #define EPD_HEIGHT 480
-#define OFFSET_BITMAP 4 // how many bytes store the picture information (resolution)
 
 #define uS_TO_S_FACTOR 1000000ULL   /* Conversion factor for micro seconds to seconds */
 #define LENGTH(x) (strlen(x) + 1)   // length of char string
@@ -92,10 +91,6 @@
 #define ENV_OTA_URL ""
 #endif
 
-#ifndef ENV_OTA_URL_DEV
-#define ENV_OTA_URL_DEV ""
-#endif
-
 #ifndef ENV_WIFI_PW_DEPLOY
 #define ENV_WIFI_PW_DEPLOY ""
 #endif
@@ -105,19 +100,13 @@
 #endif
 
 #define OTA_URL ENV_OTA_URL
-#define OTA_URL_DEV ENV_OTA_URL_DEV
 #define DEFAULT_WIFI_PW ENV_WIFI_PW_DEPLOY
 #define DEFAULT_WIFI_SSID ENV_WIFI_SSID_DEPLOY
 #define DEFAULT_SLEEP 3600         // Default time how long to sleep after update
-#define WIFI_INIT_TIME 300         // Time how long to wait for ESPTouch to finish
-#define APPCONNECT_INIT_TIME 300   // Time how long to wait for Onboarding to finish
 #define FAILSAVE_TIMER 180         // Time to shutdown the device if no reaction or hangup
-#define MAX_RECONNECTS 10          // (default 10) maximum wifi reconnect loops with wifi configured until 24h deep sleep
-#define RECONNECT_LOOP_TIME 60     // (default 60) how many seconds the reconnect is active to set new wifi password
-#define BAT_LOW_VALUE 4200         // value to show battery low
-#define BAT_OFF_VALUE 4000         // value to not boot anymore
 #define VDD_CORRECTION_FACTOR 2.30 // factor to get real VDD voltage from measured value
 #define SLEEP_RECALCULATION_PERIOD_SECONDS 30
+#define SETUP_MODE_TIMEOUT 30 // seconds to wait in setup mode for BLE connection before switching to fetch/refresh mode
 
 #if DEBUG
 const bool DEBUG_FLAG = true;
@@ -127,8 +116,6 @@ const bool DEBUG_FLAG = false;
 
 #define FONT_MAIN u8g2_font_helvB24_tf // Font for main text
 #define FONT_BIG u8g2_font_helvB14_tf  // Font for big text
-#define FONT_NORMAL u8g2_font_helvB12_tf
-#define FONT_SMALL u8g2_font_helvR08_tf
 #define FONT_INFO u8g2_font_7x14_tf
 #define FONT_VERSION u8g2_font_tom_thumb_4x6_tf
 
@@ -148,7 +135,6 @@ struct wifiSettings
    uint8_t wifiRetries;
    bool wifiIsConnected;
    bool wifiOnboardingFailed;
-   bool wifiConfig; // Set true if there was a wifi config done
    bool bleInitOk;
    bool isDeployWifi;
    String clientId;
@@ -159,7 +145,6 @@ struct wifiSettings
     .wifiRetries = 0,
     .wifiIsConnected = false,
     .wifiOnboardingFailed = false,
-    .wifiConfig = false,
     .bleInitOk = false,
     .isDeployWifi = false,
     .clientId = "",
@@ -239,12 +224,12 @@ Ticker tickerFailsave;
 Ticker perdiodicLed;
 Ticker perdiodicLedOff;
 Ticker periodicAccCheck;
-Ticker onceDisplay;
 Ticker tickerStatupCounter;
 SerialFlashFile saveFile;
 RTC_DATA_ATTR timeval previousWakeup = timeval{.tv_sec = 0, .tv_usec = 0};
 
 NimBLECharacteristic *wifiConnectedCharacteristic;
+NimBLECharacteristic *wifiInfoCharacteristic;
 NimBLEAdvertising *pAdvertising;
 static NimBLEServer *pServer;
 
@@ -257,22 +242,17 @@ struct dataLayout
 const uint8_t QR_VERSION = 3;    // QR Code Version
 const uint8_t QR_QUIET_ZONE = 4; // quiet zone all around
 
-uint32_t freeHeap = 0;
-int newVersionSave = 0;
 int httpFileSize = 0;
 int StartCounter = 0;
 
 bool downloadStart = true;
 char CLIENT_ID[20];
-bool isNewVersion = false;
-bool isDlUrl = false;
 bool periodicLedIsOn = false;
 int periodicLedTimeout = 0;
 bool epaperIsUpdating = false;
 bool buttonWake = false; // true if wakeup via reset button
 bool setupModeComplete = false;
 bool stopAccRecheck = false;
-bool isOrientUpdate = false;
 SerialFlashFile bleFile;
 uint32_t bleBytesReceived = 0;
 
@@ -298,6 +278,7 @@ bool chargeMode(bool enable);
 bool usbInit();
 bool usbCheckConnect();
 int calculateSleepDuration(int defaultTimeout, bool forceReset, bool getDataOnly = false);
+bool resetAll(bool resetWifi);
 wakeup_reason_t getWakeupReason();
 
 void WiFiEvent(WiFiEvent_t event)
@@ -321,6 +302,17 @@ void WiFiEvent(WiFiEvent_t event)
                uint8_t val = 1;
                wifiConnectedCharacteristic->setValue(&val, 1);
                wifiConnectedCharacteristic->notify();
+
+               if (wifiInfoCharacteristic)
+               {
+                  JsonDocument doc;
+                  doc["ip"] = WiFi.localIP().toString();
+                  doc["rssi"] = WiFi.RSSI();
+                  String json;
+                  serializeJson(doc, json);
+                  wifiInfoCharacteristic->setValue(json.c_str());
+                  wifiInfoCharacteristic->notify();
+               }
             }
          }
 
@@ -336,6 +328,12 @@ void WiFiEvent(WiFiEvent_t event)
                uint8_t val = 0;
                wifiConnectedCharacteristic->setValue(&val, 1);
                wifiConnectedCharacteristic->notify();
+
+               if (wifiInfoCharacteristic)
+               {
+                  wifiInfoCharacteristic->setValue("{}");
+                  wifiInfoCharacteristic->notify();
+               }
             }
          }
          break;
@@ -386,29 +384,6 @@ void ledBlink(int timeout, bool on)
       digitalWrite(LED_PIN, LOW);
       periodicLedIsOn = false;
    }
-}
-
-String mac2String(const uint64_t mac)
-{
-   byte ar[6];
-   uint8_t *p = ar;
-
-   for (int8_t i = 0; i <= 5; i++)
-   {
-      *p++ = mac >> (CHAR_BIT * i);
-   }
-
-   String s;
-   for (int8_t i = 0; i < 6; i++)
-   {
-      char buf[2];
-      sprintf(buf, "%02X", ar[i]);
-      s += buf;
-      if (i < 5)
-         s += ':';
-   }
-   s += '\0';
-   return s;
 }
 
 int readVDD(bool singleReading)
@@ -706,6 +681,12 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
             Serial.println("[BLE] Settings APPLY received.");
             setupModeComplete = true;
          }
+         else if (cmd == "RESET")
+         {
+            Serial.println("[BLE] Settings RESET received.");
+            resetAll(true);
+            ESP.restart();
+         }
       }
       else if (uuidStr == "10000003-0000-0000-0000-000000000001")
       {
@@ -826,6 +807,7 @@ bool BleInit(String deviceId, bool enable)
 
    NimBLEService *deviceDataService = pServer->createService("7f74170e-7b0e-11ed-a1eb-0242ac120002");
    wifiConnectedCharacteristic = deviceDataService->createCharacteristic("4c578d4c-7b0e-11ed-a1eb-0242ac120002", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+   wifiInfoCharacteristic = deviceDataService->createCharacteristic("4c578d4d-7b0e-11ed-a1eb-0242ac120002", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
    NimBLECharacteristic *wifiScanCharacteristic = deviceDataService->createCharacteristic("5131a3fc-7b0e-11ed-a1eb-0242ac120002", NIMBLE_PROPERTY::READ);
 
    NimBLEService *wifiDataService = pServer->createService("0515c086-7b0c-11ed-a1eb-0242ac120002");
@@ -835,6 +817,7 @@ bool BleInit(String deviceId, bool enable)
    wifiSsidCharacteristic->setCallbacks(&chrCallbacks);
    wifiPwCharacteristic->setCallbacks(&chrCallbacks);
    wifiConnectedCharacteristic->setCallbacks(&chrCallbacks);
+   wifiInfoCharacteristic->setCallbacks(&chrCallbacks);
    wifiScanCharacteristic->setCallbacks(&chrCallbacks);
 
    NimBLE2904 *wifiSsidDescriptor = (NimBLE2904 *)wifiSsidCharacteristic->createDescriptor("2904");
@@ -879,10 +862,11 @@ bool BleInit(String deviceId, bool enable)
    deviceDataService->start();
    epaperSettingsService->start();
 
-   wifiSsidCharacteristic->setValue("wifi-ssid");
-   wifiPwCharacteristic->setValue("wifi-pw");
+   wifiSsidCharacteristic->setValue(wifiSettings.ssid.c_str());
+   wifiPwCharacteristic->setValue(wifiSettings.pss.c_str());
    uint8_t initVal = wifiSettings.wifiIsConnected ? 1 : 0;
    wifiConnectedCharacteristic->setValue(&initVal, 1);
+   wifiInfoCharacteristic->setValue("{}");
    wifiScanCharacteristic->setValue(wifiSsidScan);
 
    urlCharacteristic->setValue(settings.downloadUrl.c_str());
@@ -915,7 +899,7 @@ int downloadAndSaveFile(String fileName, String url)
 {
    bool success = 0;
    int systemFileSize = 0;
-   WiFi.setSleep(false); 
+   WiFi.setSleep(false);
    WiFiClientSecure secureClient;
    secureClient.setInsecure();
    HTTPClient http;
@@ -1581,19 +1565,13 @@ void gotToDeepSleep(int wakeuptimeout, bool showScreen, bool motionWake)
    pinMode(13, INPUT); // USB TEST PINS
    if (settings.sleepDisabled)
    {
-      int versionStored = newVersionSave;
       Serial.printf("[SLEEP] enter soft sleep\n");
       tickerFailsave.detach();
       ledBlink(2000, true);
       while (true)
       {
+         // TODO: add trigger for reboot via wifi or ble for soft sleep
          delay(100);
-         if (newVersionSave != versionStored)
-         {
-            Serial.println("[SLEEP] new version detected during soft sleep, restarting to update");
-            ESP.restart();
-            break;
-         }
       }
    }
    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
@@ -1870,11 +1848,9 @@ void recheckAccOrient(int setOrientValue)
    int accCheck = accInit(true);
    if (accCheck != readIntFromFlash(220))
    {
-      isOrientUpdate = true;
       systemData.deviceOrientation = accCheck;
       Serial.printf("[ACC] Update Orient to Mem: %d \n", systemData.deviceOrientation);
       writeIntToFlash(systemData.deviceOrientation, 220);
-      writeIntToFlash(0, 150); // Reset picture version after ota to init update
       if (systemData.deviceOrientation == 2 || systemData.deviceOrientation == 3)
       {
          displaySettings.rotationText = 1;
@@ -1990,6 +1966,63 @@ void test()
    //  BleInit(CLIENT_ID, true);
 }
 
+bool resetAll(bool resetWifi)
+{
+   checkOrientationInBackground(0, false);
+   Serial.printf("[MAIN] Reset - WIFI %d \n", resetWifi);
+
+   writeIntToFlash(0, 220);          // restore screen orient to default
+   storeSleepTimeMem(DEFAULT_SLEEP); // restore sleep mem store to default
+   if (SerialFlash.exists("tmp.bmp"))
+   {
+      SerialFlashFile f = SerialFlash.open("tmp.bmp");
+      f.erase();
+      f.close();
+   }
+   settings.downloadUrl = "";
+   settings.imageMode = 1;
+   settings.clearscreen = true;
+   settings.timeout = DEFAULT_SLEEP;
+   settings.httpAuthUser = "";
+   settings.httpAuthPassword = "";
+   if (resetWifi)
+   {
+      writeStringToFlash("", 0);  // storing ssid at address 0
+      writeStringToFlash("", 40); // storing pss at address 40
+      wifiSettings.ssid = "";
+      wifiSettings.pss = "";
+      wifiSettings.wifiRetries = 0;
+   }
+   saveSettingsToFlash(EEPROM_SETTINGS_ADR);
+   return true;
+}
+
+void startupCounter(int reset)
+{
+   preferences.begin("my-app", false);
+   unsigned int counter = preferences.getUInt("counter", 0);
+   counter++;
+   if (reset || counter > 16)
+   {
+      if (StartCounter >= 5)
+      {
+         Serial.println("[MAIN] +5 button presses");
+         resetAll(true);
+         ESP.restart();
+         return;
+      }
+      StartCounter = 0;
+      counter = 0;
+      Serial.println("[MAIN] Startup Counter RESET");
+   }
+   preferences.putUInt("counter", counter);
+   preferences.end();
+   StartCounter = counter;
+   if (reset == 0)
+      tickerStatupCounter.once_ms(3000, startupCounter, 1);
+   return;
+}
+
 void setup()
 {
    chargeMode(false); // enable charge mode
@@ -2016,6 +2049,7 @@ void setup()
    if (systemData.wakeupCause == wakeup_reason_t::BUTTON)
    {
       buttonWake = true;
+      startupCounter(false);
    }
 
    EepromInit(EEPROM_SIZE);
@@ -2077,17 +2111,16 @@ void setup()
 #if DEBUG
    // test();              //-----------------test---------please remove
 #endif
-   tickerFailsave.once_ms((FAILSAVE_TIMER * 1000) + (WIFI_INIT_TIME * 1000), timeoutFailsave, 0);
 
    if (buttonWake)
    {
       Serial.println("[MAIN] Setup Mode Triggered");
       displaySetText("Connect via Bluetooth", false, true);
       BleInit(CLIENT_ID, true);
-      tickerFailsave.detach(); // keep ESP awake indefinitely for setup
 
       unsigned long setupModeStart = millis();
       bool bleWasConnected = false;
+      bool initialWifiCheckDone = false;
 
       // Wait for completion, disconnect, or timeout
       while (!setupModeComplete)
@@ -2095,6 +2128,11 @@ void setup()
          if (pServer->getConnectedCount() > 0)
          {
             bleWasConnected = true;
+            if (!initialWifiCheckDone && wifiSettings.ssid.length() > 0)
+            {
+               initialWifiCheckDone = true;
+               wifiSettings.isDeployWifi = true;
+            }
          }
 
          if (wifiSettings.isDeployWifi)
@@ -2102,6 +2140,19 @@ void setup()
             wifiSettings.wifiIsConnected = false;
             wifiSettings.wifiOnboardingFailed = false;
             wifiSettings.isDeployWifi = false;
+
+            if (wifiSettings.bleInitOk && wifiConnectedCharacteristic)
+            {
+               uint8_t val = 0;
+               wifiConnectedCharacteristic->setValue(&val, 1);
+               wifiConnectedCharacteristic->notify();
+
+               if (wifiInfoCharacteristic)
+               {
+                  wifiInfoCharacteristic->setValue(String("{}").c_str());
+                  wifiInfoCharacteristic->notify();
+               }
+            }
 
             Serial.println("[MAIN] Connecting WiFi...");
             WiFi.disconnect(true);
@@ -2131,7 +2182,7 @@ void setup()
          }
 
          // Timeout if no client connects within 60 seconds
-         if (!bleWasConnected && (millis() - setupModeStart > 60 * 1000))
+         if (!bleWasConnected && (millis() - setupModeStart > SETUP_MODE_TIMEOUT * 1000))
          {
             Serial.println("[MAIN] No BLE connection within 60s. Switching to fetch/refresh mode.");
             break;
@@ -2164,11 +2215,9 @@ void setup()
    }
 
    ledBlink(500, true);
-   tickerFailsave.detach();
    tickerFailsave.once_ms(FAILSAVE_TIMER * 1000, timeoutFailsave, 0);
 
    saveSettingsToFlash(EEPROM_SETTINGS_ADR);
-   writeIntToFlash(0, 170); // reset activation sleep counter if activated
    storeSleepTimeMem(settings.timeout);
 
    systemData.sleepPrediction = calculateSleepDuration(settings.timeout, systemData.newSleepTimeSet, false);

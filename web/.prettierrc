@@ -1,6 +1,15 @@
 {
-    "printWidth": 2000,
-    "htmlWhitespaceSensitivity": "ignore",
-    "tabWidth": 4,
-    "singleQuote": true
+  "printWidth": 2000,
+  "htmlWhitespaceSensitivity": "ignore",
+  "tabWidth": 2,
+  "singleQuote": false,
+  "overrides": [
+    {
+      "files": "*.html",
+      "options": {
+        "tabWidth": 4,
+        "singleQuote": true
+      }
+    }
+  ]
 }

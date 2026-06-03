@@ -17,7 +17,7 @@ const HTTP_AUTH_PASSWORD_UUID = "10000008-0000-0000-0000-000000000001";
 const DEVICE_DATA_SERVICE_UUID = "7f74170e-7b0e-11ed-a1eb-0242ac120002";
 const WIFI_SCAN_UUID = "5131a3fc-7b0e-11ed-a1eb-0242ac120002";
 const WIFI_CONNECTED_UUID = "4c578d4c-7b0e-11ed-a1eb-0242ac120002";
-
+const WIFI_INFO_UUID = "4c578d4d-7b0e-11ed-a1eb-0242ac120002";
 // ACHTUNG: Passe EPD_WIDTH/HEIGHT bei Bedarf an dein Panel an
 const EPD_WIDTH = 800;
 const EPD_HEIGHT = 480;
@@ -42,6 +42,7 @@ const eyeIconOpen = document.getElementById("eyeIconOpen");
 const eyeIconClosed = document.getElementById("eyeIconClosed");
 
 const btnSaveSettings = document.getElementById("btnSaveSettings");
+const btnFactoryReset = document.getElementById("btnFactoryReset");
 const settingTimeout = document.getElementById("settingTimeout");
 const settingUrl = document.getElementById("settingUrl");
 const settingHttpAuthUser = document.getElementById("settingHttpAuthUser");
@@ -59,6 +60,24 @@ canvas.height = EPD_HEIGHT;
 const ctx = canvas.getContext("2d", { willReadFrequently: true });
 const progressContainer = document.getElementById("progressContainer");
 const progressBar = document.getElementById("progressBar");
+
+const syncBadgeWifi = document.getElementById("syncBadgeWifi");
+const syncBadgeSettings = document.getElementById("syncBadgeSettings");
+
+const wifiConnectedInfo = document.getElementById("wifiConnectedInfo");
+const btnEditWifi = document.getElementById("btnEditWifi");
+const wifiInputMask = document.getElementById("wifiInputMask");
+const infoSsid = document.getElementById("infoSsid");
+const infoIp = document.getElementById("infoIp");
+const infoRssi = document.getElementById("infoRssi");
+const infoQuality = document.getElementById("infoQuality");
+
+if (btnEditWifi) {
+  btnEditWifi.addEventListener("click", () => {
+    wifiConnectedInfo.classList.add("hidden");
+    wifiInputMask.classList.remove("hidden");
+  });
+}
 
 const ditheringType = document.getElementById("ditheringType");
 const errorDiffusionMatrix = document.getElementById("errorDiffusionMatrix");
@@ -109,6 +128,16 @@ function setStatus(text, colorClass = "text-gray-500") {
   statusText.innerText = text;
 }
 
+function updateWifiStatusUI(isConnected) {
+  if (isConnected) {
+    wifiInputMask.classList.add("hidden");
+    wifiConnectedInfo.classList.remove("hidden");
+  } else {
+    wifiInputMask.classList.remove("hidden");
+    wifiConnectedInfo.classList.add("hidden");
+  }
+}
+
 async function connectToDevice() {
   if (bleDevice && bleDevice.gatt.connected) return;
 
@@ -119,6 +148,101 @@ async function connectToDevice() {
     setStatus("Lade Services...", "text-blue-500");
     settingsService = await server.getPrimaryService(SETTINGS_SERVICE_UUID);
     wifiService = await server.getPrimaryService(WIFI_SERVICE_UUID);
+
+    // Initialen Device Sync starten
+    try {
+      setStatus("Lese Geräteeinstellungen...", "text-blue-500");
+      // Lese WLAN
+      const ssidChar = await wifiService.getCharacteristic(WIFI_SSID_UUID);
+      const ssidVal = await ssidChar.readValue();
+      const ssidStr = new TextDecoder().decode(ssidVal).replace(/\0/g, "");
+      if (ssidStr !== "" && ssidStr !== "wifi-ssid") {
+        wifiSsid.value = ssidStr;
+        syncBadgeWifi.classList.remove("hidden");
+      }
+
+      // Lese URL
+      const urlChar = await settingsService.getCharacteristic(URL_UUID);
+      const urlVal = await urlChar.readValue();
+      const urlStr = new TextDecoder().decode(urlVal).replace(/\0/g, "");
+      if (urlStr !== "") {
+        settingUrl.value = urlStr;
+        syncBadgeSettings.classList.remove("hidden");
+      }
+
+      // Lese Timeout
+      const timeoutChar = await settingsService.getCharacteristic(TIMEOUT_UUID);
+      const timeoutVal = await timeoutChar.readValue();
+      const timeoutStr = new TextDecoder().decode(timeoutVal).replace(/\0/g, "");
+      if (timeoutStr !== "") {
+        settingTimeout.value = timeoutStr;
+        syncBadgeSettings.classList.remove("hidden");
+      }
+
+      // Lese HTTP Auth Settings
+      try {
+        const httpAuthUserChar = await settingsService.getCharacteristic(HTTP_AUTH_USER_UUID);
+        const userVal = await httpAuthUserChar.readValue();
+        settingHttpAuthUser.value = new TextDecoder().decode(userVal).replace(/\0/g, "");
+
+        const httpAuthPasswordChar = await settingsService.getCharacteristic(HTTP_AUTH_PASSWORD_UUID);
+        const passVal = await httpAuthPasswordChar.readValue();
+        settingHttpAuthPassword.value = new TextDecoder().decode(passVal).replace(/\0/g, "");
+      } catch (e) {
+        // Falls alte Firmware die UUIDs nicht hat
+      }
+
+      // Initialen WLAN Connect Status prüfen
+      const deviceDataService = await server.getPrimaryService(DEVICE_DATA_SERVICE_UUID);
+      const connectedChar = await deviceDataService.getCharacteristic(WIFI_CONNECTED_UUID);
+
+      connectedChar.addEventListener("characteristicvaluechanged", (e) => {
+        const val = e.target.value.getUint8(0);
+        updateWifiStatusUI(val === 1 || val === 49);
+      });
+      await connectedChar.startNotifications();
+
+      const isConVal = await connectedChar.readValue();
+      const isConNum = isConVal.getUint8(0);
+      updateWifiStatusUI(isConNum === 1 || isConNum === 49);
+
+      try {
+        const infoChar = await deviceDataService.getCharacteristic(WIFI_INFO_UUID);
+        infoChar.addEventListener("characteristicvaluechanged", (e) => {
+          const jsonStr = new TextDecoder().decode(e.target.value).replace(/\0/g, "");
+          if (jsonStr.length > 2) {
+            try {
+              const data = JSON.parse(jsonStr);
+              if (data.ip) {
+                infoIp.innerText = data.ip;
+                infoRssi.innerText = data.rssi + " dBm";
+                infoSsid.innerText = wifiSsid.value || "Netzwerk";
+                if (data.rssi > -60) infoQuality.innerText = "Ausgezeichnet";
+                else if (data.rssi > -75) infoQuality.innerText = "Gut";
+                else infoQuality.innerText = "Schwach";
+              }
+            } catch (ex) {}
+          }
+        });
+        await infoChar.startNotifications();
+
+        const infoVal = await infoChar.readValue();
+        const infoJsonStr = new TextDecoder().decode(infoVal).replace(/\0/g, "");
+        if (infoJsonStr.length > 2) {
+          const data = JSON.parse(infoJsonStr);
+          if (data.ip) {
+            infoIp.innerText = data.ip;
+            infoRssi.innerText = data.rssi + " dBm";
+            infoSsid.innerText = wifiSsid.value || "Netzwerk";
+            if (data.rssi > -60) infoQuality.innerText = "Ausgezeichnet";
+            else if (data.rssi > -75) infoQuality.innerText = "Gut";
+            else infoQuality.innerText = "Schwach";
+          }
+        }
+      } catch (ex) {}
+    } catch (e) {
+      console.warn("Sync failed:", e);
+    }
 
     // Lade verfügbare WLANs herunter
     try {
@@ -199,7 +323,13 @@ btnDisconnect.addEventListener("click", () => {
 
 btnSaveWifi.addEventListener("click", async () => {
   if (!wifiService) return;
+  const originalText = btnSaveWifi.innerText;
+
   try {
+    btnSaveWifi.innerText = "Verbinde...";
+    btnSaveWifi.disabled = true;
+    btnSaveWifi.classList.add("opacity-50", "cursor-wait");
+
     setStatus("Speichere WLAN...", "text-blue-500");
     const ssidChar = await wifiService.getCharacteristic(WIFI_SSID_UUID);
     await ssidChar.writeValue(encodeText(wifiSsid.value));
@@ -212,6 +342,9 @@ btnSaveWifi.addEventListener("click", async () => {
     // Poll the connection status
     const deviceDataService = await bleDevice.gatt.getPrimaryService(DEVICE_DATA_SERVICE_UUID);
     const connectedChar = await deviceDataService.getCharacteristic(WIFI_CONNECTED_UUID);
+
+    // Initial wait to allow firmware to process isDeployWifi and set status to 0
+    await new Promise((r) => setTimeout(r, 2000));
 
     let isConnected = false;
     for (let i = 0; i < 20; i++) {
@@ -231,6 +364,7 @@ btnSaveWifi.addEventListener("click", async () => {
     }
 
     if (isConnected) {
+      updateWifiStatusUI(true);
       setStatus("WLAN gespeichert & Erfolgreich Verbunden! ✅", "text-green-600");
 
       // Wenn ein WLAN erfolgreich verbunden ist, setze den Modus direkt auf WLAN (1)
@@ -241,11 +375,16 @@ btnSaveWifi.addEventListener("click", async () => {
         console.warn("Modus konnte nicht auf WLAN gesetzt werden:", err);
       }
     } else {
+      updateWifiStatusUI(false);
       setStatus("WLAN gespeichert, aber Verbindung fehlgeschlagen (Passwort falsch?)", "text-red-500");
     }
   } catch (e) {
     console.error(e);
     setStatus("Fehler beim Speichern des WLANs.", "text-red-500");
+  } finally {
+    btnSaveWifi.innerText = originalText;
+    btnSaveWifi.disabled = false;
+    btnSaveWifi.classList.remove("opacity-50", "cursor-wait");
   }
 });
 
@@ -280,6 +419,30 @@ btnSaveSettings.addEventListener("click", async () => {
   } catch (e) {
     console.error(e);
     setStatus("Fehler: Sind die neuen UUIDs bereits in main.cpp enthalten?", "text-red-500");
+  }
+});
+
+btnFactoryReset.addEventListener("click", async () => {
+  if (!settingsService) return;
+  if (!confirm("Möchtest du das Gerät wirklich auf Werkseinstellungen zurücksetzen? Alle Einstellungen, WLAN-Zugangsdaten und gespeicherte Bilder werden gelöscht.")) {
+    return;
+  }
+
+  try {
+    setStatus("Führe Factory Reset aus...", "text-red-500");
+    const cmdChar = await settingsService.getCharacteristic(UPLOAD_CMD_UUID);
+    await cmdChar.writeValue(encodeText("RESET"));
+    setStatus("Gerät wird zurückgesetzt und neugestartet.", "text-green-600");
+
+    // Disconnect after a short delay since the device will restart
+    setTimeout(() => {
+      if (bleDevice && bleDevice.gatt.connected) {
+        bleDevice.gatt.disconnect();
+      }
+    }, 1500);
+  } catch (e) {
+    console.error(e);
+    setStatus("Fehler beim Factory Reset.", "text-red-500");
   }
 });
 

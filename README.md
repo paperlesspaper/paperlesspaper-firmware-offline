@@ -40,7 +40,7 @@ Offline first Firmware for an ESP32-C6 based E-Paper display device, featuring W
 ## Modes of Operation
 - **Setup Mode (BLE Activation)**: Press the **reset button once** (the big button) to wake the device and activate Bluetooth (BLE). 
   - Once active, you can connect to the device via the Web-UI to configure settings or upload an image.
-  - If you do not connect via BLE, the device will automatically fall back to normal operation after 60 seconds: it will try to connect to the configured WiFi to download a new image, or, if WiFi is unavailable/not configured, it will simply load the last stored image before going back to deep sleep.
+  - If you do not connect via BLE, the device will automatically fall back to normal operation after 30 seconds: it will try to connect to the configured WiFi to download a new image, or, if WiFi is unavailable/not configured, it will simply load the last stored image before going back to deep sleep.
 - **BLE Upload**: Easily load and dither an image in the Web-UI and transmit it to the display entirely offline via Bluetooth.
 - **WiFi Download**: Configure a Download URL (e.g., `http://local-server/image.bmp`), and the ESP32 will fetch the display contents via WiFi upon waking up.
 - **Deep Sleep**: The device enters deep sleep to save power after an update. It wakes up via:
@@ -52,12 +52,6 @@ Offline first Firmware for an ESP32-C6 based E-Paper display device, featuring W
 
 - `0-39`: WiFi Name
 - `40-105`: WiFi Password
-- `140`: Reconnect Count
-- `150`: File Version
-- `160`: Activated Flag
-- `170`: Activation Counter
-- `190`: Display Revision Store
-- `200`: WiFi Lost State
 - `210`: Sleep Time
 - `220`: Dispay Orientation Store
 - `500+`: Settings Store
@@ -74,7 +68,7 @@ Offline first Firmware for an ESP32-C6 based E-Paper display device, featuring W
 - ota upload via ble (revert back to cloud firmware)
 - settings for motion wakeup and charger via ble
 - store multiple images
-- load device settings to web ui via ble (2 way sync)
+- (done) load device settings to web ui via ble (2 way sync)
 - on device dithering
 - https://immich.app/ integration into firmware and config via ble
 - electron tool to update offline firmware or web flasher
