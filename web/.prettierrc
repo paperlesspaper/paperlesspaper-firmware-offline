@@ -1,4 +1,6 @@
 {
-  "printWidth": 2000,
-  "htmlWhitespaceSensitivity": "ignore"
+    "printWidth": 2000,
+    "htmlWhitespaceSensitivity": "ignore",
+    "tabWidth": 4,
+    "singleQuote": true
 }
