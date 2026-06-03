@@ -38,9 +38,11 @@ Offline first Firmware for an ESP32-C6 based E-Paper display device, featuring W
     - Run the PlatformIO task: `General` -> `Upload`.
 
 ## Modes of Operation
-
-- **BLE Upload Mode**: Easily load and dither an image in the Web-UI and transmit it to the display entirely offline via Bluetooth.
-- **WiFi Download Mode**: Configure a Download URL (e.g., `http://local-server/image.bmp`), and the ESP32 will fetch the display contents via WiFi upon waking up.
+- **Setup Mode (BLE Activation)**: Press the **reset button once** (the big button) to wake the device and activate Bluetooth (BLE). 
+  - Once active, you can connect to the device via the Web-UI to configure settings or upload an image.
+  - If you do not connect via BLE, the device will automatically fall back to normal operation after 60 seconds: it will try to connect to the configured WiFi to download a new image, or, if WiFi is unavailable/not configured, it will simply load the last stored image before going back to deep sleep.
+- **BLE Upload**: Easily load and dither an image in the Web-UI and transmit it to the display entirely offline via Bluetooth.
+- **WiFi Download**: Configure a Download URL (e.g., `http://local-server/image.bmp`), and the ESP32 will fetch the display contents via WiFi upon waking up.
 - **Deep Sleep**: The device enters deep sleep to save power after an update. It wakes up via:
   - Timer (configurable duration).
   - Accelerometer (motion) (optional).
