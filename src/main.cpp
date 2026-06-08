@@ -250,6 +250,8 @@ char CLIENT_ID[20];
 bool periodicLedIsOn = false;
 int periodicLedTimeout = 0;
 bool epaperIsUpdating = false;
+bool applyPending = false;
+bool bleImageApplied = false;
 bool buttonWake = false; // true if wakeup via reset button
 bool setupModeComplete = false;
 bool stopAccRecheck = false;
@@ -405,6 +407,15 @@ bool EepromInit(int size) {
       Serial.println("[MEM] EEPROM init OK");
       return true;
    }
+}
+
+bool EepromClear() {
+   char resetValue = 0;
+   for (int i = 0; i < EEPROM_SIZE; i++) {
+      EEPROM.write(i, resetValue);
+   }
+   Serial.println("[MEM] EEPROM clear OK");
+   return true;
 }
 
 void writeStringToFlash(const char *toStore, int startAddr) {
@@ -618,7 +629,7 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
          }
          else if (cmd == "APPLY") {
             Serial.println("[BLE] Settings APPLY received.");
-            setupModeComplete = true;
+            applyPending = true;
          }
          else if (cmd == "RESET") {
             Serial.println("[BLE] Settings RESET received.");
@@ -1749,7 +1760,6 @@ void test() {
 bool resetAll(bool resetWifi) {
    checkOrientationInBackground(0, false);
    Serial.printf("[MAIN] Reset - WIFI %d \n", resetWifi);
-
    writeIntToFlash(0, 220);          // restore screen orient to default
    storeSleepTimeMem(DEFAULT_SLEEP); // restore sleep mem store to default
    if (SerialFlash.exists("tmp.bmp")) {
@@ -1769,6 +1779,7 @@ bool resetAll(bool resetWifi) {
       wifiSettings.ssid = "";
       wifiSettings.pss = "";
       wifiSettings.wifiRetries = 0;
+      EepromClear();
    }
    saveSettingsToFlash(EEPROM_SETTINGS_ADR);
    return true;
@@ -1781,6 +1792,10 @@ void startupCounter(int reset) {
    if (reset || counter > 16) {
       if (StartCounter >= 5) {
          Serial.println("[MAIN] +5 button presses");
+         StartCounter = 0;
+         counter = 0;
+         preferences.putUInt("counter", counter);
+         preferences.end();
          resetAll(true);
          ESP.restart();
          return;
@@ -1939,6 +1954,13 @@ void setup() {
             }
          }
 
+         if (applyPending) {
+            applyPending = false;
+            bleImageApplied = true;
+            Serial.println("[MAIN] Applying new image within setup mode...");
+            setImageFromFS("tmp.bmp");
+         }
+
          // Timeout if no client connects within 60 seconds
          if (!bleWasConnected && (millis() - setupModeStart > SETUP_MODE_TIMEOUT * 1000)) {
             Serial.println("[MAIN] No BLE connection within 60s. Switching to fetch/refresh mode.");
@@ -2029,7 +2051,11 @@ void loop() {
 
       int setSuccess = 0;
       if (dlSuccess == 0 || dlSuccess == 1) { // 0 = downloaded/ok, 1 = not modified
-         if (dlSuccess == 0 || settings.imageMode == 0) {
+         if (dlSuccess == 0 && bleImageApplied) {
+            Serial.println("[IMAGE] Image was already applied during setup mode, skipping refresh.");
+            setSuccess = 0;
+         }
+         else if (dlSuccess == 0 || settings.imageMode == 0) {
             setSuccess = setImageFromFS(fileName);
          }
          else {

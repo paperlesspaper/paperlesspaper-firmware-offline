@@ -1,4 +1,4 @@
-import { ditherImage, aitjcizeSpectra6Palette, acepPalette, replaceColors, suggestCanvasProcessingOptions, getProcessingPresetOptions } from "epdoptimize";
+import { ditherImage, spectra6OriginalPalette, spectra6Palette, replaceColors, suggestCanvasProcessingOptions, getProcessingPresetOptions } from "epdoptimize";
 
 // BLE UUIDs
 const WIFI_SERVICE_UUID = "0515c086-7b0c-11ed-a1eb-0242ac120002";
@@ -83,13 +83,16 @@ const ditheringType = document.getElementById("ditheringType");
 const errorDiffusionMatrix = document.getElementById("errorDiffusionMatrix");
 const serpentine = document.getElementById("serpentine");
 const colorMatchingMode = document.getElementById("colorMatchingMode");
+const paletteSelect = document.getElementById("paletteSelect");
 const processingBrightness = document.getElementById("processingBrightness");
 const processingContrast = document.getElementById("processingContrast");
 const processingSaturation = document.getElementById("processingSaturation");
 const btnRedither = document.getElementById("btnRedither");
 const btnAutoDither = document.getElementById("btnAutoDither");
+const btnRotate = document.getElementById("btnRotate");
 
 let originalImage = null;
+let imageRotation = 0;
 
 if (btnTogglePass) {
   btnTogglePass.addEventListener("click", () => {
@@ -290,23 +293,22 @@ async function connectToDevice() {
 
 btnConnect.addEventListener("click", async () => {
   try {
-    if (!bleDevice) {
-      setStatus("Fordere Bluetooth-Kopplung an...", "text-blue-500");
-      bleDevice = await navigator.bluetooth.requestDevice({
-        filters: [{ namePrefix: "epd" }],
-        optionalServices: [SETTINGS_SERVICE_UUID, WIFI_SERVICE_UUID, DEVICE_DATA_SERVICE_UUID],
-      });
+    setStatus("Fordere Bluetooth-Kopplung an...", "text-blue-500");
+    bleDevice = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: "epd" }],
+      optionalServices: [SETTINGS_SERVICE_UUID, WIFI_SERVICE_UUID, DEVICE_DATA_SERVICE_UUID],
+    });
 
-      bleDevice.addEventListener("gattserverdisconnected", () => {
-        setStatus("Gerät getrennt. E-Paper aktualisiert sich...", "text-orange-500");
-        controls.classList.add("hidden", "opacity-0");
-        settingsService = null;
-        wifiService = null;
-        btnConnect.classList.remove("hidden");
-        btnDisconnect.classList.add("hidden");
-        if (reconnectInterval) clearTimeout(reconnectInterval);
-      });
-    }
+    bleDevice.addEventListener("gattserverdisconnected", () => {
+      setStatus("Gerät getrennt. E-Paper aktualisiert sich...", "text-orange-500");
+      controls.classList.add("hidden", "opacity-0");
+      settingsService = null;
+      wifiService = null;
+      btnConnect.classList.remove("hidden");
+      btnDisconnect.classList.add("hidden");
+      if (reconnectInterval) clearTimeout(reconnectInterval);
+    });
+
     await connectToDevice();
   } catch (error) {
     console.error(error);
@@ -446,50 +448,71 @@ btnFactoryReset.addEventListener("click", async () => {
   }
 });
 
-const KNOWN_COLORS = [
-  { r: 0, g: 0, b: 0, idx: 0 }, // Black
-  { r: 0, g: 0, b: 255, idx: 1 }, // Blue
-  { r: 0, g: 255, b: 0, idx: 2 }, // Green
-  { r: 255, g: 0, b: 0, idx: 3 }, // Red
-  { r: 255, g: 255, b: 0, idx: 5 }, // Yellow
-  { r: 255, g: 255, b: 255, idx: 6 }, // White
-];
+const SPECTRA_COLOR_INDICES = {
+  black: 0,
+  blue: 1,
+  green: 2,
+  red: 3,
+  yellow: 5,
+  white: 6,
+};
 
-function getClosestColorIndex(r, g, b) {
+function hexToRgb(h) {
+  const num = parseInt(h.replace("#", ""), 16);
+  return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
+}
+
+function getClosestColorIndex(r, g, b, palette) {
   let minDst = Infinity;
   let bestIdx = 6;
-  for (const col of KNOWN_COLORS) {
-    const dst = (r - col.r) ** 2 + (g - col.g) ** 2 + (b - col.b) ** 2;
+  for (const entry of palette) {
+    const c = hexToRgb(entry.color);
+    const dst = (r - c.r) ** 2 + (g - c.g) ** 2 + (b - c.b) ** 2;
     if (dst < minDst) {
       minDst = dst;
-      bestIdx = col.idx;
+      bestIdx = SPECTRA_COLOR_INDICES[entry.name] ?? 6;
     }
   }
   return bestIdx;
 }
 
-const mySpectra6Palette = aitjcizeSpectra6Palette.filter((color) => color.name !== "orange" && color.name !== "cleanOrange");
+function drawOriginalToCanvas(targetCtx) {
+  if (!originalImage) return;
+
+  targetCtx.fillStyle = "white";
+  targetCtx.fillRect(0, 0, EPD_WIDTH, EPD_HEIGHT);
+
+  const isRotated = imageRotation === 90 || imageRotation === 270;
+  const virtW = isRotated ? originalImage.height : originalImage.width;
+  const virtH = isRotated ? originalImage.width : originalImage.height;
+
+  // Modus: CONTAIN (Bild komplett sichtbar, "eingepasst").
+  let scale = Math.min(EPD_WIDTH / virtW, EPD_HEIGHT / virtH);
+  let renderW = originalImage.width * scale;
+  let renderH = originalImage.height * scale;
+
+  targetCtx.save();
+  // Zum Mittelpunkt des Canvas verschieben
+  targetCtx.translate(EPD_WIDTH / 2, EPD_HEIGHT / 2);
+  targetCtx.rotate((imageRotation * Math.PI) / 180);
+
+  // Das Bild relativ zu seinem eigenen Zentrum zeichnen
+  targetCtx.drawImage(originalImage, -renderW / 2, -renderH / 2, renderW, renderH);
+
+  targetCtx.restore();
+}
 
 async function updatePreviewAndBuffer(options = {}) {
   if (!originalImage) return;
 
-  // Hintergrund zurücksetzen
-  ctx.fillStyle = "white";
-  ctx.fillRect(0, 0, EPD_WIDTH, EPD_HEIGHT);
-
-  let scale = Math.max(EPD_WIDTH / originalImage.width, EPD_HEIGHT / originalImage.height);
-  let w = originalImage.width * scale,
-    h = originalImage.height * scale;
-  let dx = (EPD_WIDTH - w) / 2,
-    dy = (EPD_HEIGHT - h) / 2;
-
-  ctx.drawImage(originalImage, dx, dy, w, h);
+  drawOriginalToCanvas(ctx);
 
   let imageData = ctx.getImageData(0, 0, EPD_WIDTH, EPD_HEIGHT);
 
   const ditheringTypeVal = ditheringType.value;
   const matrix = errorDiffusionMatrix.value;
   const isSerpentine = serpentine.checked;
+  const activePalette = paletteSelect && paletteSelect.value === "spectra6" ? spectra6Palette : spectra6OriginalPalette;
   const colorMode = colorMatchingMode.value;
 
   const brightnessInt = parseInt(processingBrightness.value, 10);
@@ -503,12 +526,12 @@ async function updatePreviewAndBuffer(options = {}) {
     ditheringType: options.ditheringType ?? ditheringTypeVal,
     errorDiffusionMatrix: options.errorDiffusionMatrix ?? matrix,
     serpentine: options.serpentine ?? isSerpentine,
-    colorMatchingMode: options.colorMatchingMode ?? colorMode,
+    colorMatching: options.colorMatching ?? colorMode,
     toneMapping: options.toneMapping || {
       mode: toneMappingMode,
-      exposure: brightnessInt / 100 + 1,
-      contrast: contrastInt / 100 + 1,
-      saturation: saturationInt / 100 + 1,
+      exposure: brightnessInt / 100,
+      contrast: contrastInt / 100,
+      saturation: saturationInt / 100,
     },
   };
 
@@ -517,7 +540,7 @@ async function updatePreviewAndBuffer(options = {}) {
   try {
     await ditherImage(canvas, canvas, {
       ...ditherOptions,
-      palette: mySpectra6Palette,
+      palette: activePalette,
     });
 
     const ditheredData = ctx.getImageData(0, 0, EPD_WIDTH, EPD_HEIGHT);
@@ -535,7 +558,7 @@ async function updatePreviewAndBuffer(options = {}) {
 
         // Finde über den Euklidischen Abstand immer die allerbeste Farbe aus dem Array von KNOWN_COLORS,
         // so umgehen wir fehlerhafte Hex-Vergleiche, falls der Dither leicht abweichende RGB-Werte nutzt (010101 anstatt 000000).
-        let colorIndex = getClosestColorIndex(r, g, b);
+        let colorIndex = getClosestColorIndex(r, g, b, activePalette);
 
         let outIdx = Math.floor((y * EPD_WIDTH + x) / 2);
         if (x % 2 === 0) processedImageBuffer[outIdx] = colorIndex << 4;
@@ -558,10 +581,25 @@ fileInput.addEventListener("change", (e) => {
 
   originalImage = new Image();
   originalImage.onload = () => {
+    // Automatisches rotieren, wenn das Bild im Hochformat (Portrait) ist und das Display Querformat hat
+    if (originalImage.height > originalImage.width && EPD_WIDTH > EPD_HEIGHT) {
+      imageRotation = 270; // 90° gegen den Uhrzeigersinn
+    } else {
+      imageRotation = 0;
+    }
     updatePreviewAndBuffer();
   };
   originalImage.src = URL.createObjectURL(file);
 });
+
+if (btnRotate) {
+  btnRotate.addEventListener("click", () => {
+    if (originalImage) {
+      imageRotation = (imageRotation + 90) % 360;
+      updatePreviewAndBuffer();
+    }
+  });
+}
 
 btnRedither.addEventListener("click", () => {
   if (originalImage) updatePreviewAndBuffer();
@@ -569,17 +607,12 @@ btnRedither.addEventListener("click", () => {
 
 btnAutoDither.addEventListener("click", () => {
   if (!originalImage) return;
-  // Hintergrund rendern temporär fürs Auto-Testing
-  ctx.fillStyle = "white";
-  ctx.fillRect(0, 0, EPD_WIDTH, EPD_HEIGHT);
-  let scale = Math.max(EPD_WIDTH / originalImage.width, EPD_HEIGHT / originalImage.height);
-  let w = originalImage.width * scale,
-    h = originalImage.height * scale;
-  let dx = (EPD_WIDTH - w) / 2,
-    dy = (EPD_HEIGHT - h) / 2;
-  ctx.drawImage(originalImage, dx, dy, w, h);
 
-  const suggestion = suggestCanvasProcessingOptions(canvas, mySpectra6Palette, {
+  drawOriginalToCanvas(ctx);
+
+  const activePalette = paletteSelect && paletteSelect.value === "spectra6" ? spectra6Palette : spectra6OriginalPalette;
+
+  const suggestion = suggestCanvasProcessingOptions(canvas, activePalette, {
     intent: "natural",
   });
   if (suggestion && suggestion.ditherOptions) {
@@ -595,12 +628,12 @@ btnAutoDither.addEventListener("click", () => {
     ditheringType.value = resolvedOptions.ditheringType || "errorDiffusion";
     errorDiffusionMatrix.value = resolvedOptions.errorDiffusionMatrix || "floydSteinberg";
     serpentine.checked = resolvedOptions.serpentine ?? true;
-    colorMatchingMode.value = resolvedOptions.colorMatchingMode || "rgb";
+    colorMatchingMode.value = resolvedOptions.colorMatching || "rgb";
 
     if (resolvedOptions.toneMapping) {
-      processingBrightness.value = Math.round(((resolvedOptions.toneMapping.exposure ?? 1) - 1) * 100) || 0;
-      processingContrast.value = Math.round(((resolvedOptions.toneMapping.contrast ?? 1) - 1) * 100) || 0;
-      processingSaturation.value = Math.round(((resolvedOptions.toneMapping.saturation ?? 1) - 1) * 100) || 0;
+      processingBrightness.value = Math.round((resolvedOptions.toneMapping.exposure ?? 0) * 100) || 0;
+      processingContrast.value = Math.round((resolvedOptions.toneMapping.contrast ?? 0) * 100) || 0;
+      processingSaturation.value = Math.round((resolvedOptions.toneMapping.saturation ?? 0) * 100) || 0;
     } else {
       processingBrightness.value = 0;
       processingContrast.value = 0;
@@ -753,3 +786,17 @@ btnUploadImage.addEventListener("click", async () => {
     btnUploadImage.disabled = false;
   }
 });
+paletteSelect.addEventListener("change", () => {
+  if (paletteSelect.value === "spectra6Original") {
+    colorMatchingMode.value = "hue-priority";
+  } else {
+    if (colorMatchingMode.value === "hue-priority") {
+      colorMatchingMode.value = "lab";
+    }
+  }
+});
+
+// Initialize correct color mode on load
+if (paletteSelect.value === "spectra6Original") {
+  colorMatchingMode.value = "hue-priority";
+}

@@ -12,3 +12,4 @@ secrets.h
 /esptools
 *node_modules
 *dist
+*testfiles

@@ -13,7 +13,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "epdoptimize": "^1.0.3"
+    "epdoptimize": "file:../../epdoptimize"
   },
   "devDependencies": {
     "vite": "^8.0.14",
