@@ -5,6 +5,7 @@ function getBasePalette(val) {
 }
 import { ditherImage, applyImageAdjustments, spectra6OriginalPalette, spectra6Palette as spectra6CalibratedPalette, replaceColors, suggestCanvasProcessingOptions, getProcessingPresetOptions } from "epdoptimize";
 
+/*
 const spectra6CustomPalette = [
   { name: "black", color: "#1f2226", deviceColor: "#000000" },
   { name: "white", color: "#d6d6d6", deviceColor: "#FFFFFF" },
@@ -12,6 +13,15 @@ const spectra6CustomPalette = [
   { name: "green", color: "#35563a", deviceColor: "#00FF00" },
   { name: "red", color: "#ea4843", deviceColor: "#FF0000" },
   { name: "yellow", color: "#c1bb1e", deviceColor: "#FFFF00" },
+];*/
+//test palette
+const spectra6CustomPalette = [
+  { name: "black", color: "#1f2226", deviceColor: "#000000" },
+  { name: "white", color: "#d6d6d6", deviceColor: "#FFFFFF" },
+  { name: "blue", color: "#416ce1", deviceColor: "#0000FF" },
+  { name: "green", color: "#067406", deviceColor: "#00FF00" },
+  { name: "red", color: "#ea4843", deviceColor: "#FF0000" },
+  { name: "yellow", color: "#dbd529", deviceColor: "#FFFF00" },
 ];
 // BLE UUIDs
 const WIFI_SERVICE_UUID = "0515c086-7b0c-11ed-a1eb-0242ac120002";
@@ -239,7 +249,7 @@ async function connectToDevice() {
                 else if (data.rssi > -75) infoQuality.innerText = "Gut";
                 else infoQuality.innerText = "Schwach";
               }
-            } catch (ex) {}
+            } catch (ex) { }
           }
         });
         await infoChar.startNotifications();
@@ -257,7 +267,7 @@ async function connectToDevice() {
             else infoQuality.innerText = "Schwach";
           }
         }
-      } catch (ex) {}
+      } catch (ex) { }
     } catch (e) {
       console.warn("Sync failed:", e);
     }
@@ -734,6 +744,21 @@ btnDownloadBin.addEventListener("click", () => {
   }, 0);
 });
 
+function calcCRC8(data) {
+  let crc = 0x00;
+  for (let i = 0; i < data.length; i++) {
+    crc ^= data[i];
+    for (let j = 0; j < 8; j++) {
+      if (crc & 0x80) {
+        crc = (crc << 1) ^ 0x07;
+      } else {
+        crc <<= 1;
+      }
+    }
+  }
+  return crc & 0xFF;
+}
+
 // --- BLE Upload ---
 btnUploadImage.addEventListener("click", async () => {
   if (!settingsService || !processedImageBuffer) return;
@@ -757,31 +782,59 @@ btnUploadImage.addEventListener("click", async () => {
     setStatus("Öffne Flash Puffer...", "text-blue-500");
     await cmdChar.writeValue(encodeText("START"));
 
-    // Upload in 240 Byte Chunks (passend für NimBLE, vermeidet Overflow)
-    const chunkSize = 240;
-    for (let offset = 0; offset < processedImageBuffer.length; offset += chunkSize) {
-      let chunk = processedImageBuffer.slice(offset, offset + chunkSize);
-      let idx = Math.floor(offset / chunkSize);
+    // Upload in 238 Byte Chunks (plus 1 Byte CRC = 239 Bytes)
+    const chunkSize = 238;
+    const checkpointSize = 19040; // 80 Pakete á 238 Bytes
+    let offset = 0;
+    let retryCount = 0;
 
-      // Intelligenter Flow-Control (Pacing):
-      // Der ESP32 hat einen 4080 Byte (17 x 240) RAM-Buffer.
-      // Bei Chunk 17, 34, 51... zwingt er den Chip, das RAM-Array in den Dateisystem-Flash zu schreiben.
-      // Flash-Writes blockieren den Chip. Wenn wir hier blind weiterfeuern, gehen Pakete verloren (Fragmente!).
-      // Indem wir Chunk 16 & 17 mit einem "sicheren" Handshake versehen (writeValue), muss der Webbrowser
-      // auf den Chip warten. Das kombiniert die extreme Speed vom Fast-Write mit 100% garantierter Paket-Sicherheit!
-      if (idx > 0 && (idx % 17 === 0 || idx % 17 === 16)) {
-        await dataChar.writeValue(chunk);
+    while (offset < processedImageBuffer.length) {
+      let windowEnd = Math.min(offset + checkpointSize, processedImageBuffer.length);
+      let bytesToSend = windowEnd - offset;
+
+      // Sende den Checkpoint-Block
+      for (let currentOffset = offset; currentOffset < windowEnd; currentOffset += chunkSize) {
+        let chunkData = processedImageBuffer.slice(currentOffset, currentOffset + chunkSize);
+
+        // Berechne CRC und baue Paket (1 Byte CRC + Payload)
+        let packet = new Uint8Array(chunkData.length + 1);
+        packet[0] = calcCRC8(chunkData);
+        packet.set(chunkData, 1);
+
+        let isLastInWindow = (currentOffset + chunkSize) >= windowEnd;
+
+        if (isLastInWindow) {
+          await dataChar.writeValue(packet); // Warten auf ACK beim letzten Paket im Block
+        } else {
+          await dataChar.writeValueWithoutResponse(packet);
+          await new Promise((r) => setTimeout(r, 6)); // Minimales Delay
+        }
+      }
+
+      // Prüfe, wie viele Bytes der ESP im RAM hat
+      let statusView = await cmdChar.readValue();
+      let ramBytes = statusView.getUint16(0, true);
+
+      if (ramBytes === bytesToSend) {
+        // Erfolg: Alle Daten des Checkpoints sind im ESP-RAM. In den Flash schreiben!
+        await cmdChar.writeValue(encodeText("FLUSH"));
+        offset = windowEnd; // Gehe zum nächsten Checkpoint
+        retryCount = 0;
       } else {
-        await dataChar.writeValueWithoutResponse(chunk);
-        await new Promise((r) => setTimeout(r, 6)); // Minimales Delay für RAM-Writes
+        // Fehler: Paketverlust! ESP-RAM verwerfen und Block neu senden.
+        console.warn(`Paketverlust! Erwartet: ${bytesToSend}, RAM hat: ${ramBytes}`);
+        await cmdChar.writeValue(encodeText("CLEAR"));
+        retryCount++;
+
+        if (retryCount > 10) {
+          throw new Error(`Upload fehlgeschlagen! Checkpoint bei ${offset} konnte nicht übertragen werden.`);
+        }
+        setStatus(`Paketverlust! Wiederhole Checkpoint... (Versuch ${retryCount})`, "text-orange-500");
       }
 
-      // UI nur gelegentlich updaten für noch mehr Performance
-      if (idx % 20 === 0) {
-        let percent = Math.round(((offset + chunkSize) / processedImageBuffer.length) * 100);
-        progressBar.style.width = percent + "%";
-        setStatus(`Sende Daten... ${percent}%`, "text-green-500");
-      }
+      let percent = Math.round((offset / processedImageBuffer.length) * 100);
+      progressBar.style.width = percent + "%";
+      setStatus(`Sende Daten... ${percent}%`, "text-green-500");
     }
 
     progressBar.style.width = "100%";

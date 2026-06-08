@@ -259,9 +259,24 @@ bool stopAccRecheck = false;
 SerialFlashFile bleFile;
 uint32_t bleBytesReceived = 0;
 
-#define BLE_BUFFER_SIZE 4080
+#define BLE_BUFFER_SIZE 19200
 uint8_t bleWriteBuffer[BLE_BUFFER_SIZE];
 uint16_t bleWriteBufferPos = 0;
+
+uint8_t calcCRC8(const uint8_t *data, size_t len) {
+    uint8_t crc = 0x00;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (uint8_t j = 0; j < 8; j++) {
+            if (crc & 0x80) {
+                crc = (crc << 1) ^ 0x07;
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    return crc;
+}
 
 void ledBlink(int timeout, bool on);
 void debugFS(void);
@@ -544,6 +559,12 @@ class ServerCallbacks : public NimBLEServerCallbacks
 class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
 {
    void onRead(NimBLECharacteristic *pCharacteristic, NimBLEConnInfo &connInfo) override {
+      std::string uuidStr = pCharacteristic->getUUID().toString();
+      if (uuidStr == "10000004-0000-0000-0000-000000000001") {
+         // Return current bytes in the RAM buffer
+         pCharacteristic->setValue((uint8_t*)&bleWriteBufferPos, 2);
+         return;
+      }
       Serial.printf("%s : onRead(), value: %s\n",
                     pCharacteristic->getUUID().toString().c_str(),
                     pCharacteristic->getValue().c_str());
@@ -614,10 +635,22 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
             saveSettingsToFlash(EEPROM_SETTINGS_ADR);
             Serial.println("[BLE] Upload STARTED. Switched to ImageMode 0.");
          }
+         else if (cmd == "FLUSH") {
+            if (bleFile && bleWriteBufferPos > 0) {
+               bleFile.write(bleWriteBuffer, bleWriteBufferPos);
+               bleBytesReceived += bleWriteBufferPos;
+               bleWriteBufferPos = 0;
+            }
+         }
+         else if (cmd == "CLEAR") {
+            bleWriteBufferPos = 0;
+            Serial.println("[BLE] Buffer CLEARED due to packet loss!");
+         }
          else if (cmd == "END") {
             if (bleFile) {
                if (bleWriteBufferPos > 0) {
                   bleFile.write(bleWriteBuffer, bleWriteBufferPos);
+                  bleBytesReceived += bleWriteBufferPos;
                   bleWriteBufferPos = 0;
                }
                bleFile.close();
@@ -640,19 +673,21 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
       }
       else if (uuidStr == "10000003-0000-0000-0000-000000000001") {
          const uint8_t *pData = pCharacteristic->getValue().data();
-         if (bleFile && pData && dataLen > 0) {
-            if (bleWriteBufferPos + dataLen > BLE_BUFFER_SIZE) {
-               bleFile.write(bleWriteBuffer, bleWriteBufferPos);
-               bleWriteBufferPos = 0;
+         if (bleFile && pData && dataLen > 1) {
+            uint8_t packetCrc = pData[0];
+            size_t actualDataLen = dataLen - 1;
+            uint8_t calculatedCrc = calcCRC8(pData + 1, actualDataLen);
+
+            if (packetCrc == calculatedCrc) {
+               if (bleWriteBufferPos + actualDataLen <= BLE_BUFFER_SIZE) {
+                  memcpy(bleWriteBuffer + bleWriteBufferPos, pData + 1, actualDataLen);
+                  bleWriteBufferPos += actualDataLen;
+               } else {
+                  Serial.println("[BLE] ERROR: RAM buffer overflow! Checkpoint logic failed.");
+               }
+            } else {
+               Serial.printf("[BLE] CRC Error! Expected 0x%02X, got 0x%02X\n", calculatedCrc, packetCrc);
             }
-            if (dataLen > BLE_BUFFER_SIZE) {
-               bleFile.write(pData, dataLen);
-            }
-            else {
-               memcpy(bleWriteBuffer + bleWriteBufferPos, pData, dataLen);
-               bleWriteBufferPos += dataLen;
-            }
-            bleBytesReceived += dataLen;
          }
       }
    };
@@ -775,7 +810,7 @@ bool BleInit(String deviceId, bool enable) {
    NimBLECharacteristic *urlCharacteristic = epaperSettingsService->createCharacteristic("10000001-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
    NimBLECharacteristic *imageModeCharacteristic = epaperSettingsService->createCharacteristic("10000002-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
    NimBLECharacteristic *uploadDataCharacteristic = epaperSettingsService->createCharacteristic("10000003-0000-0000-0000-000000000001", NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
-   NimBLECharacteristic *uploadCmdCharacteristic = epaperSettingsService->createCharacteristic("10000004-0000-0000-0000-000000000001", NIMBLE_PROPERTY::WRITE);
+   NimBLECharacteristic *uploadCmdCharacteristic = epaperSettingsService->createCharacteristic("10000004-0000-0000-0000-000000000001", NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::READ);
    NimBLECharacteristic *timeoutCharacteristic = epaperSettingsService->createCharacteristic("10000005-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
    NimBLECharacteristic *clearscreenCharacteristic = epaperSettingsService->createCharacteristic("10000006-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
    NimBLECharacteristic *httpAuthUserCharacteristic = epaperSettingsService->createCharacteristic("10000007-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
