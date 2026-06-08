@@ -1,5 +1,18 @@
-import { ditherImage, spectra6OriginalPalette, spectra6Palette, replaceColors, suggestCanvasProcessingOptions, getProcessingPresetOptions } from "epdoptimize";
+function getBasePalette(val) {
+  if (val === "spectra6Custom") return spectra6CustomPalette;
+  if (val === "spectra6Calibrated") return spectra6CalibratedPalette;
+  return spectra6OriginalPalette;
+}
+import { ditherImage, applyImageAdjustments, spectra6OriginalPalette, spectra6Palette as spectra6CalibratedPalette, replaceColors, suggestCanvasProcessingOptions, getProcessingPresetOptions } from "epdoptimize";
 
+const spectra6CustomPalette = [
+  { name: "black", color: "#1f2226", deviceColor: "#000000" },
+  { name: "white", color: "#d6d6d6", deviceColor: "#FFFFFF" },
+  { name: "blue", color: "#416ce1", deviceColor: "#0000FF" },
+  { name: "green", color: "#35563a", deviceColor: "#00FF00" },
+  { name: "red", color: "#ea4843", deviceColor: "#FF0000" },
+  { name: "yellow", color: "#c1bb1e", deviceColor: "#FFFF00" },
+];
 // BLE UUIDs
 const WIFI_SERVICE_UUID = "0515c086-7b0c-11ed-a1eb-0242ac120002";
 const WIFI_SSID_UUID = "090b0ef2-7b0d-11ed-a1eb-0242ac120002";
@@ -84,6 +97,7 @@ const errorDiffusionMatrix = document.getElementById("errorDiffusionMatrix");
 const serpentine = document.getElementById("serpentine");
 const colorMatchingMode = document.getElementById("colorMatchingMode");
 const paletteSelect = document.getElementById("paletteSelect");
+const paletteEditor = document.getElementById("paletteEditor");
 const processingBrightness = document.getElementById("processingBrightness");
 const processingContrast = document.getElementById("processingContrast");
 const processingSaturation = document.getElementById("processingSaturation");
@@ -92,6 +106,7 @@ const btnAutoDither = document.getElementById("btnAutoDither");
 const btnRotate = document.getElementById("btnRotate");
 
 let originalImage = null;
+let customPalette = null;
 let imageRotation = 0;
 
 if (btnTogglePass) {
@@ -512,7 +527,7 @@ async function updatePreviewAndBuffer(options = {}) {
   const ditheringTypeVal = ditheringType.value;
   const matrix = errorDiffusionMatrix.value;
   const isSerpentine = serpentine.checked;
-  const activePalette = paletteSelect && paletteSelect.value === "spectra6" ? spectra6Palette : spectra6OriginalPalette;
+  const activePalette = customPalette || getBasePalette(paletteSelect ? paletteSelect.value : "spectra6Custom");
   const colorMode = colorMatchingMode.value;
 
   const brightnessInt = parseInt(processingBrightness.value, 10);
@@ -610,7 +625,7 @@ btnAutoDither.addEventListener("click", () => {
 
   drawOriginalToCanvas(ctx);
 
-  const activePalette = paletteSelect && paletteSelect.value === "spectra6" ? spectra6Palette : spectra6OriginalPalette;
+  const activePalette = customPalette || getBasePalette(paletteSelect ? paletteSelect.value : "spectra6Custom");
 
   const suggestion = suggestCanvasProcessingOptions(canvas, activePalette, {
     intent: "natural",
@@ -787,16 +802,53 @@ btnUploadImage.addEventListener("click", async () => {
   }
 });
 paletteSelect.addEventListener("change", () => {
-  if (paletteSelect.value === "spectra6Original") {
-    colorMatchingMode.value = "hue-priority";
-  } else {
-    if (colorMatchingMode.value === "hue-priority") {
-      colorMatchingMode.value = "lab";
-    }
-  }
+  customPalette = null;
+  renderPaletteEditor();
+  // By default, just reset the colorMatchingMode to rgb when switching palettes
+  colorMatchingMode.value = "rgb";
+  if (originalImage) updatePreviewAndBuffer();
 });
 
 // Initialize correct color mode on load
-if (paletteSelect.value === "spectra6Original") {
-  colorMatchingMode.value = "hue-priority";
+colorMatchingMode.value = "rgb";
+renderPaletteEditor();
+
+function renderPaletteEditor() {
+  if (!paletteEditor) return;
+  const basePalette = getBasePalette(paletteSelect.value);
+
+  if (!customPalette) {
+    customPalette = JSON.parse(JSON.stringify(basePalette));
+  }
+
+  paletteEditor.innerHTML = "";
+  customPalette.forEach((c, idx) => {
+    const wrap = document.createElement("div");
+    wrap.className = "flex flex-col items-center";
+
+    const input = document.createElement("input");
+    input.type = "color";
+    // epdoptimize uses 6 digit hex length
+    input.value = c.color.length === 4 ? "#" + c.color[1] + c.color[1] + c.color[2] + c.color[2] + c.color[3] + c.color[3] : c.color;
+    input.className = "w-8 h-8 p-0 border-0 rounded cursor-pointer";
+    input.title = c.name + " (" + input.value + ")";
+
+    input.addEventListener("input", (e) => {
+      customPalette[idx].color = e.target.value;
+      input.title = c.name + " (" + e.target.value + ")";
+    });
+
+    input.addEventListener("change", () => {
+      if (originalImage) updatePreviewAndBuffer();
+    });
+
+    const label = document.createElement("span");
+    label.className = "text-[10px] text-gray-500 capitalize mt-1";
+    // Limit name length if too long
+    label.innerText = c.name.replace("gameboy", "GB");
+
+    wrap.appendChild(input);
+    wrap.appendChild(label);
+    paletteEditor.appendChild(wrap);
+  });
 }

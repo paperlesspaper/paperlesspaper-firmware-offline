@@ -148,10 +148,15 @@
                         </div>                        <div class="col-span-2">
                             <label class="block text-xs font-semibold text-gray-600 mb-1">Palette</label>
                             <select id="paletteSelect" class="w-full text-sm border border-gray-300 rounded p-2">
-                                <option value="spectra6Original" selected>Spectra 6 Original (Knallig / Besser für Verlauf)</option>
-                                <option value="spectra6">Spectra 6 (Physikalisch / Echte E-Paper Farben)</option>
+                                <option value="spectra6Original">Spectra 6 Originalfarben (Knallig)</option>
+                                <option value="spectra6Custom" selected>Spectra 6 Custom</option>
+                                <option value="spectra6Calibrated">Spectra 6 Calibrated</option>
                             </select>
-                        </div>                        <div class="col-span-2 flex justify-between items-center bg-gray-50 p-2 rounded">
+                        </div>
+                        <div id="paletteEditor" class="col-span-2 flex items-center justify-between bg-gray-50 p-2 rounded">
+                            <!-- Palette colors will be injected here -->
+                        </div>
+                        <div class="col-span-2 flex justify-between items-center bg-gray-50 p-2 rounded">
                             <label class="flex items-center text-sm text-gray-600 font-medium">
                                 <input type="checkbox" id="serpentine" checked class="mr-2 h-4 w-4 text-indigo-600 rounded" />
                                 Serpentine Dithering
@@ -162,7 +167,6 @@
                                     <option value="rgb">RGB</option>
                                     <option value="chroma">Chroma</option>
                                     <option value="lab">LAB</option>
-                                    <option value="hue-priority">Hue Priority (Spectra6)</option>
                                 </select>
                             </div>
                         </div>

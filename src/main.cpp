@@ -225,6 +225,7 @@ Ticker perdiodicLed;
 Ticker perdiodicLedOff;
 Ticker periodicAccCheck;
 Ticker tickerStatupCounter;
+Ticker onceDisplay;
 SerialFlashFile saveFile;
 RTC_DATA_ATTR timeval previousWakeup = timeval{.tv_sec = 0, .tv_usec = 0};
 
@@ -692,10 +693,9 @@ bool BleInit(String deviceId, bool enable) {
       Serial.println("[BLE] already initialized, skip...");
       return true;
    }
-   ledBlink(200, true);
    String wifiSsidScan;
    WiFi.mode(WIFI_STA);
-   delay(100);
+   delay(1);
    Serial.println("[NETWORK] scan start");
    int n = WiFi.scanNetworks();
    if (n == 0) {
@@ -821,7 +821,7 @@ bool BleInit(String deviceId, bool enable) {
    pAdvertising->addServiceUUID(epaperSettingsService->getUUID());
    pAdvertising->enableScanResponse(true);
    pAdvertising->start();
-
+   ledBlink(200, true);
    Serial.printf("[BLE] BLE Advertising started: %s \n", deviceId.c_str());
    wifiSettings.bleInitOk = true;
    return true;
@@ -1812,6 +1812,50 @@ void startupCounter(int reset) {
    return;
 }
 
+// inputs: nopicture,turnon,updatepicture,wifiactivate,deviceactivate
+void updateDisplayAsyncFunction(int functionNumber) {
+   epaperIsUpdating = true;
+   if (functionNumber == 1) {
+      displaySetText("Connect via Bluetooth", false, true);
+   }
+   if (functionNumber == 2) {
+   }
+   if (functionNumber == 3) {
+   }
+   if (functionNumber == 4) {
+   }
+   if (functionNumber == 5) {
+   }
+
+   epaperIsUpdating = false;
+   return;
+}
+
+bool updateDisplayAsync(String functionName) {
+   int functionNumber = 0;
+   if (functionName == "connect_bt") {
+      functionNumber = 1;
+   }
+   if (functionName == "") {
+      functionNumber = 2;
+   }
+   if (functionName == "") {
+      functionNumber = 3;
+   }
+   if (functionName == "") {
+      functionNumber = 4;
+   }
+   if (functionName == "") {
+      functionNumber = 5;
+   }
+
+   if (epaperIsUpdating || functionNumber < 1) {
+      return false;
+   }
+   onceDisplay.once_ms(100, updateDisplayAsyncFunction, functionNumber);
+   return true;
+}
+
 void setup() {
    chargeMode(false); // enable charge mode
    pinMode(BAT_VOLT_EN_PIN, OUTPUT);
@@ -1897,7 +1941,7 @@ void setup() {
 
    if (buttonWake) {
       Serial.println("[MAIN] Setup Mode Triggered");
-      displaySetText("Connect via Bluetooth", false, true);
+      updateDisplayAsync("connect_bt");
       BleInit(CLIENT_ID, true);
 
       unsigned long setupModeStart = millis();
