@@ -55,9 +55,11 @@ const btnConnect = document.getElementById("btnConnect");
 const btnDisconnect = document.getElementById("btnDisconnect");
 const statusText = document.getElementById("statusText");
 const controls = document.getElementById("controls");
+const controlsOta = document.getElementById("controlsOta");
 
 const btnSaveWifi = document.getElementById("btnSaveWifi");
 const wifiSsid = document.getElementById("wifiSsid");
+const btnScanWifi = document.getElementById("btnScanWifi");
 const wifiList = document.getElementById("wifiList");
 const wifiPass = document.getElementById("wifiPass");
 const btnTogglePass = document.getElementById("btnTogglePass");
@@ -83,6 +85,12 @@ canvas.height = EPD_HEIGHT;
 const ctx = canvas.getContext("2d", { willReadFrequently: true });
 const progressContainer = document.getElementById("progressContainer");
 const progressBar = document.getElementById("progressBar");
+
+const btnFetchOriginalFw = document.getElementById("btnFetchOriginalFw");
+const fwInput = document.getElementById("fwInput");
+const btnSelectFw = document.getElementById("btnSelectFw");
+const fwProgressContainer = document.getElementById("fwProgressContainer");
+const fwProgressBar = document.getElementById("fwProgressBar");
 
 const syncBadgeWifi = document.getElementById("syncBadgeWifi");
 const syncBadgeSettings = document.getElementById("syncBadgeSettings");
@@ -152,8 +160,10 @@ function encodeText(text) {
 }
 
 function setStatus(text, colorClass = "text-gray-500") {
-  statusText.className = `mt-4 text-sm font-semibold ${colorClass}`;
-  statusText.innerText = text;
+  if (statusText) {
+    statusText.className = `mt-3 text-sm font-semibold ${colorClass}`;
+    statusText.innerText = text;
+  }
 }
 
 function updateWifiStatusUI(isConnected) {
@@ -276,25 +286,46 @@ async function connectToDevice() {
     try {
       const deviceDataService = await server.getPrimaryService(DEVICE_DATA_SERVICE_UUID);
       const scanChar = await deviceDataService.getCharacteristic(WIFI_SCAN_UUID);
-      const scanData = await scanChar.readValue();
-      const scanText = new TextDecoder().decode(scanData);
-
-      // Das Format vom ESP32-C6 ist: SSID´RSSI´´SSID´RSSI´´
-      if (scanText && scanText.length > 0) {
-        wifiList.innerHTML = ""; // Vorherige löschen
-        const networks = scanText.split("´´");
-        networks.forEach((net) => {
-          if (!net) return;
-          const parts = net.split("´");
-          if (parts.length >= 1 && parts[0] && !parts[0].includes("...")) {
-            const option = document.createElement("option");
-            option.value = parts[0];
-            if (parts[1]) {
-              option.text = `${parts[0]} (Signal: ${parts[1]} dBm)`;
+      
+      const processScanData = (data) => {
+        const scanText = new TextDecoder().decode(data);
+        if (scanText && scanText.length > 0) {
+          wifiList.innerHTML = ""; // Vorherige löschen
+          const networks = scanText.split("´´");
+          let foundNetworks = false;
+          networks.forEach((net) => {
+            if (!net) return;
+            const parts = net.split("´");
+            if (parts.length >= 1 && parts[0] && !parts[0].includes("...")) {
+              const option = document.createElement("option");
+              option.value = parts[0];
+              if (parts[1]) {
+                option.text = `${parts[0]} (Signal: ${parts[1]} dBm)`;
+              }
+              wifiList.appendChild(option);
+              foundNetworks = true;
             }
-            wifiList.appendChild(option);
+          });
+          
+          if(foundNetworks) {
+              isWifiScanned = true;
           }
-        });
+          if(btnScanWifi && btnScanWifi.innerText === "Suche...") {
+              btnScanWifi.innerText = "Scan";
+              btnScanWifi.disabled = false;
+              btnScanWifi.classList.remove("opacity-50", "cursor-wait");
+          }
+        }
+      };
+
+      await scanChar.startNotifications();
+      scanChar.addEventListener('characteristicvaluechanged', (event) => {
+          processScanData(event.target.value);
+      });
+      
+      const initialScanData = await scanChar.readValue();
+      if(initialScanData.byteLength > 0) {
+          processScanData(initialScanData);
       }
     } catch (e) {
       console.warn("WLAN Liste konnte nicht geladen werden:", e);
@@ -303,6 +334,17 @@ async function connectToDevice() {
     setStatus("Erfolgreich Verbunden!", "text-green-600");
     btnConnect.classList.add("hidden");
     btnDisconnect.classList.remove("hidden");
+    
+    if (controlsOta) {
+        controlsOta.classList.remove("hidden");
+        setTimeout(() => controlsOta.classList.remove("opacity-0"), 100);
+    }
+    
+    if (btnUploadImage) {
+        btnUploadImage.disabled = false;
+        btnUploadImage.classList.replace("bg-gray-400", "bg-green-500");
+        btnUploadImage.innerText = "Bild auf Display senden (BLE)";
+    }
 
     // UI einblenden
     controls.classList.remove("hidden");
@@ -312,6 +354,17 @@ async function connectToDevice() {
     setStatus("Verbindung abgebrochen oder getrennt.", "text-orange-500");
     btnConnect.classList.remove("hidden");
     btnDisconnect.classList.add("hidden");
+    
+    if (controlsOta) {
+        controlsOta.classList.add("hidden", "opacity-0");
+    }
+    
+    if (btnUploadImage) {
+        btnUploadImage.disabled = true;
+        btnUploadImage.classList.replace("bg-green-500", "bg-gray-400");
+        btnUploadImage.innerText = "Bild auf Display senden (BLE - nicht verbunden)";
+    }
+    
     clearTimeout(reconnectInterval);
   }
 }
@@ -331,6 +384,19 @@ btnConnect.addEventListener("click", async () => {
       wifiService = null;
       btnConnect.classList.remove("hidden");
       btnDisconnect.classList.add("hidden");
+      
+      if (controlsOta) controlsOta.classList.add("hidden", "opacity-0");
+      
+      if (btnUploadImage) {
+          btnUploadImage.disabled = true;
+          btnUploadImage.classList.replace("bg-green-500", "bg-gray-400");
+          btnUploadImage.innerText = "Bild auf Display senden (BLE - nicht verbunden)";
+      }
+      
+      isScanningWifi = false;
+      isWifiScanned = false;
+      wifiList.innerHTML = "";
+      
       if (reconnectInterval) clearTimeout(reconnectInterval);
     });
 
@@ -346,6 +412,36 @@ btnDisconnect.addEventListener("click", () => {
     setStatus("Trenne Verbindung...", "text-orange-500");
     bleDevice.gatt.disconnect();
   }
+});
+
+let isScanningWifi = false;
+let isWifiScanned = false;
+
+btnScanWifi.addEventListener("click", async () => {
+    if (settingsService && !isScanningWifi && !isWifiScanned) {
+        try {
+            isScanningWifi = true;
+            btnScanWifi.innerText = "Suche...";
+            btnScanWifi.disabled = true;
+            btnScanWifi.classList.add("opacity-50", "cursor-wait");
+            const cmdChar = await settingsService.getCharacteristic(UPLOAD_CMD_UUID);
+            await cmdChar.writeValue(encodeText("SCAN_WIFI"));
+            setTimeout(() => { 
+                isScanningWifi = false; 
+                if (btnScanWifi.innerText === "Suche...") {
+                    btnScanWifi.innerText = "Scan";
+                    btnScanWifi.disabled = false;
+                    btnScanWifi.classList.remove("opacity-50", "cursor-wait");
+                }
+            }, 5000);
+        } catch (e) {
+            console.error("Failed to trigger WLAN Scan:", e);
+            btnScanWifi.innerText = "Scan";
+            btnScanWifi.disabled = false;
+            btnScanWifi.classList.remove("opacity-50", "cursor-wait");
+            isScanningWifi = false;
+        }
+    }
 });
 
 btnSaveWifi.addEventListener("click", async () => {
@@ -420,6 +516,11 @@ btnSaveSettings.addEventListener("click", async () => {
   try {
     setStatus("Speichere Einstellungen...", "text-purple-500");
 
+    const urlValidationStatus = document.getElementById("urlValidationStatus");
+    if (urlValidationStatus) {
+      urlValidationStatus.classList.add("hidden");
+    }
+
     if (settingUrl.value) {
       const urlChar = await settingsService.getCharacteristic(URL_UUID);
       await urlChar.writeValue(encodeText(settingUrl.value));
@@ -431,6 +532,28 @@ btnSaveSettings.addEventListener("click", async () => {
       } catch (err) {
         console.warn("Modus konnte nicht auf URL gesetzt werden:", err);
       }
+
+      // URL auf Gültigkeit prüfen (als Bild)
+      if (urlValidationStatus) {
+        urlValidationStatus.classList.remove("hidden");
+        urlValidationStatus.className = "text-sm font-medium mb-4 text-purple-500";
+        urlValidationStatus.innerText = "Prüfe URL...";
+        
+        try {
+          await new Promise((resolve, reject) => {
+            const img = new Image();
+            const timeout = setTimeout(() => reject(new Error("Timeout")), 5000);
+            img.onload = () => { clearTimeout(timeout); resolve(); };
+            img.onerror = () => { clearTimeout(timeout); reject(new Error("Invalid")); };
+            img.src = settingUrl.value;
+          });
+          urlValidationStatus.className = "text-sm font-medium mb-4 text-green-500";
+          urlValidationStatus.innerText = "✓ URL ist erreichbar und gültig.";
+        } catch (err) {
+          urlValidationStatus.className = "text-sm font-medium mb-4 text-orange-500";
+          urlValidationStatus.innerText = "⚠ URL konnte nicht als Bild geladen werden (evtl. ungültig oder offline). Wird dennoch gespeichert.";
+        }
+      }
     }
 
     const httpAuthUserChar = await settingsService.getCharacteristic(HTTP_AUTH_USER_UUID);
@@ -441,6 +564,10 @@ btnSaveSettings.addEventListener("click", async () => {
 
     const timeoutChar = await settingsService.getCharacteristic(TIMEOUT_UUID);
     await timeoutChar.writeValue(encodeText(settingTimeout.value || "3600"));
+
+    // Tell the firmware to save all written settings to EEPROM at once
+    const cmdChar = await settingsService.getCharacteristic(UPLOAD_CMD_UUID);
+    await cmdChar.writeValue(encodeText("SAVE_SETTINGS"));
 
     setStatus("Einstellungen gespeichert!", "text-green-600");
   } catch (e) {
@@ -744,19 +871,15 @@ btnDownloadBin.addEventListener("click", () => {
   }, 0);
 });
 
-function calcCRC8(data) {
-  let crc = 0x00;
+function calcCRC32(data) {
+  let crc = 0xFFFFFFFF;
   for (let i = 0; i < data.length; i++) {
     crc ^= data[i];
     for (let j = 0; j < 8; j++) {
-      if (crc & 0x80) {
-        crc = (crc << 1) ^ 0x07;
-      } else {
-        crc <<= 1;
-      }
+      crc = (crc >>> 1) ^ (-(crc & 1) & 0xEDB88320);
     }
   }
-  return crc & 0xFF;
+  return (crc ^ 0xFFFFFFFF) >>> 0;
 }
 
 // --- BLE Upload ---
@@ -797,9 +920,13 @@ btnUploadImage.addEventListener("click", async () => {
         let chunkData = processedImageBuffer.slice(currentOffset, currentOffset + chunkSize);
 
         // Berechne CRC und baue Paket (1 Byte CRC + Payload)
-        let packet = new Uint8Array(chunkData.length + 1);
-        packet[0] = calcCRC8(chunkData);
-        packet.set(chunkData, 1);
+        let packet = new Uint8Array(chunkData.length + 4);
+        let crc = calcCRC32(chunkData);
+        packet[0] = crc & 0xFF;
+        packet[1] = (crc >> 8) & 0xFF;
+        packet[2] = (crc >> 16) & 0xFF;
+        packet[3] = (crc >>> 24) & 0xFF;
+        packet.set(chunkData, 4);
 
         let isLastInWindow = (currentOffset + chunkSize) >= windowEnd;
 
@@ -847,13 +974,155 @@ btnUploadImage.addEventListener("click", async () => {
     await cmdChar.writeValue(encodeText("APPLY"));
 
     setStatus("Upload abgeschlossen! 🚀", "text-green-600");
-  } catch (e) {
-    console.error(e);
-    setStatus("Bluetooth Upload Fehler: " + e.message, "text-red-500");
+  } catch (error) {
+    console.error(error);
+    setStatus("Fehler beim Upload: " + error.message, "text-red-500");
+    progressBar.classList.add("bg-red-500");
   } finally {
     btnUploadImage.disabled = false;
+    btnDownloadBin.disabled = false;
   }
 });
+
+// --- Unified Firmware Update (BLE) ---
+async function uploadFirmwareBle(buffer) {
+  if (!settingsService) return;
+  try {
+    btnSelectFw.disabled = true;
+    btnFetchOriginalFw.disabled = true;
+    fwProgressContainer.classList.remove("hidden");
+    fwProgressBar.style.width = "0%";
+
+    const dataChar = await settingsService.getCharacteristic(UPLOAD_DATA_UUID);
+    const cmdChar = await settingsService.getCharacteristic(UPLOAD_CMD_UUID);
+
+    setStatus("Starte Firmware Update...", "text-blue-500");
+    await cmdChar.writeValue(encodeText("START_FW"));
+
+    const chunkSize = 238;
+    const checkpointSize = 19040; // 80 Pakete á 238 Bytes
+    let offset = 0;
+    let retryCount = 0;
+
+    while (offset < buffer.length) {
+      let windowEnd = Math.min(offset + checkpointSize, buffer.length);
+      let bytesToSend = windowEnd - offset;
+
+      for (let currentOffset = offset; currentOffset < windowEnd; currentOffset += chunkSize) {
+        let chunkData = buffer.slice(currentOffset, currentOffset + chunkSize);
+
+        let packet = new Uint8Array(chunkData.length + 4);
+        let crc = calcCRC32(chunkData);
+        packet[0] = crc & 0xFF;
+        packet[1] = (crc >> 8) & 0xFF;
+        packet[2] = (crc >> 16) & 0xFF;
+        packet[3] = (crc >>> 24) & 0xFF;
+        packet.set(chunkData, 4);
+
+        let isLastInWindow = (currentOffset + chunkSize) >= windowEnd;
+
+        if (isLastInWindow) {
+          await dataChar.writeValue(packet); 
+        } else {
+          await dataChar.writeValueWithoutResponse(packet);
+          await new Promise((r) => setTimeout(r, 6)); 
+        }
+      }
+
+      let statusView = await cmdChar.readValue();
+      let ramBytes = statusView.getUint16(0, true);
+
+      if (ramBytes === bytesToSend) {
+        await cmdChar.writeValue(encodeText("FLUSH"));
+        offset = windowEnd; 
+        retryCount = 0;
+      } else {
+        console.warn(`FW Paketverlust! Erwartet: ${bytesToSend}, RAM hat: ${ramBytes}`);
+        await cmdChar.writeValue(encodeText("CLEAR"));
+        retryCount++;
+
+        if (retryCount > 10) {
+          throw new Error(`Upload fehlgeschlagen! Checkpoint bei ${offset} konnte nicht übertragen werden.`);
+        }
+        setStatus(`Paketverlust! Wiederhole Checkpoint... (Versuch ${retryCount})`, "text-orange-500");
+      }
+
+      let percent = Math.round((offset / buffer.length) * 100);
+      fwProgressBar.style.width = percent + "%";
+      setStatus(`Sende Firmware... ${percent}%`, "text-green-500");
+    }
+
+    fwProgressBar.style.width = "100%";
+    setStatus("Beende Firmware Update & Neustart...", "text-blue-500");
+    await cmdChar.writeValue(encodeText("END_FW"));
+    
+    // Disconnect after reboot
+    setTimeout(() => {
+      if (bleDevice && bleDevice.gatt.connected) {
+        bleDevice.gatt.disconnect();
+      }
+    }, 1500);
+
+  } catch (error) {
+    console.error(error);
+    setStatus("Fehler beim Firmware Upload.", "text-red-500");
+  } finally {
+    btnSelectFw.disabled = false;
+    btnFetchOriginalFw.disabled = false;
+  }
+}
+
+btnFetchOriginalFw.addEventListener("click", async () => {
+  if (!settingsService) {
+    setStatus("Bitte zuerst mit dem E-Paper verbinden.", "text-red-500");
+    return;
+  }
+  
+  try {
+    setStatus("Lade Update-Informationen...", "text-blue-500");
+    const res = await fetch("http://ul.epaperframe.de/espfota_epd7.json");
+    if (!res.ok) throw new Error("JSON konnte nicht geladen werden.");
+    const data = await res.json();
+    
+    if (!data.url) throw new Error("Keine Firmware URL im JSON gefunden.");
+    
+    setStatus("Lade Original-Firmware herunter...", "text-blue-500");
+    const fwRes = await fetch(data.url);
+    if (!fwRes.ok) throw new Error("Firmware konnte nicht geladen werden.");
+    
+    const arrayBuffer = await fwRes.arrayBuffer();
+    const buffer = new Uint8Array(arrayBuffer);
+    
+    await uploadFirmwareBle(buffer);
+  } catch (err) {
+    console.error(err);
+    setStatus("Fehler beim Download der Original-Firmware: " + err.message, "text-red-500");
+  }
+});
+
+if (btnSelectFw) {
+  btnSelectFw.addEventListener("click", () => {
+    if (!settingsService) {
+      setStatus("Bitte zuerst mit dem E-Paper verbinden.", "text-red-500");
+      return;
+    }
+    fwInput.click();
+  });
+}
+
+fwInput.addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    const buffer = new Uint8Array(e.target.result);
+    await uploadFirmwareBle(buffer);
+    fwInput.value = ""; // Reset for re-selection
+  };
+  reader.readAsArrayBuffer(file);
+});
+
 paletteSelect.addEventListener("change", () => {
   customPalette = null;
   renderPaletteEditor();

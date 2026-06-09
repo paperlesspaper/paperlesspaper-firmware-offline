@@ -13,3 +13,4 @@ secrets.h
 *node_modules
 *dist
 *testfiles
+*compile_commands.json
