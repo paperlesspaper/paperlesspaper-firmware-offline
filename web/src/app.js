@@ -34,22 +34,26 @@ const MODE_UUID = "10000002-0000-0000-0000-000000000001";
 const UPLOAD_DATA_UUID = "10000003-0000-0000-0000-000000000001"; // WRITE_NR
 const UPLOAD_CMD_UUID = "10000004-0000-0000-0000-000000000001"; // WRITE
 const TIMEOUT_UUID = "10000005-0000-0000-0000-000000000001";
-const HTTP_AUTH_USER_UUID = "10000007-0000-0000-0000-000000000001";
-const HTTP_AUTH_PASSWORD_UUID = "10000008-0000-0000-0000-000000000001";
+const HTTP_AUTH_USER_UUID = "10000007-0000-0000-0000-000000000001"; // READ/WRITE
+const HTTP_AUTH_PASS_UUID = "10000008-0000-0000-0000-000000000001"; // READ/WRITE
+const MOTION_WAKEUP_UUID = "10000009-0000-0000-0000-000000000001"; // READ/WRITE
+const CHARGER_MODE_UUID = "1000000a-0000-0000-0000-000000000001"; // READ/WRITE
 
 const DEVICE_DATA_SERVICE_UUID = "7f74170e-7b0e-11ed-a1eb-0242ac120002";
 const WIFI_SCAN_UUID = "5131a3fc-7b0e-11ed-a1eb-0242ac120002";
 const WIFI_CONNECTED_UUID = "4c578d4c-7b0e-11ed-a1eb-0242ac120002";
 const WIFI_INFO_UUID = "4c578d4d-7b0e-11ed-a1eb-0242ac120002";
+const SYSTEM_INFO_UUID = "60000001-7b0e-11ed-a1eb-0242ac120002";
 // ACHTUNG: Passe EPD_WIDTH/HEIGHT bei Bedarf an dein Panel an
 const EPD_WIDTH = 800;
 const EPD_HEIGHT = 480;
 
 let bleDevice = null;
-let wifiService = null;
 let settingsService = null;
+let wifiService = null;
 let processedImageBuffer = null;
 let reconnectInterval = null;
+let manualDisconnect = false;
 
 const btnConnect = document.getElementById("btnConnect");
 const btnDisconnect = document.getElementById("btnDisconnect");
@@ -72,6 +76,8 @@ const settingTimeout = document.getElementById("settingTimeout");
 const settingUrl = document.getElementById("settingUrl");
 const settingHttpAuthUser = document.getElementById("settingHttpAuthUser");
 const settingHttpAuthPassword = document.getElementById("settingHttpAuthPassword");
+const settingMotionWakeup = document.getElementById("settingMotionWakeup");
+const settingChargerMode = document.getElementById("settingChargerMode");
 const btnToggleHttpAuthPass = document.getElementById("btnToggleHttpAuthPass");
 const eyeHttpAuthIconOpen = document.getElementById("eyeHttpAuthIconOpen");
 const eyeHttpAuthIconClosed = document.getElementById("eyeHttpAuthIconClosed");
@@ -223,9 +229,18 @@ async function connectToDevice() {
         const userVal = await httpAuthUserChar.readValue();
         settingHttpAuthUser.value = new TextDecoder().decode(userVal).replace(/\0/g, "");
 
-        const httpAuthPasswordChar = await settingsService.getCharacteristic(HTTP_AUTH_PASSWORD_UUID);
+        const httpAuthPasswordChar = await settingsService.getCharacteristic(HTTP_AUTH_PASS_UUID);
         const passVal = await httpAuthPasswordChar.readValue();
         settingHttpAuthPassword.value = new TextDecoder().decode(passVal).replace(/\0/g, "");
+        const motionWakeupChar = await settingsService.getCharacteristic(MOTION_WAKEUP_UUID);
+        const motionWakeupData = await motionWakeupChar.readValue();
+        const motionWakeupVal = new TextDecoder().decode(motionWakeupData);
+        settingMotionWakeup.checked = (motionWakeupVal === "1" || motionWakeupVal === "true");
+
+        const chargerModeChar = await settingsService.getCharacteristic(CHARGER_MODE_UUID);
+        const chargerModeData = await chargerModeChar.readValue();
+        const chargerModeVal = new TextDecoder().decode(chargerModeData);
+        settingChargerMode.checked = (chargerModeVal === "1" || chargerModeVal === "true");
       } catch (e) {
         // Falls alte Firmware die UUIDs nicht hat
       }
@@ -243,7 +258,86 @@ async function connectToDevice() {
       const isConVal = await connectedChar.readValue();
       const isConNum = isConVal.getUint8(0);
       updateWifiStatusUI(isConNum === 1 || isConNum === 49);
+      try {
+        const infoChar = await deviceDataService.getCharacteristic(WIFI_INFO_UUID);
+        const infoData = await infoChar.readValue();
+        const info = JSON.parse(new TextDecoder().decode(infoData));
+        if (info.ip) {
+            lblNetworkInfo.innerHTML = `Verbunden mit ${info.ssid}<br><span class="text-xs">IP: ${info.ip} | Signal: ${info.rssi}dBm</span>`;
+        }
+      } catch(e) {
+          console.error("Failed to read wifi info", e);
+      }
 
+      try {
+        const sysInfoChar = await deviceDataService.getCharacteristic(SYSTEM_INFO_UUID);
+        const sysInfoData = await sysInfoChar.readValue();
+        const jsonStr = new TextDecoder().decode(sysInfoData).replace(/\0/g, "");
+        const sysInfo = JSON.parse(jsonStr);
+        
+        const statusBar = document.getElementById("systemStatusBar");
+        const voltageEl = document.getElementById("systemVoltage");
+        const chargerEl = document.getElementById("systemChargerStatus");
+        const chargerIconBg = document.getElementById("chargerIconBg");
+        const chargerIcon = document.getElementById("chargerIcon");
+        const batteryIconBg = document.getElementById("batteryIconBg");
+        const batteryIcon = document.getElementById("batteryIcon");
+
+        const updateSystemStatusBar = (info) => {
+            if (!statusBar) return;
+            // Unhide status bar
+            statusBar.classList.remove("hidden");
+            setTimeout(() => statusBar.classList.remove("scale-95", "opacity-0"), 50);
+
+            // Update voltage
+            if (info.voltage > 4000) {
+                const v = (info.voltage / 1000).toFixed(2);
+                voltageEl.innerText = `${v} V`;
+                batteryIconBg.setAttribute("class", "bg-green-100 p-2 rounded-full");
+                batteryIcon.setAttribute("class", "w-5 h-5 text-green-600");
+            } else {
+                voltageEl.innerText = "Keine Batterie";
+                batteryIconBg.setAttribute("class", "bg-red-100 p-2 rounded-full");
+                batteryIcon.setAttribute("class", "w-5 h-5 text-red-600");
+            }
+
+            // Update USB status
+            if (info.usb) {
+                if (info.charging) {
+                    chargerEl.innerText = "Verbunden (Lädt)";
+                    chargerEl.className = "text-sm font-bold text-green-600";
+                    chargerIconBg.setAttribute("class", "bg-green-100 p-2 rounded-full transition-colors");
+                    chargerIcon.setAttribute("class", "w-5 h-5 text-green-600 transition-colors");
+                } else {
+                    chargerEl.innerText = "Verbunden";
+                    chargerEl.className = "text-sm font-bold text-blue-600";
+                    chargerIconBg.setAttribute("class", "bg-blue-100 p-2 rounded-full transition-colors");
+                    chargerIcon.setAttribute("class", "w-5 h-5 text-blue-600 transition-colors");
+                }
+            } else {
+                chargerEl.innerText = "Nicht verbunden";
+                chargerEl.className = "text-sm font-bold text-gray-500";
+                chargerIconBg.setAttribute("class", "bg-gray-100 p-2 rounded-full transition-colors");
+                chargerIcon.setAttribute("class", "w-5 h-5 text-gray-500 transition-colors");
+            }
+        };
+
+        updateSystemStatusBar(sysInfo);
+
+        sysInfoChar.addEventListener("characteristicvaluechanged", (e) => {
+            const str = new TextDecoder().decode(e.target.value).replace(/\0/g, "");
+            if (str.length > 2) {
+                try {
+                    updateSystemStatusBar(JSON.parse(str));
+                } catch(err) { }
+            }
+        });
+        await sysInfoChar.startNotifications();
+      } catch(e) {
+          console.error("Failed to read system info", e);
+      }
+
+      // Hide loading screen and show app
       try {
         const infoChar = await deviceDataService.getCharacteristic(WIFI_INFO_UUID);
         infoChar.addEventListener("characteristicvaluechanged", (e) => {
@@ -351,26 +445,23 @@ async function connectToDevice() {
     setTimeout(() => controls.classList.remove("opacity-0"), 100);
   } catch (error) {
     console.error(error);
-    setStatus("Verbindung abgebrochen oder getrennt.", "text-orange-500");
-    btnConnect.classList.remove("hidden");
-    btnDisconnect.classList.add("hidden");
-    
-    if (controlsOta) {
-        controlsOta.classList.add("hidden", "opacity-0");
+    if (!manualDisconnect) {
+        setStatus("Verbindungsfehler. Versuche Reconnect...", "text-orange-500");
+        if (reconnectInterval) clearTimeout(reconnectInterval);
+        reconnectInterval = setTimeout(() => {
+            connectToDevice();
+        }, 3000);
+    } else {
+        setStatus("Verbindung abgebrochen oder getrennt.", "text-orange-500");
+        btnConnect.classList.remove("hidden");
+        btnDisconnect.classList.add("hidden");
     }
-    
-    if (btnUploadImage) {
-        btnUploadImage.disabled = true;
-        btnUploadImage.classList.replace("bg-green-500", "bg-gray-400");
-        btnUploadImage.innerText = "Bild auf Display senden (BLE - nicht verbunden)";
-    }
-    
-    clearTimeout(reconnectInterval);
   }
 }
 
 btnConnect.addEventListener("click", async () => {
   try {
+    manualDisconnect = false;
     setStatus("Fordere Bluetooth-Kopplung an...", "text-blue-500");
     bleDevice = await navigator.bluetooth.requestDevice({
       filters: [{ namePrefix: "epd" }],
@@ -378,14 +469,17 @@ btnConnect.addEventListener("click", async () => {
     });
 
     bleDevice.addEventListener("gattserverdisconnected", () => {
-      setStatus("Gerät getrennt. E-Paper aktualisiert sich...", "text-orange-500");
       controls.classList.add("hidden", "opacity-0");
       settingsService = null;
       wifiService = null;
-      btnConnect.classList.remove("hidden");
-      btnDisconnect.classList.add("hidden");
       
       if (controlsOta) controlsOta.classList.add("hidden", "opacity-0");
+      
+      const statusBar = document.getElementById("systemStatusBar");
+      if (statusBar) {
+          statusBar.classList.add("opacity-0", "scale-95");
+          setTimeout(() => statusBar.classList.add("hidden"), 500);
+      }
       
       if (btnUploadImage) {
           btnUploadImage.disabled = true;
@@ -398,6 +492,17 @@ btnConnect.addEventListener("click", async () => {
       wifiList.innerHTML = "";
       
       if (reconnectInterval) clearTimeout(reconnectInterval);
+      
+      if (!manualDisconnect) {
+          setStatus("Verbindung unterbrochen. Versuche Reconnect...", "text-orange-500");
+          reconnectInterval = setTimeout(() => {
+              connectToDevice();
+          }, 3000);
+      } else {
+          setStatus("Gerät getrennt.", "text-orange-500");
+          btnConnect.classList.remove("hidden");
+          btnDisconnect.classList.add("hidden");
+      }
     });
 
     await connectToDevice();
@@ -407,9 +512,19 @@ btnConnect.addEventListener("click", async () => {
   }
 });
 
-btnDisconnect.addEventListener("click", () => {
+btnDisconnect.addEventListener("click", async () => {
   if (bleDevice && bleDevice.gatt.connected) {
+    manualDisconnect = true;
+    if (reconnectInterval) clearTimeout(reconnectInterval);
     setStatus("Trenne Verbindung...", "text-orange-500");
+    
+    try {
+        const cmdChar = await settingsService.getCharacteristic(UPLOAD_CMD_UUID);
+        await cmdChar.writeValue(encodeText("EXIT_SETUP"));
+    } catch(e) {
+        console.warn("Could not send EXIT_SETUP", e);
+    }
+    
     bleDevice.gatt.disconnect();
   }
 });
@@ -559,17 +674,23 @@ btnSaveSettings.addEventListener("click", async () => {
     const httpAuthUserChar = await settingsService.getCharacteristic(HTTP_AUTH_USER_UUID);
     await httpAuthUserChar.writeValue(encodeText(settingHttpAuthUser.value || ""));
 
-    const httpAuthPasswordChar = await settingsService.getCharacteristic(HTTP_AUTH_PASSWORD_UUID);
+    const httpAuthPasswordChar = await settingsService.getCharacteristic(HTTP_AUTH_PASS_UUID);
     await httpAuthPasswordChar.writeValue(encodeText(settingHttpAuthPassword.value || ""));
 
     const timeoutChar = await settingsService.getCharacteristic(TIMEOUT_UUID);
     await timeoutChar.writeValue(encodeText(settingTimeout.value || "3600"));
 
+    const motionWakeupChar = await settingsService.getCharacteristic(MOTION_WAKEUP_UUID);
+    await motionWakeupChar.writeValue(encodeText(settingMotionWakeup.checked ? "1" : "0"));
+
+    const chargerModeChar = await settingsService.getCharacteristic(CHARGER_MODE_UUID);
+    await chargerModeChar.writeValue(encodeText(settingChargerMode.checked ? "1" : "0"));
+
     // Tell the firmware to save all written settings to EEPROM at once
     const cmdChar = await settingsService.getCharacteristic(UPLOAD_CMD_UUID);
     await cmdChar.writeValue(encodeText("SAVE_SETTINGS"));
 
-    setStatus("Einstellungen gespeichert!", "text-green-600");
+    setStatus("Einstellungen erfolgreich gespeichert!", "text-green-600");
   } catch (e) {
     console.error(e);
     setStatus("Fehler: Sind die neuen UUIDs bereits in main.cpp enthalten?", "text-red-500");
@@ -598,6 +719,52 @@ btnFactoryReset.addEventListener("click", async () => {
     console.error(e);
     setStatus("Fehler beim Factory Reset.", "text-red-500");
   }
+});
+
+let isWritingDirectSettings = false;
+
+settingMotionWakeup.addEventListener("change", async (e) => {
+    if (!settingsService) return;
+    if (isWritingDirectSettings) {
+        e.target.checked = !e.target.checked; // Revert UI
+        return;
+    }
+    try {
+        isWritingDirectSettings = true;
+        settingMotionWakeup.disabled = true;
+        const motionWakeupChar = await settingsService.getCharacteristic(MOTION_WAKEUP_UUID);
+        await motionWakeupChar.writeValue(encodeText(settingMotionWakeup.checked ? "1" : "0"));
+        
+        const cmdChar = await settingsService.getCharacteristic(UPLOAD_CMD_UUID);
+        await cmdChar.writeValue(encodeText("SAVE_SETTINGS"));
+    } catch (err) {
+        console.error("Failed to update motion wakeup directly", err);
+    } finally {
+        settingMotionWakeup.disabled = false;
+        isWritingDirectSettings = false;
+    }
+});
+
+settingChargerMode.addEventListener("change", async (e) => {
+    if (!settingsService) return;
+    if (isWritingDirectSettings) {
+        e.target.checked = !e.target.checked; // Revert UI
+        return;
+    }
+    try {
+        isWritingDirectSettings = true;
+        settingChargerMode.disabled = true;
+        const chargerModeChar = await settingsService.getCharacteristic(CHARGER_MODE_UUID);
+        await chargerModeChar.writeValue(encodeText(settingChargerMode.checked ? "1" : "0"));
+        
+        const cmdChar = await settingsService.getCharacteristic(UPLOAD_CMD_UUID);
+        await cmdChar.writeValue(encodeText("SAVE_SETTINGS"));
+    } catch (err) {
+        console.error("Failed to update charger mode directly", err);
+    } finally {
+        settingChargerMode.disabled = false;
+        isWritingDirectSettings = false;
+    }
 });
 
 const SPECTRA_COLOR_INDICES = {

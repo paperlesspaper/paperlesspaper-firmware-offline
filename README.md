@@ -54,7 +54,10 @@ Offline first Firmware for an ESP32-C6 based E-Paper display device, featuring W
 - `40-105`: WiFi Password
 - `210`: Sleep Time
 - `220`: Dispay Orientation Store
+- `499`: Magic Flag (First Boot Indicator)
 - `500+`: Settings Store
+
+> **First Boot Initialization**: Beim ersten Start (oder wenn die Magic Flag bei Adresse 499 nicht `42` ist) wird der EEPROM automatisch bereinigt und mit sinnvollen Standardwerten (z.B. Timeout = 3600s) initialisiert.
 
 ## Hardware Settings
 
@@ -74,7 +77,7 @@ Liest den aktuellen Status des Geräts (WLAN etc.).
 |------|------|------------|--------------|
 | `4c578d4c-...` | **WiFi Connected** | Read, Notify | Gibt `1` zurück, wenn mit WLAN verbunden, sonst `0`. |
 | `4c578d4d-...` | **WiFi Info** | Read, Notify | JSON-String mit Verbindungsdetails (z.B. `{"ip": "192...", "rssi": -65}`). |
-| `5131a3fc-...` | **WiFi Scan** | Read | Liste gefundener WLANs. Format: `SSID´RSSI´´SSID2´RSSI2´´`. |
+| `5131a3fc-...` | **WiFi Scan** | Read, Notify | Liste gefundener WLANs. Wird asynchron befüllt, wenn das Kommando `SCAN_WIFI` über den Upload CMD Kanal gesendet wurde. Format: `SSID´RSSI´´SSID2´RSSI2´´`. |
 
 ### 2. WiFi Data Service
 **Service UUID**: `0515c086-7b0c-11ed-a1eb-0242ac120002`
@@ -108,6 +111,7 @@ Der CMD Channel verarbeitet Strings, um Uploads zu steuern oder das Gerät zurü
 
 - `RESET`: Löscht alle Einstellungen im EEPROM (Factory Reset) und startet neu.
 - `APPLY`: Beendet den Setup-Modus vorzeitig und lädt das neu empfangene Bild auf das Display.
+- `SCAN_WIFI`: Startet einen asynchronen WLAN-Scan. Die Ergebnisse werden anschließend per Notification über den `WiFi Scan` Characteristic zurückgesendet.
 
 #### Ablauf: Bild Upload (BMP)
 Bilder werden in kleine "Checkpoints" (Fenster) unterteilt, um Paketverlusten vorzubeugen:
@@ -126,17 +130,11 @@ Die Firmware wird direkt in die OTA-Partition geflasht. Es gibt keinen Checkpoin
 ## Roadmap (not ordered)
 
 - settings json for http endpoint to change device behavior in local network
-- (wip) ota upload via ble (revert back to cloud firmware)
-- settings for motion wakeup and charger via ble
+- (done) settings for motion wakeup and charger via ble
 - store multiple images
+- (done) ota upload via ble (revert back to cloud firmware)
 - (done) load device settings to web ui via ble (2 way sync)
-- on device dithering
+- on device dithering with jpg support
 - https://immich.app/ integration into firmware and config via ble
-- electron tool to update offline firmware or web flasher
-- host the tool on our infrastructure
-
-
-## Roadmap (not ordered)
-- url not loading after applied
-- default timeout not set after wipe
-- no startup after original firmware
+- (done) electron tool to update offline firmware or web flasher
+- host the tool on our infrastructure (select latest firmware build too)

@@ -81,7 +81,7 @@
 
 #define uS_TO_S_FACTOR 1000000ULL   /* Conversion factor for micro seconds to seconds */
 #define LENGTH(x) (strlen(x) + 1)   // length of char string
-#define EEPROM_SIZE 1024            // EEPROM size
+#define EEPROM_SIZE 2048            // EEPROM size
 #define EEPROM_SETTINGS_ADR 500     // start address to store settings
 #define SOFTWARE_VERSION "0.0.0"    // Software version
 #define EPD_TYPE_IDENTIFIER "epd7-" // Type of device (screen type)
@@ -187,7 +187,9 @@ struct settings
    String httpAuthPassword;
    String lastModified;
    int imageMode;
-} settings = {.timeout = DEFAULT_SLEEP, .lut = "default", .clearscreen = true, .showBatteryWarning = true, .showWifiWarning = true, .sleepDisabled = false, .downloadUrl = "", .httpAuthUser = "", .httpAuthPassword = "", .lastModified = "", .imageMode = 1};
+   bool motionWakeup;
+   bool chargerMode;
+} settings = {.timeout = DEFAULT_SLEEP, .lut = "default", .clearscreen = true, .showBatteryWarning = true, .showWifiWarning = true, .sleepDisabled = false, .downloadUrl = "", .httpAuthUser = "", .httpAuthPassword = "", .lastModified = "", .imageMode = 1, .motionWakeup = false, .chargerMode = false};
 
 // system read data
 struct systemData
@@ -225,6 +227,8 @@ RTC_DATA_ATTR timeval previousWakeup = timeval{.tv_sec = 0, .tv_usec = 0};
 NimBLECharacteristic *wifiConnectedCharacteristic;
 NimBLECharacteristic *wifiInfoCharacteristic;
 NimBLECharacteristic *wifiScanCharacteristic;
+NimBLECharacteristic *systemInfoCharacteristic;
+
 bool wifiScanRequested = false;
 NimBLEAdvertising *pAdvertising;
 static NimBLEServer *pServer;
@@ -248,6 +252,9 @@ int periodicLedTimeout = 0;
 bool epaperIsUpdating = false;
 bool applyPending = false;
 bool bleImageApplied = false;
+bool forceExitSetup = false;
+unsigned long lastDisconnectTime = 0;
+bool isBleClientConnected = false;
 bool buttonWake = false; // true if wakeup via reset button
 bool fwUpdateInProgress = false;
 bool stopAccRecheck = false;
@@ -469,6 +476,8 @@ void saveSettingsToFlash(int startAddr) {
    writeStringToFlash(settings.lastModified.c_str(), startAddr + 155);
    writeStringToFlash(settings.httpAuthUser.c_str(), startAddr + 285);
    writeStringToFlash(settings.httpAuthPassword.c_str(), startAddr + 415);
+   writeIntToFlash(settings.motionWakeup, startAddr + 545);
+   writeIntToFlash(settings.chargerMode, startAddr + 550);
    Serial.println("[MEM] Settings saved to EEPROM");
 }
 
@@ -482,9 +491,11 @@ void restoreSettingsToFlash(int startAddr) {
    settings.lastModified = readStringFromFlash(startAddr + 155);
    settings.httpAuthUser = readStringFromFlash(startAddr + 285);
    settings.httpAuthPassword = readStringFromFlash(startAddr + 415);
+   settings.motionWakeup = readIntFromFlash(startAddr + 545);
+   settings.chargerMode = readIntFromFlash(startAddr + 550);
    Serial.println("[MEM] Settings restored from EEPROM");
    if (DEBUG_FLAG) {
-      Serial.printf("[MEM] Settings - ClearScreen: %d BatteryWarning: %d WifiWarning: %d SleepDisabled: %d ImageMode: %d\n", settings.clearscreen, settings.showBatteryWarning, settings.showWifiWarning, settings.sleepDisabled, settings.imageMode);
+      Serial.printf("[MEM] Settings - ClearScreen: %d BatteryWarning: %d WifiWarning: %d SleepDisabled: %d ImageMode: %d MotionWakeup: %d ChargerMode: %d\n", settings.clearscreen, settings.showBatteryWarning, settings.showWifiWarning, settings.sleepDisabled, settings.imageMode, settings.motionWakeup, settings.chargerMode);
    }
 }
 
@@ -527,12 +538,15 @@ class ServerCallbacks : public NimBLEServerCallbacks
    void onConnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo) override {
       Serial.printf("\n[BLE]Client address: %s\n", connInfo.getAddress().toString().c_str());
       pServer->updateConnParams(connInfo.getConnHandle(), 24, 48, 0, 180);
+      isBleClientConnected = true;
       if (wifiSettings.bleInitOk) {
          NimBLEDevice::startAdvertising();
       }
    }
    void onDisconnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo, int reason) override {
       Serial.printf("\n[BLE] Client disconnected");
+      isBleClientConnected = false;
+      lastDisconnectTime = millis();
       if (wifiSettings.bleInitOk) {
          Serial.printf("\n[BLE] restart advertising...\n[");
          NimBLEDevice::startAdvertising();
@@ -600,12 +614,26 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
          settings.clearscreen = (strVal == "1" || strVal == "true");
          Serial.printf("[BLE] Set Clearscreen: %d\n", settings.clearscreen);
       }
+      else if (uuidStr == "10000009-0000-0000-0000-000000000001") {
+         String strVal = pCharacteristic->getValue().c_str();
+         settings.motionWakeup = (strVal == "1" || strVal == "true");
+         Serial.printf("[BLE] Set Motion Wakeup: %d\n", settings.motionWakeup);
+      }
+      else if (uuidStr == "1000000a-0000-0000-0000-000000000001") {
+         String strVal = pCharacteristic->getValue().c_str();
+         settings.chargerMode = (strVal == "1" || strVal == "true");
+         Serial.printf("[BLE] Set Charger Mode: %d\n", settings.chargerMode);
+      }
       else if (uuidStr == "10000004-0000-0000-0000-000000000001") {
          String cmd = pCharacteristic->getValue().c_str();
          Serial.printf("[BLE] Upload CMD: %s\n", cmd.c_str());
          if (cmd == "SCAN_WIFI") {
             wifiScanRequested = true;
             Serial.println("[BLE] WiFi Scan requested via BLE.");
+         }
+         else if (cmd == "EXIT_SETUP") {
+            Serial.println("[BLE] EXIT_SETUP received. Forcing exit...");
+            forceExitSetup = true;
          }
          else if (cmd == "START") {
             if (SerialFlash.exists("tmp.bmp")) {
@@ -752,9 +780,9 @@ bool BleInit(String deviceId, bool enable) {
       Serial.println("[BLE] already initialized, skip...");
       return true;
    }
-    String wifiSsidScan;
-    WiFi.mode(WIFI_STA);
-    delay(1);
+   String wifiSsidScan;
+   WiFi.mode(WIFI_STA);
+   delay(1);
 
    NimBLEDevice::init(deviceId.c_str());
    // NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
@@ -773,6 +801,7 @@ bool BleInit(String deviceId, bool enable) {
    wifiConnectedCharacteristic = deviceDataService->createCharacteristic("4c578d4c-7b0e-11ed-a1eb-0242ac120002", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
    wifiInfoCharacteristic = deviceDataService->createCharacteristic("4c578d4d-7b0e-11ed-a1eb-0242ac120002", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
    wifiScanCharacteristic = deviceDataService->createCharacteristic("5131a3fc-7b0e-11ed-a1eb-0242ac120002", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+   systemInfoCharacteristic = deviceDataService->createCharacteristic("60000001-7b0e-11ed-a1eb-0242ac120002", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
    if (wifiSsidScan.length() > 0) {
       wifiScanCharacteristic->setValue(wifiSsidScan.c_str());
    }
@@ -815,6 +844,8 @@ bool BleInit(String deviceId, bool enable) {
    NimBLECharacteristic *clearscreenCharacteristic = epaperSettingsService->createCharacteristic("10000006-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
    NimBLECharacteristic *httpAuthUserCharacteristic = epaperSettingsService->createCharacteristic("10000007-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
    NimBLECharacteristic *httpAuthPasswordCharacteristic = epaperSettingsService->createCharacteristic("10000008-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+   NimBLECharacteristic *motionWakeupCharacteristic = epaperSettingsService->createCharacteristic("10000009-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+   NimBLECharacteristic *chargerModeCharacteristic = epaperSettingsService->createCharacteristic("1000000a-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
 
    urlCharacteristic->setCallbacks(&chrCallbacks);
    imageModeCharacteristic->setCallbacks(&chrCallbacks);
@@ -824,6 +855,8 @@ bool BleInit(String deviceId, bool enable) {
    clearscreenCharacteristic->setCallbacks(&chrCallbacks);
    httpAuthUserCharacteristic->setCallbacks(&chrCallbacks);
    httpAuthPasswordCharacteristic->setCallbacks(&chrCallbacks);
+   motionWakeupCharacteristic->setCallbacks(&chrCallbacks);
+   chargerModeCharacteristic->setCallbacks(&chrCallbacks);
 
    // Services are started when the server is started
 
@@ -833,6 +866,18 @@ bool BleInit(String deviceId, bool enable) {
    wifiConnectedCharacteristic->setValue(&initVal, 1);
    wifiInfoCharacteristic->setValue("{}");
    wifiScanCharacteristic->setValue(wifiSsidScan);
+
+   DynamicJsonDocument sysDoc(128);
+   sysDoc["voltage"] = systemData.vddValue;
+   sysDoc["usb"] = systemData.usbConnected;
+   bool isChargingInit = false;
+   if (settings.chargerMode) {
+       isChargingInit = chargeMode(settings.chargerMode);
+   }
+   sysDoc["charging"] = isChargingInit;
+   String sysOut;
+   serializeJson(sysDoc, sysOut);
+   systemInfoCharacteristic->setValue(sysOut.c_str());
 
    urlCharacteristic->setValue(settings.downloadUrl.c_str());
    char imgModeStr[8];
@@ -846,6 +891,8 @@ bool BleInit(String deviceId, bool enable) {
    clearscreenCharacteristic->setValue(settings.clearscreen ? "1" : "0");
    httpAuthUserCharacteristic->setValue(settings.httpAuthUser.c_str());
    httpAuthPasswordCharacteristic->setValue(settings.httpAuthPassword.c_str());
+   motionWakeupCharacteristic->setValue(settings.motionWakeup ? "1" : "0");
+   chargerModeCharacteristic->setValue(settings.chargerMode ? "1" : "0");
 
    pAdvertising = NimBLEDevice::getAdvertising();
    pAdvertising->setName(deviceId.c_str());
@@ -1907,7 +1954,8 @@ void runSetupMode() {
          String wifiSsidScan = "";
          if (n == 0) {
             Serial.println("[NETWORK] no networks found");
-         } else {
+         }
+         else {
             Serial.printf("[NETWORK] %d networks found\n", n);
             for (int i = 0; i < n; ++i) {
                wifiSsidScan = wifiSsidScan + WiFi.SSID(i) + "´";
@@ -1980,21 +2028,42 @@ void runSetupMode() {
          setImageFromFS("tmp.bmp");
       }
 
-      // Timeout if no client connects within 60 seconds
-      if (!bleWasConnected && (millis() - setupModeStart > SETUP_MODE_TIMEOUT * 1000)) {
-         Serial.println("[MAIN] No BLE connection within 60s. Switching to fetch/refresh mode.");
+      if (forceExitSetup) {
+         Serial.println("[MAIN] Manual exit requested via Web UI. Switching to fetch/refresh mode.");
          break;
       }
 
-      // Exit immediately if client disconnects
-      if (bleWasConnected && pServer->getConnectedCount() == 0) {
-         if (settings.imageMode == 1 && wifiSettings.ssid.length() == 0) {
-            Serial.println("[MAIN] BLE Client disconnected, but URL mode active and no WiFi set. Staying in Setup Mode.");
-            bleWasConnected = false; // Reset to allow reconnects
-         }
-         else {
-            Serial.println("[MAIN] BLE Client disconnected. Switching to fetch/refresh mode.");
+      if (!isBleClientConnected) {
+         if (millis() - lastDisconnectTime > SETUP_MODE_TIMEOUT * 1000) {
+            Serial.println("[MAIN] No BLE connection for 60s. Switching to fetch/refresh mode.");
             break;
+         }
+      } else {
+         lastDisconnectTime = millis(); // Reset timer while connected
+      }
+
+      static unsigned long lastTelemetryUpdate = 0;
+      if (millis() - lastTelemetryUpdate > 10000) {
+         lastTelemetryUpdate = millis();
+         systemData.usbConnected = usbCheckConnect();
+         systemData.vddValue = readVDD(false);
+         bool isCharging = false;
+         if (settings.chargerMode) {
+             isCharging = chargeMode(settings.chargerMode);
+         }
+         
+         DynamicJsonDocument sysDoc(128);
+         sysDoc["voltage"] = systemData.vddValue;
+         sysDoc["usb"] = systemData.usbConnected;
+         sysDoc["charging"] = isCharging;
+         String sysOut;
+         serializeJson(sysDoc, sysOut);
+         
+         if (systemInfoCharacteristic) {
+            systemInfoCharacteristic->setValue(sysOut.c_str());
+            if (pServer->getConnectedCount() > 0) {
+               systemInfoCharacteristic->notify();
+            }
          }
       }
 
@@ -2049,7 +2118,7 @@ void initFirstBoot(void) {
 }
 
 void setup() {
-   chargeMode(false); // enable charge mode
+   chargeMode(settings.chargerMode); // enable charge mode
    pinMode(BAT_VOLT_EN_PIN, OUTPUT);
    digitalWrite(BAT_VOLT_EN_PIN, LOW);
    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
@@ -2109,7 +2178,7 @@ void setup() {
    SPI.setFrequency(20000000);
    SerialFlash.begin(CS_FLASH_PIN); // proceed even if begin() fails
    u8g2_for_adafruit_gfx.begin(display);
-   chargeMode(false);
+   chargeMode(settings.chargerMode);
 
    setDeviceUid();
    // TODO: maybe do a function to generally check updated mem values
@@ -2205,11 +2274,12 @@ void loop() {
       if (settings.imageMode == 0) {
          gotToDeepSleep(0, false, false);
       }
+      bool doMotionWake = (settings.imageMode == 1) ? settings.motionWakeup : false;
       if (settings.timeout > 0) {
-         gotToDeepSleep(systemData.sleepPrediction, false, false);
+         gotToDeepSleep(systemData.sleepPrediction, false, doMotionWake);
       }
       else {
-         gotToDeepSleep(DEFAULT_SLEEP, false, false);
+         gotToDeepSleep(DEFAULT_SLEEP, false, doMotionWake);
       }
    }
 
