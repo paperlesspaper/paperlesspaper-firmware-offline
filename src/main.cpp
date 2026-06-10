@@ -20,8 +20,10 @@
 #include <Update.h>
 #include <WiFiClientSecure.h>
 #include <Wire.h>
+#include <qrcode.h>
 #include <rom/crc.h>
 #include <rom/rtc.h>
+
 #define DEBUG 1
 
 #if DEBUG
@@ -110,6 +112,8 @@ const bool DEBUG_FLAG = false;
 
 #define FONT_MAIN u8g2_font_helvB24_tf // Font for main text
 #define FONT_BIG u8g2_font_helvB14_tf  // Font for big text
+#define FONT_NORMAL u8g2_font_helvB12_tf
+#define FONT_SMALL u8g2_font_helvR08_tf
 #define FONT_INFO u8g2_font_7x14_tf
 #define FONT_VERSION u8g2_font_tom_thumb_4x6_tf
 
@@ -176,9 +180,8 @@ struct displaySettings
 // settings set via Web BLE
 struct settings
 {
-   int timeout;      // Seconds to Sleep after update done
-   String lut;       // Color Settings for EPD
-   bool clearscreen; // if clear screen before update
+   int timeout; // Seconds to Sleep after update done
+   String lut;  // Color Settings for EPD
    bool showBatteryWarning;
    bool showWifiWarning;
    bool sleepDisabled;
@@ -189,7 +192,9 @@ struct settings
    int imageMode;
    bool motionWakeup;
    bool chargerMode;
-} settings = {.timeout = DEFAULT_SLEEP, .lut = "default", .clearscreen = true, .showBatteryWarning = true, .showWifiWarning = true, .sleepDisabled = false, .downloadUrl = "", .httpAuthUser = "", .httpAuthPassword = "", .lastModified = "", .imageMode = 1, .motionWakeup = false, .chargerMode = false};
+   String settingsUrl;
+   String settingsLastModified;
+} settings = {.timeout = DEFAULT_SLEEP, .lut = "default", .showBatteryWarning = true, .showWifiWarning = true, .sleepDisabled = false, .downloadUrl = "", .httpAuthUser = "", .httpAuthPassword = "", .lastModified = "", .imageMode = 1, .motionWakeup = false, .chargerMode = false, .settingsUrl = "", .settingsLastModified = ""};
 
 // system read data
 struct systemData
@@ -241,6 +246,7 @@ struct dataLayout
 
 const uint8_t QR_VERSION = 3;    // QR Code Version
 const uint8_t QR_QUIET_ZONE = 4; // quiet zone all around
+QRCode QR;
 
 int httpFileSize = 0;
 int StartCounter = 0;
@@ -345,8 +351,8 @@ void WiFiEvent(WiFiEvent_t event) {
       }
 }
 
-void timeoutFailsave(int time) {
-   Serial.println("printing in once function.");
+void timeoutFailsafe(int time) {
+   Serial.println("[MAIN] Timeout Failsafe");
 
    gotToDeepSleep(DEFAULT_SLEEP, true, false);
 }
@@ -467,7 +473,6 @@ void writeIntToFlash(int value, int startAddr) {
 }
 
 void saveSettingsToFlash(int startAddr) {
-   writeIntToFlash(settings.clearscreen, startAddr);
    writeIntToFlash(settings.showBatteryWarning, startAddr + 5);
    writeIntToFlash(settings.showWifiWarning, startAddr + 10);
    writeIntToFlash(settings.sleepDisabled, startAddr + 15);
@@ -478,11 +483,12 @@ void saveSettingsToFlash(int startAddr) {
    writeStringToFlash(settings.httpAuthPassword.c_str(), startAddr + 415);
    writeIntToFlash(settings.motionWakeup, startAddr + 545);
    writeIntToFlash(settings.chargerMode, startAddr + 550);
+   writeStringToFlash(settings.settingsUrl.c_str(), startAddr + 555);
+   writeStringToFlash(settings.settingsLastModified.c_str(), startAddr + 685);
    Serial.println("[MEM] Settings saved to EEPROM");
 }
 
 void restoreSettingsToFlash(int startAddr) {
-   settings.clearscreen = readIntFromFlash(startAddr);
    settings.showBatteryWarning = readIntFromFlash(startAddr + 5);
    settings.showWifiWarning = readIntFromFlash(startAddr + 10);
    settings.sleepDisabled = readIntFromFlash(startAddr + 15);
@@ -493,9 +499,11 @@ void restoreSettingsToFlash(int startAddr) {
    settings.httpAuthPassword = readStringFromFlash(startAddr + 415);
    settings.motionWakeup = readIntFromFlash(startAddr + 545);
    settings.chargerMode = readIntFromFlash(startAddr + 550);
+   settings.settingsUrl = readStringFromFlash(startAddr + 555);
+   settings.settingsLastModified = readStringFromFlash(startAddr + 685);
    Serial.println("[MEM] Settings restored from EEPROM");
    if (DEBUG_FLAG) {
-      Serial.printf("[MEM] Settings - ClearScreen: %d BatteryWarning: %d WifiWarning: %d SleepDisabled: %d ImageMode: %d MotionWakeup: %d ChargerMode: %d\n", settings.clearscreen, settings.showBatteryWarning, settings.showWifiWarning, settings.sleepDisabled, settings.imageMode, settings.motionWakeup, settings.chargerMode);
+      Serial.printf("[MEM] Settings - BatteryWarning: %d WifiWarning: %d SleepDisabled: %d ImageMode: %d MotionWakeup: %d ChargerMode: %d\n", settings.showBatteryWarning, settings.showWifiWarning, settings.sleepDisabled, settings.imageMode, settings.motionWakeup, settings.chargerMode);
    }
 }
 
@@ -540,6 +548,7 @@ class ServerCallbacks : public NimBLEServerCallbacks
       pServer->updateConnParams(connInfo.getConnHandle(), 24, 48, 0, 180);
       isBleClientConnected = true;
       if (wifiSettings.bleInitOk) {
+         Serial.printf("[BLE] restart advertising...\n[");
          NimBLEDevice::startAdvertising();
       }
    }
@@ -611,8 +620,13 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
       }
       else if (uuidStr == "10000006-0000-0000-0000-000000000001") {
          String strVal = pCharacteristic->getValue().c_str();
-         settings.clearscreen = (strVal == "1" || strVal == "true");
-         Serial.printf("[BLE] Set Clearscreen: %d\n", settings.clearscreen);
+      }
+      else if (pCharacteristic->getUUID().toString() == "1000000b-0000-0000-0000-000000000001") {
+         settings.settingsUrl = pCharacteristic->getValue().c_str();
+         Serial.printf("[BLE] Set Settings URL: %s\n", settings.settingsUrl.c_str());
+         settings.settingsLastModified = ""; // Reset cache on new URL
+      }
+      else if (pCharacteristic->getUUID().toString() == "10000007-0000-0000-0000-000000000001") {
       }
       else if (uuidStr == "10000009-0000-0000-0000-000000000001") {
          String strVal = pCharacteristic->getValue().c_str();
@@ -841,19 +855,22 @@ bool BleInit(String deviceId, bool enable) {
    NimBLECharacteristic *uploadDataCharacteristic = epaperSettingsService->createCharacteristic("10000003-0000-0000-0000-000000000001", NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
    NimBLECharacteristic *uploadCmdCharacteristic = epaperSettingsService->createCharacteristic("10000004-0000-0000-0000-000000000001", NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::READ);
    NimBLECharacteristic *timeoutCharacteristic = epaperSettingsService->createCharacteristic("10000005-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
-   NimBLECharacteristic *clearscreenCharacteristic = epaperSettingsService->createCharacteristic("10000006-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+   NimBLECharacteristic *settingsUrlCharacteristic = epaperSettingsService->createCharacteristic("1000000b-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
    NimBLECharacteristic *httpAuthUserCharacteristic = epaperSettingsService->createCharacteristic("10000007-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
    NimBLECharacteristic *httpAuthPasswordCharacteristic = epaperSettingsService->createCharacteristic("10000008-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
    NimBLECharacteristic *motionWakeupCharacteristic = epaperSettingsService->createCharacteristic("10000009-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
    NimBLECharacteristic *chargerModeCharacteristic = epaperSettingsService->createCharacteristic("1000000a-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
 
+   wifiSsidCharacteristic->setCallbacks(&chrCallbacks);
+   wifiPwCharacteristic->setCallbacks(&chrCallbacks);
    urlCharacteristic->setCallbacks(&chrCallbacks);
    imageModeCharacteristic->setCallbacks(&chrCallbacks);
    uploadDataCharacteristic->setCallbacks(&chrCallbacks);
    uploadCmdCharacteristic->setCallbacks(&chrCallbacks);
    timeoutCharacteristic->setCallbacks(&chrCallbacks);
-   clearscreenCharacteristic->setCallbacks(&chrCallbacks);
+   settingsUrlCharacteristic->setCallbacks(&chrCallbacks);
    httpAuthUserCharacteristic->setCallbacks(&chrCallbacks);
+   ;
    httpAuthPasswordCharacteristic->setCallbacks(&chrCallbacks);
    motionWakeupCharacteristic->setCallbacks(&chrCallbacks);
    chargerModeCharacteristic->setCallbacks(&chrCallbacks);
@@ -867,12 +884,12 @@ bool BleInit(String deviceId, bool enable) {
    wifiInfoCharacteristic->setValue("{}");
    wifiScanCharacteristic->setValue(wifiSsidScan);
 
-   DynamicJsonDocument sysDoc(128);
+   JsonDocument sysDoc;
    sysDoc["voltage"] = systemData.vddValue;
    sysDoc["usb"] = systemData.usbConnected;
    bool isChargingInit = false;
    if (settings.chargerMode) {
-       isChargingInit = chargeMode(settings.chargerMode);
+      isChargingInit = chargeMode(settings.chargerMode);
    }
    sysDoc["charging"] = isChargingInit;
    String sysOut;
@@ -884,12 +901,12 @@ bool BleInit(String deviceId, bool enable) {
    sprintf(imgModeStr, "%d", settings.imageMode);
    imageModeCharacteristic->setValue(imgModeStr);
 
-   char timeoutStr[16];
+   char timeoutStr[8];
    sprintf(timeoutStr, "%d", settings.timeout);
    timeoutCharacteristic->setValue(timeoutStr);
-
-   clearscreenCharacteristic->setValue(settings.clearscreen ? "1" : "0");
+   settingsUrlCharacteristic->setValue(settings.settingsUrl.c_str());
    httpAuthUserCharacteristic->setValue(settings.httpAuthUser.c_str());
+   ;
    httpAuthPasswordCharacteristic->setValue(settings.httpAuthPassword.c_str());
    motionWakeupCharacteristic->setValue(settings.motionWakeup ? "1" : "0");
    chargerModeCharacteristic->setValue(settings.chargerMode ? "1" : "0");
@@ -1414,6 +1431,92 @@ void displayWipe(bool quick) {
    while (display.nextPage());
 }
 
+void displayTurnOn() {
+   String info = "Ich schlafe ...";
+   String info2 = "Drücke die Taste auf der Rückseite";
+   String info3 = "um mich zu wecken.";
+
+   char msg[128];
+   sprintf(msg, "%s%s%s", "https://paperlesspaper.de/b?d=", CLIENT_ID, "&w=99");
+
+   uint8_t QRData[qrcode_getBufferSize(QR_VERSION)];
+   uint8_t blockSize;
+   uint8_t page = 0;
+   qrcode_initText(&QR, QRData, QR_VERSION, ECC_LOW, msg);
+   blockSize = 2;
+   uint16_t x0 = (EPD_HEIGHT - 30 * blockSize) / 2;
+   uint16_t y0 = 680;
+
+   int foreGround = GxEPD_WHITE_I;
+   int backGround = GxEPD_BLACK_I;
+   bool fullColor = false;
+
+   Serial.print(F("\n[EPD] Press to turn on Screen Loading - "));
+   if (displaySettings.quickRefresh) {
+      display.init(115200);
+      display.enableQuickRefresh(displaySettings.displayQuickRefreshTime, true);
+   }
+   else {
+      display.enableQuickRefresh(0, false);
+      display.init(115200);
+      foreGround = GxEPD_WHITE;
+      backGround = GxEPD_BLACK;
+      fullColor = true;
+   }
+   display.setRotation(displaySettings.rotationText);
+   display.firstPage();
+   // Display 600*448
+   do {
+      int16_t tw = 0;
+      display.fillRect(0, 0, EPD_HEIGHT, EPD_WIDTH, backGround);
+      u8g2_for_adafruit_gfx.setForegroundColor(foreGround); // apply Adafruit GFX color
+      u8g2_for_adafruit_gfx.setBackgroundColor(backGround); // apply Adafruit GFX color
+      u8g2_for_adafruit_gfx.setFontDirection(0);            // left to right (this is default)
+      u8g2_for_adafruit_gfx.setFontMode(1);                 // use u8g2 transparent mode (this is default)
+
+      display.fillRect(x0 + 2, y0 + 2, QR.size * blockSize + QR_QUIET_ZONE + blockSize - 2, QR.size * blockSize + QR_QUIET_ZONE + blockSize - 2, foreGround);
+
+      // For each vertical module
+      for (uint8_t y = 0; y < QR.size; y++) {
+         // For each horizontal module
+         for (uint8_t x = 0; x < QR.size; x++) {
+            if (qrcode_getModule(&QR, x, y))
+               display.fillRect(x0 + (x * blockSize) + QR_QUIET_ZONE,
+                                y0 + (y * blockSize) + QR_QUIET_ZONE,
+                                blockSize, blockSize,
+                                (qrcode_getModule(&QR, x, y)) ? backGround : foreGround);
+         }
+      }
+
+      u8g2_for_adafruit_gfx.setFont(FONT_MAIN); // extended font
+      tw = u8g2_for_adafruit_gfx.getUTF8Width(info.c_str());
+      u8g2_for_adafruit_gfx.setCursor((EPD_HEIGHT - tw) / 2, 300); // start writing at this position
+      u8g2_for_adafruit_gfx.print(info);
+
+      u8g2_for_adafruit_gfx.setFont(FONT_BIG);                     // extended font
+      tw = u8g2_for_adafruit_gfx.getUTF8Width(info2.c_str());      // text box width
+      u8g2_for_adafruit_gfx.setCursor((EPD_HEIGHT - tw) / 2, 370); // start writing at this position
+      u8g2_for_adafruit_gfx.print(info2);                          // UTF-8 string: "<" 550 448 664 ">"
+
+      tw = u8g2_for_adafruit_gfx.getUTF8Width(info3.c_str());      // text box width
+      u8g2_for_adafruit_gfx.setCursor((EPD_HEIGHT - tw) / 2, 395); // start writing at this position
+      u8g2_for_adafruit_gfx.print(info3);
+
+      u8g2_for_adafruit_gfx.setFont(FONT_NORMAL);                  // extended font
+      tw = u8g2_for_adafruit_gfx.getUTF8Width("I am sleeping..."); // text box width
+      u8g2_for_adafruit_gfx.setCursor((EPD_HEIGHT - tw) / 2, 560); // start writing at this position
+      u8g2_for_adafruit_gfx.print("I am sleeping...");
+
+      u8g2_for_adafruit_gfx.setFont(FONT_SMALL);                                              // extended font
+      tw = u8g2_for_adafruit_gfx.getUTF8Width("Press the button on the back to wake me up."); // text box width
+      u8g2_for_adafruit_gfx.setCursor((EPD_HEIGHT - tw) / 2, 590);                            // start writing at this position
+      u8g2_for_adafruit_gfx.print("Press the button on the back to wake me up.");
+
+      displayOverlays(display, displayInfos, true, fullColor);
+   }
+   while (display.nextPage());
+}
+
 String setLeadingZero(String input) {
    String result = "";
    if (input.length() == 1) {
@@ -1463,6 +1566,7 @@ void gotToDeepSleep(int wakeuptimeout, bool showScreen, bool motionWake) {
    }
    waitDisplayComplete(false);
    if (wakeuptimeout <= 0 && showScreen) {
+      displayTurnOn();
       waitDisplayComplete(true);
    }
    ledBlink(0, false);
@@ -1817,7 +1921,7 @@ void test() {
    //  displaySettings.displayQuickRefreshTime = 2900;//works cold
    ledBlink(200, false);
    delay(100);
-   setImageFromFS("tmp.bmp");
+   displayTurnOn();
    gotToDeepSleep(0, true, false);
 
    int timeout;
@@ -1849,7 +1953,6 @@ bool resetAll(bool resetWifi) {
    }
    settings.downloadUrl = "";
    settings.imageMode = 1;
-   settings.clearscreen = true;
    settings.timeout = DEFAULT_SLEEP;
    settings.httpAuthUser = "";
    settings.httpAuthPassword = "";
@@ -2038,7 +2141,8 @@ void runSetupMode() {
             Serial.println("[MAIN] No BLE connection for 60s. Switching to fetch/refresh mode.");
             break;
          }
-      } else {
+      }
+      else {
          lastDisconnectTime = millis(); // Reset timer while connected
       }
 
@@ -2049,16 +2153,16 @@ void runSetupMode() {
          systemData.vddValue = readVDD(false);
          bool isCharging = false;
          if (settings.chargerMode) {
-             isCharging = chargeMode(settings.chargerMode);
+            isCharging = chargeMode(settings.chargerMode);
          }
-         
-         DynamicJsonDocument sysDoc(128);
+
+         JsonDocument sysDoc;
          sysDoc["voltage"] = systemData.vddValue;
          sysDoc["usb"] = systemData.usbConnected;
          sysDoc["charging"] = isCharging;
          String sysOut;
          serializeJson(sysDoc, sysOut);
-         
+
          if (systemInfoCharacteristic) {
             systemInfoCharacteristic->setValue(sysOut.c_str());
             if (pServer->getConnectedCount() > 0) {
@@ -2100,15 +2204,18 @@ void initFirstBoot(void) {
       Serial.println("[MEM] First boot detected, applying default settings.");
       EepromClear();
       settings.timeout = 3600;
-      settings.clearscreen = true;
       settings.showBatteryWarning = true;
       settings.showWifiWarning = true;
       settings.sleepDisabled = false;
+      settings.imageMode = 1;
+      settings.motionWakeup = false;
+      settings.chargerMode = false;
+      settings.settingsUrl = "";
+      settings.settingsLastModified = "";
       settings.downloadUrl = "";
       settings.httpAuthUser = "";
       settings.httpAuthPassword = "";
       settings.lastModified = "";
-      settings.imageMode = 1;
 
       storeSleepTimeMem(3600);
       saveSettingsToFlash(EEPROM_SETTINGS_ADR);
@@ -2198,11 +2305,11 @@ void setup() {
    }
 
 #if DEBUG
-   // test();              //-----------------test---------please remove
+   //test(); //-----------------test---------please remove
 #endif
 
    if (buttonWake) {
-      tickerFailsave.once_ms(FAILSAVE_TIMER * 1000, timeoutFailsave, 0);
+      tickerFailsave.once_ms(FAILSAVE_TIMER * 1000, timeoutFailsafe, 0);
       BleInit(CLIENT_ID, true);
       updateDisplayAsync("connect_bt");
       runSetupMode();
@@ -2216,7 +2323,7 @@ void setup() {
 
    ledBlink(500, true);
    tickerFailsave.detach();
-   tickerFailsave.once_ms(FAILSAVE_TIMER * 1000, timeoutFailsave, 0);
+   tickerFailsave.once_ms(FAILSAVE_TIMER * 1000, timeoutFailsafe, 0);
 
    saveSettingsToFlash(EEPROM_SETTINGS_ADR);
    storeSleepTimeMem(settings.timeout);
@@ -2232,6 +2339,79 @@ void setup() {
    delay(10);
 }
 
+void fetchRemoteSettings() {
+   if (settings.settingsUrl.length() == 0)
+      return;
+   if (WiFi.status() != WL_CONNECTED)
+      return;
+
+   Serial.println("[HTTP] Fetching remote JSON settings...");
+   HTTPClient http;
+   http.begin(settings.settingsUrl);
+   if (settings.settingsLastModified.length() > 0) {
+      http.addHeader("If-Modified-Since", settings.settingsLastModified);
+   }
+
+   const char *headerKeys[] = {"Last-Modified"};
+   http.collectHeaders(headerKeys, 1);
+
+   int httpCode = http.GET();
+   if (httpCode == HTTP_CODE_OK) {
+      String payload = http.getString();
+      JsonDocument doc;
+      DeserializationError error = deserializeJson(doc, payload);
+      if (!error) {
+         bool changed = false;
+
+         if (doc["timeout"].is<int>()) {
+            settings.timeout = doc["timeout"];
+            changed = true;
+         }
+         if (doc["motionWakeup"].is<bool>()) {
+            settings.motionWakeup = doc["motionWakeup"];
+            changed = true;
+         }
+         if (doc["chargerMode"].is<bool>()) {
+            settings.chargerMode = doc["chargerMode"];
+            changed = true;
+         }
+         if (doc["downloadUrl"].is<String>()) {
+            settings.downloadUrl = doc["downloadUrl"].as<String>();
+            changed = true;
+            settings.imageMode = 1;
+         }
+         if (doc["httpAuthUser"].is<String>()) {
+            settings.httpAuthUser = doc["httpAuthUser"].as<String>();
+            changed = true;
+         }
+         if (doc["httpAuthPassword"].is<String>()) {
+            settings.httpAuthPassword = doc["httpAuthPassword"].as<String>();
+            changed = true;
+         }
+
+         if (http.hasHeader("Last-Modified")) {
+            settings.settingsLastModified = http.header("Last-Modified");
+            changed = true;
+         }
+
+         if (changed) {
+            Serial.println("[HTTP] JSON settings applied and saved.");
+            saveSettingsToFlash(EEPROM_SETTINGS_ADR);
+         }
+      }
+      else {
+         Serial.println("[HTTP] JSON parse failed");
+      }
+   }
+   else if (httpCode == HTTP_CODE_NOT_MODIFIED) {
+      Serial.println("[HTTP] JSON settings not modified.");
+   }
+   else {
+      Serial.printf("[HTTP] GET failed, error: %s\n", http.errorToString(httpCode).c_str());
+   }
+   http.end();
+}
+
 void loop() {
 
    if (downloadStart) {
@@ -2239,6 +2419,22 @@ void loop() {
       delay(200);
       String fileName = "tmp.bmp";
       int dlSuccess = 0;
+
+      // Ensure WiFi if we need it for Settings OR Image
+      if (settings.settingsUrl.length() > 0 || settings.imageMode == 1) {
+         if (WiFi.status() != WL_CONNECTED) {
+            WiFi.begin(wifiSettings.ssid.c_str(), wifiSettings.pss.c_str());
+            int WLcount = 0;
+            while (WiFi.status() != WL_CONNECTED && WLcount < 200) {
+               delay(100);
+               ++WLcount;
+            }
+         }
+
+         if (WiFi.status() == WL_CONNECTED) {
+            fetchRemoteSettings(); // This might change imageMode or downloadUrl!
+         }
+      }
 
       if (settings.imageMode == 1) { // URL Mode
          dlSuccess = processHttpDownload(fileName);

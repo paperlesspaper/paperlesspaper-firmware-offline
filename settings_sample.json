@@ -1,0 +1,8 @@
+{
+  "timeout": 3600,
+  "motionWakeup": false,
+  "chargerMode": false,
+  "downloadUrl": "https://paperlesspaper.de/b?d=MY_DEVICE_ID",
+  "httpAuthUser": "",
+  "httpAuthPassword": ""
+}

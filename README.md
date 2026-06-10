@@ -59,6 +59,27 @@ Offline first Firmware for an ESP32-C6 based E-Paper display device, featuring W
 
 > **First Boot Initialization**: Beim ersten Start (oder wenn die Magic Flag bei Adresse 499 nicht `42` ist) wird der EEPROM automatisch bereinigt und mit sinnvollen Standardwerten (z.B. Timeout = 3600s) initialisiert.
 
+## Remote JSON Settings
+
+The firmware supports fetching its configuration automatically from an HTTP JSON endpoint. This allows you to manage the device behavior directly from your smart home server or cloud without connecting via BLE.
+
+- Configure the **Settings JSON URL** in the Web-UI or via BLE.
+- When the device wakes up and connects to WiFi, it will automatically fetch the JSON.
+- It leverages the HTTP `Last-Modified` and `If-Modified-Since` headers to avoid unnecessary parsing and EEPROM writes, saving battery and flash memory life.
+- In the Web-UI, you can click "Prüfen" to preview the JSON and apply it directly. The Web-UI uses an intelligent CORS proxy fallback to bypass browser security restrictions when testing public URLs.
+
+An example `settings_sample.json` is provided in the repository:
+```json
+{
+  "timeout": 3600,
+  "motionWakeup": false,
+  "chargerMode": false,
+  "downloadUrl": "https://paperlesspaper.de/b?d=MY_DEVICE_ID",
+  "httpAuthUser": "",
+  "httpAuthPassword": ""
+}
+```
+
 ## Hardware Settings
 
 - **Charger**: Safety TMR 4h, 4-cell intermittent.
@@ -77,6 +98,7 @@ Liest den aktuellen Status des Geräts (WLAN etc.).
 |------|------|------------|--------------|
 | `4c578d4c-...` | **WiFi Connected** | Read, Notify | Gibt `1` zurück, wenn mit WLAN verbunden, sonst `0`. |
 | `4c578d4d-...` | **WiFi Info** | Read, Notify | JSON-String mit Verbindungsdetails (z.B. `{"ip": "192...", "rssi": -65}`). |
+| `4c578d4e-...` | **System Info** | Read, Notify | JSON-String mit Systemdaten (Batteriespannung in mV, USB-Status, Ladestatus). |
 | `5131a3fc-...` | **WiFi Scan** | Read, Notify | Liste gefundener WLANs. Wird asynchron befüllt, wenn das Kommando `SCAN_WIFI` über den Upload CMD Kanal gesendet wurde. Format: `SSID´RSSI´´SSID2´RSSI2´´`. |
 
 ### 2. WiFi Data Service
@@ -99,9 +121,11 @@ Verwaltet alle Einstellungen und kümmert sich um den Upload von Bildern und Fir
 | `10000003-...` | **Upload Data** | Write | Stream für Binärdaten (Bilder / Firmware). Das 1. Byte ist der CRC8 des restlichen Payloads. |
 | `10000004-...` | **Upload CMD** | Read, Write | Befehlskanal (siehe "Befehle" unten). Bei "Read" liefert er die aktuell im RAM befindlichen Bytes (für den Bild-Upload Checkpoint-Mechanismus). |
 | `10000005-...` | **Timeout** | Read, Write | Sleep Timeout in Sekunden (z.B. `3600`). |
-| `10000006-...` | **Clear Screen** | Read, Write | `1` / `true` = Display vor Update flashen. |
+| `1000000b-...` | **Settings URL** | Read, Write | Optionale HTTP(s) URL zu einem JSON-Config File. |
 | `10000007-...` | **HTTP User** | Read, Write | Benutzername für HTTP Basic Auth. |
 | `10000008-...` | **HTTP Pass** | Read, Write | Passwort für HTTP Basic Auth. |
+| `10000009-...` | **Motion Wakeup** | Read, Write | `1` / `true` = Aufwecken bei Bewegung aktiviert (nur URL Modus). |
+| `1000000a-...` | **Charger Mode** | Read, Write | `1` / `true` = Ladefunktion für NiMH-Akkus aktiviert. |
 
 ---
 
@@ -129,7 +153,7 @@ Die Firmware wird direkt in die OTA-Partition geflasht. Es gibt keinen Checkpoin
 
 ## Roadmap (not ordered)
 
-- settings json for http endpoint to change device behavior in local network
+- (done) settings json for http endpoint to change device behavior in local network
 - (done) settings for motion wakeup and charger via ble
 - store multiple images
 - (done) ota upload via ble (revert back to cloud firmware)

@@ -38,6 +38,7 @@ const HTTP_AUTH_USER_UUID = "10000007-0000-0000-0000-000000000001"; // READ/WRIT
 const HTTP_AUTH_PASS_UUID = "10000008-0000-0000-0000-000000000001"; // READ/WRITE
 const MOTION_WAKEUP_UUID = "10000009-0000-0000-0000-000000000001"; // READ/WRITE
 const CHARGER_MODE_UUID = "1000000a-0000-0000-0000-000000000001"; // READ/WRITE
+const SETTINGS_URL_UUID = "1000000b-0000-0000-0000-000000000001"; // READ/WRITE
 
 const DEVICE_DATA_SERVICE_UUID = "7f74170e-7b0e-11ed-a1eb-0242ac120002";
 const WIFI_SCAN_UUID = "5131a3fc-7b0e-11ed-a1eb-0242ac120002";
@@ -54,6 +55,7 @@ let wifiService = null;
 let processedImageBuffer = null;
 let reconnectInterval = null;
 let manualDisconnect = false;
+let reconnectAttempts = 0;
 
 const btnConnect = document.getElementById("btnConnect");
 const btnDisconnect = document.getElementById("btnDisconnect");
@@ -74,6 +76,7 @@ const btnSaveSettings = document.getElementById("btnSaveSettings");
 const btnFactoryReset = document.getElementById("btnFactoryReset");
 const settingTimeout = document.getElementById("settingTimeout");
 const settingUrl = document.getElementById("settingUrl");
+const settingSettingsUrl = document.getElementById("settingSettingsUrl");
 const settingHttpAuthUser = document.getElementById("settingHttpAuthUser");
 const settingHttpAuthPassword = document.getElementById("settingHttpAuthPassword");
 const settingMotionWakeup = document.getElementById("settingMotionWakeup");
@@ -186,8 +189,9 @@ async function connectToDevice() {
   if (bleDevice && bleDevice.gatt.connected) return;
 
   try {
-    setStatus("Verbinde zu GATT Server...", "text-blue-500");
+    setStatus(`Verbinde zu GATT Server... ${reconnectAttempts > 0 ? `(Versuch ${reconnectAttempts})` : ''}`, "text-blue-500");
     const server = await bleDevice.gatt.connect();
+    reconnectAttempts = 0; // Reset on success
 
     setStatus("Lade Services...", "text-blue-500");
     settingsService = await server.getPrimaryService(SETTINGS_SERVICE_UUID);
@@ -223,7 +227,7 @@ async function connectToDevice() {
         syncBadgeSettings.classList.remove("hidden");
       }
 
-      // Lese HTTP Auth Settings
+      // Lese HTTP Auth Settings & Sonstiges
       try {
         const httpAuthUserChar = await settingsService.getCharacteristic(HTTP_AUTH_USER_UUID);
         const userVal = await httpAuthUserChar.readValue();
@@ -232,6 +236,7 @@ async function connectToDevice() {
         const httpAuthPasswordChar = await settingsService.getCharacteristic(HTTP_AUTH_PASS_UUID);
         const passVal = await httpAuthPasswordChar.readValue();
         settingHttpAuthPassword.value = new TextDecoder().decode(passVal).replace(/\0/g, "");
+
         const motionWakeupChar = await settingsService.getCharacteristic(MOTION_WAKEUP_UUID);
         const motionWakeupData = await motionWakeupChar.readValue();
         const motionWakeupVal = new TextDecoder().decode(motionWakeupData);
@@ -241,6 +246,10 @@ async function connectToDevice() {
         const chargerModeData = await chargerModeChar.readValue();
         const chargerModeVal = new TextDecoder().decode(chargerModeData);
         settingChargerMode.checked = (chargerModeVal === "1" || chargerModeVal === "true");
+        
+        const settingsUrlChar = await settingsService.getCharacteristic(SETTINGS_URL_UUID);
+        const settingsUrlData = await settingsUrlChar.readValue();
+        settingSettingsUrl.value = new TextDecoder().decode(settingsUrlData).replace(/\0/g, "");
       } catch (e) {
         // Falls alte Firmware die UUIDs nicht hat
       }
@@ -446,11 +455,18 @@ async function connectToDevice() {
   } catch (error) {
     console.error(error);
     if (!manualDisconnect) {
-        setStatus("Verbindungsfehler. Versuche Reconnect...", "text-orange-500");
-        if (reconnectInterval) clearTimeout(reconnectInterval);
-        reconnectInterval = setTimeout(() => {
-            connectToDevice();
-        }, 3000);
+        reconnectAttempts++;
+        if (reconnectAttempts <= 12) {
+            setStatus(`Verbindungsfehler. Reconnect in 5s... (${reconnectAttempts}/12)`, "text-orange-500");
+            if (reconnectInterval) clearTimeout(reconnectInterval);
+            reconnectInterval = setTimeout(() => {
+                connectToDevice();
+            }, 5000);
+        } else {
+            setStatus("Verbindung endgültig verloren.", "text-red-500");
+            btnConnect.classList.remove("hidden");
+            btnDisconnect.classList.add("hidden");
+        }
     } else {
         setStatus("Verbindung abgebrochen oder getrennt.", "text-orange-500");
         btnConnect.classList.remove("hidden");
@@ -494,10 +510,11 @@ btnConnect.addEventListener("click", async () => {
       if (reconnectInterval) clearTimeout(reconnectInterval);
       
       if (!manualDisconnect) {
-          setStatus("Verbindung unterbrochen. Versuche Reconnect...", "text-orange-500");
+          reconnectAttempts = 1;
+          setStatus(`Verbindung unterbrochen. Reconnect in 5s... (${reconnectAttempts}/12)`, "text-orange-500");
           reconnectInterval = setTimeout(() => {
               connectToDevice();
-          }, 3000);
+          }, 5000);
       } else {
           setStatus("Gerät getrennt.", "text-orange-500");
           btnConnect.classList.remove("hidden");
@@ -630,7 +647,7 @@ btnSaveSettings.addEventListener("click", async () => {
   if (!settingsService) return;
   try {
     setStatus("Speichere Einstellungen...", "text-purple-500");
-
+    const encoder = new TextEncoder();
     const urlValidationStatus = document.getElementById("urlValidationStatus");
     if (urlValidationStatus) {
       urlValidationStatus.classList.add("hidden");
@@ -638,17 +655,8 @@ btnSaveSettings.addEventListener("click", async () => {
 
     if (settingUrl.value) {
       const urlChar = await settingsService.getCharacteristic(URL_UUID);
-      await urlChar.writeValue(encodeText(settingUrl.value));
+      await urlChar.writeValue(encoder.encode(settingUrl.value));
 
-      // Modus automatisch auf URL-Download (1) setzen, da eine URL gespeichert wird
-      try {
-        const modeChar = await settingsService.getCharacteristic(MODE_UUID);
-        await modeChar.writeValue(encodeText("1"));
-      } catch (err) {
-        console.warn("Modus konnte nicht auf URL gesetzt werden:", err);
-      }
-
-      // URL auf Gültigkeit prüfen (als Bild)
       if (urlValidationStatus) {
         urlValidationStatus.classList.remove("hidden");
         urlValidationStatus.className = "text-sm font-medium mb-4 text-purple-500";
@@ -669,32 +677,117 @@ btnSaveSettings.addEventListener("click", async () => {
           urlValidationStatus.innerText = "⚠ URL konnte nicht als Bild geladen werden (evtl. ungültig oder offline). Wird dennoch gespeichert.";
         }
       }
+    } else {
+        const urlChar = await settingsService.getCharacteristic(URL_UUID);
+        await urlChar.writeValue(encoder.encode(""));
     }
 
-    const httpAuthUserChar = await settingsService.getCharacteristic(HTTP_AUTH_USER_UUID);
-    await httpAuthUserChar.writeValue(encodeText(settingHttpAuthUser.value || ""));
-
-    const httpAuthPasswordChar = await settingsService.getCharacteristic(HTTP_AUTH_PASS_UUID);
-    await httpAuthPasswordChar.writeValue(encodeText(settingHttpAuthPassword.value || ""));
-
     const timeoutChar = await settingsService.getCharacteristic(TIMEOUT_UUID);
-    await timeoutChar.writeValue(encodeText(settingTimeout.value || "3600"));
+    await timeoutChar.writeValue(encoder.encode(settingTimeout.value || "3600"));
 
-    const motionWakeupChar = await settingsService.getCharacteristic(MOTION_WAKEUP_UUID);
-    await motionWakeupChar.writeValue(encodeText(settingMotionWakeup.checked ? "1" : "0"));
+    try {
+        const httpAuthUserChar = await settingsService.getCharacteristic(HTTP_AUTH_USER_UUID);
+        await httpAuthUserChar.writeValue(encoder.encode(settingHttpAuthUser.value));
 
-    const chargerModeChar = await settingsService.getCharacteristic(CHARGER_MODE_UUID);
-    await chargerModeChar.writeValue(encodeText(settingChargerMode.checked ? "1" : "0"));
+        const httpAuthPasswordChar = await settingsService.getCharacteristic(HTTP_AUTH_PASS_UUID);
+        await httpAuthPasswordChar.writeValue(encoder.encode(settingHttpAuthPassword.value));
 
+        const motionWakeupChar = await settingsService.getCharacteristic(MOTION_WAKEUP_UUID);
+        await motionWakeupChar.writeValue(encoder.encode(settingMotionWakeup.checked ? "1" : "0"));
+
+        const chargerModeChar = await settingsService.getCharacteristic(CHARGER_MODE_UUID);
+        await chargerModeChar.writeValue(encoder.encode(settingChargerMode.checked ? "1" : "0"));
+        
+        const settingsUrlChar = await settingsService.getCharacteristic(SETTINGS_URL_UUID);
+        await settingsUrlChar.writeValue(encoder.encode(settingSettingsUrl.value));
+    } catch (e) {
+        console.warn("Alte Firmware: Erweiterte Settings werden ignoriert", e);
+    }
+    
     // Tell the firmware to save all written settings to EEPROM at once
     const cmdChar = await settingsService.getCharacteristic(UPLOAD_CMD_UUID);
-    await cmdChar.writeValue(encodeText("SAVE_SETTINGS"));
+    await cmdChar.writeValue(encoder.encode("SAVE_SETTINGS"));
 
-    setStatus("Einstellungen erfolgreich gespeichert!", "text-green-600");
-  } catch (e) {
-    console.error(e);
-    setStatus("Fehler: Sind die neuen UUIDs bereits in main.cpp enthalten?", "text-red-500");
+    setStatus("Einstellungen gespeichert!", "text-green-500");
+    syncBadgeSettings.classList.remove("hidden");
+  } catch (error) {
+    console.error(error);
+    setStatus("Fehler beim Speichern der Einstellungen", "text-red-500");
   }
+});
+
+let tempJsonSettings = null;
+
+document.getElementById("btnPreviewJson")?.addEventListener("click", async () => {
+    const rawUrl = settingSettingsUrl.value;
+    if (!rawUrl) {
+        alert("Bitte zuerst eine JSON URL eingeben.");
+        return;
+    }
+    
+    // Cache-Busting: Anfügen eines Timestamps, damit Proxys/Browser nicht cachen
+    const cacheBuster = "nocache=" + new Date().getTime();
+    const url = rawUrl + (rawUrl.includes("?") ? "&" : "?") + cacheBuster;
+    
+    document.getElementById("btnPreviewJson").innerText = "Lade...";
+    try {
+        let response;
+        try {
+            response = await fetch(url, { cache: "no-store" });
+        } catch (err) {
+            console.warn("Direct fetch failed (likely CORS). Trying via Proxy 1...", err);
+            try {
+                // Versuch 1: corsproxy.io
+                response = await fetch("https://corsproxy.io/?" + encodeURIComponent(url));
+            } catch (err2) {
+                console.warn("Proxy 1 failed. Trying Proxy 2...", err2);
+                // Versuch 2: allorigins (get mode) -> liefert { contents: "..." }
+                const proxyResp = await fetch("https://api.allorigins.win/get?url=" + encodeURIComponent(url), { cache: "no-store" });
+                if (!proxyResp.ok) throw new Error("HTTP Fehler Proxy: " + proxyResp.status);
+                const proxyJson = await proxyResp.json();
+                
+                tempJsonSettings = JSON.parse(proxyJson.contents);
+                document.getElementById("jsonPreviewContent").innerText = JSON.stringify(tempJsonSettings, null, 2);
+                document.getElementById("jsonPreviewModal").classList.remove("hidden");
+                document.getElementById("btnPreviewJson").innerText = "Prüfen";
+                return;
+            }
+        }
+        
+        if (!response.ok) throw new Error("HTTP Fehler " + response.status);
+        const json = await response.json();
+        
+        tempJsonSettings = json;
+        document.getElementById("jsonPreviewContent").innerText = JSON.stringify(json, null, 2);
+        document.getElementById("jsonPreviewModal").classList.remove("hidden");
+    } catch (e) {
+        console.error(e);
+        alert("Fehler beim Abrufen der JSON (CORS oder ungültige URL). Wenn die Datei lokal (z.B. NAS) liegt, stelle sicher, dass der Server CORS-Header sendet (Access-Control-Allow-Origin: *). Details: " + e.message);
+    }
+    document.getElementById("btnPreviewJson").innerText = "Prüfen";
+});
+
+document.getElementById("btnCloseJsonPreview")?.addEventListener("click", () => {
+    document.getElementById("jsonPreviewModal").classList.add("hidden");
+});
+document.getElementById("btnCancelJson")?.addEventListener("click", () => {
+    document.getElementById("jsonPreviewModal").classList.add("hidden");
+});
+
+document.getElementById("btnApplyJson")?.addEventListener("click", async () => {
+    document.getElementById("jsonPreviewModal").classList.add("hidden");
+    if (!tempJsonSettings) return;
+    
+    // Apply JSON directly into input fields
+    if (tempJsonSettings.timeout !== undefined) settingTimeout.value = tempJsonSettings.timeout;
+    if (tempJsonSettings.downloadUrl !== undefined) settingUrl.value = tempJsonSettings.downloadUrl;
+    if (tempJsonSettings.httpAuthUser !== undefined) settingHttpAuthUser.value = tempJsonSettings.httpAuthUser;
+    if (tempJsonSettings.httpAuthPassword !== undefined) settingHttpAuthPassword.value = tempJsonSettings.httpAuthPassword;
+    if (tempJsonSettings.motionWakeup !== undefined) settingMotionWakeup.checked = tempJsonSettings.motionWakeup;
+    if (tempJsonSettings.chargerMode !== undefined) settingChargerMode.checked = tempJsonSettings.chargerMode;
+    
+    // Auto-save via existing save button logic
+    document.getElementById("btnSaveSettings").click();
 });
 
 btnFactoryReset.addEventListener("click", async () => {
