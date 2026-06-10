@@ -14,6 +14,7 @@
 #include "Ticker.h"
 #include "driver/rtc_io.h"
 #include "kxtj3-1057.h"
+#include <JPEGDEC.h>
 #include <SPI.h>
 #include <SerialFlash.h>
 #include <U8g2_for_Adafruit_GFX.h>
@@ -253,6 +254,418 @@ int StartCounter = 0;
 
 bool downloadStart = true;
 char CLIENT_ID[20];
+
+JPEGDEC jpeg;
+SerialFlashFile rawOutFile;
+SerialFlashFile jpgInFile;
+
+const uint32_t acep_palette[7] = {
+    0x000000, // 0: Black
+    0x0000FF, // 1: Blue
+    0x00FF00, // 2: Green
+    0xFF0000, // 3: Red
+    0xFFFFFF, // 4: Unused (skipped)
+    0xFFFF00, // 5: Yellow
+    0xFFFFFF  // 6: White
+};
+
+uint8_t findClosestColor(int r, int g, int b) {
+   uint8_t best = 6; // Default to white
+   long min_dist = 2000000000;
+   uint8_t valid_indices[] = {0, 1, 2, 3, 5, 6};
+
+   for (int i = 0; i < 6; i++) {
+      uint8_t idx = valid_indices[i];
+      int pr = (acep_palette[idx] >> 16) & 0xFF;
+      int pg = (acep_palette[idx] >> 8) & 0xFF;
+      int pb = acep_palette[idx] & 0xFF;
+      long dist = (long)(r - pr) * (r - pr) + (long)(g - pg) * (g - pg) + (long)(b - pb) * (b - pb);
+      if (dist < min_dist) {
+         min_dist = dist;
+         best = idx;
+      }
+   }
+   return best;
+}
+
+uint8_t *strip_buffer = nullptr;
+int16_t err_curr[EPD_WIDTH * 3];
+int16_t err_next[EPD_WIDTH * 3];
+int strip_y_start = 0;
+int strip_height = 0;
+
+int decodedWidth = 0;
+int decodedHeight = 0;
+int current_out_y = 0;
+
+void *myOpen(const char *filename, int32_t *size) {
+   jpgInFile = SerialFlash.open(filename);
+   if (jpgInFile) {
+      *size = jpgInFile.size();
+      return (void *)1;
+   }
+   return NULL;
+}
+void myClose(void *handle) { jpgInFile.close(); }
+int32_t myRead(JPEGFILE *pFile, uint8_t *pBuf, int32_t iLen) { return jpgInFile.read(pBuf, iLen); }
+int32_t mySeek(JPEGFILE *pFile, int32_t iPosition) {
+   jpgInFile.seek(iPosition);
+   return iPosition;
+}
+
+void snapColor(int &r, int &g, int &b) {
+   int t = 25; // Aggressive threshold for snapping to pure colors
+   if (r < t && g < t && b < t) {
+      r = 0;
+      g = 0;
+      b = 0;
+      return;
+   } // Black
+   if (r > 255 - t && g > 255 - t && b > 255 - t) {
+      r = 255;
+      g = 255;
+      b = 255;
+      return;
+   } // White
+   if (r > 255 - t && g < t && b < t) {
+      r = 255;
+      g = 0;
+      b = 0;
+      return;
+   } // Red
+   if (r < (t + 10) && g > 255 - (t + 10) && b < (t + 10)) {
+      r = 0;
+      g = 255;
+      b = 0;
+      return;
+   } // Green
+   if (r < t && g < t && b > 255 - t) {
+      r = 0;
+      g = 0;
+      b = 255;
+      return;
+   } // Blue
+   if (r > 255 - (t + 25) && g > 255 - (t + 25) && b < (t + 25)) {
+      r = 255;
+      g = 255;
+      b = 0;
+      return;
+   } // Yellow
+}
+
+void flushStripBuffer() {
+   if (strip_height == 0 || !strip_buffer)
+      return;
+
+   uint8_t out_row[EPD_WIDTH / 2];
+   for (int y = 0; y < strip_height; y++) {
+      int abs_y = strip_y_start + y;
+
+      while (current_out_y < EPD_HEIGHT && (current_out_y * decodedHeight / EPD_HEIGHT) == abs_y) {
+         memset(out_row, 0x66, sizeof(out_row));
+
+         for (int out_x = 0; out_x < EPD_WIDTH; out_x++) {
+            int in_x = out_x * decodedWidth / EPD_WIDTH;
+            if (in_x >= decodedWidth)
+               in_x = decodedWidth - 1;
+
+            int idx = (y * decodedWidth + in_x) * 3;
+
+            int orig_r = strip_buffer[idx];
+            int orig_g = strip_buffer[idx + 1];
+            int orig_b = strip_buffer[idx + 2];
+
+            // Clean white & black threshold to prevent noise from JPEG artifacts
+            snapColor(orig_r, orig_g, orig_b);
+
+            int r = orig_r + err_curr[out_x * 3];
+            int g = orig_g + err_curr[out_x * 3 + 1];
+            int b = orig_b + err_curr[out_x * 3 + 2];
+
+            r = (r < 0) ? 0 : (r > 255) ? 255
+                                        : r;
+            g = (g < 0) ? 0 : (g > 255) ? 255
+                                        : g;
+            b = (b < 0) ? 0 : (b > 255) ? 255
+                                        : b;
+
+            uint8_t best = findClosestColor(r, g, b);
+            int pr = (acep_palette[best] >> 16) & 0xFF;
+            int pg = (acep_palette[best] >> 8) & 0xFF;
+            int pb = acep_palette[best] & 0xFF;
+
+            int err_r = r - pr;
+            int err_g = g - pg;
+            int err_b = b - pb;
+
+            if (out_x < EPD_WIDTH - 1) {
+               err_curr[(out_x + 1) * 3] += (err_r * 7) >> 4;
+               err_curr[(out_x + 1) * 3 + 1] += (err_g * 7) >> 4;
+               err_curr[(out_x + 1) * 3 + 2] += (err_b * 7) >> 4;
+            }
+            if (out_x > 0) {
+               err_next[(out_x - 1) * 3] += (err_r * 3) >> 4;
+               err_next[(out_x - 1) * 3 + 1] += (err_g * 3) >> 4;
+               err_next[(out_x - 1) * 3 + 2] += (err_b * 3) >> 4;
+            }
+            err_next[out_x * 3] += (err_r * 5) >> 4;
+            err_next[out_x * 3 + 1] += (err_g * 5) >> 4;
+            err_next[out_x * 3 + 2] += (err_b * 5) >> 4;
+
+            if (out_x < EPD_WIDTH - 1) {
+               err_next[(out_x + 1) * 3] += (err_r * 1) >> 4;
+               err_next[(out_x + 1) * 3 + 1] += (err_g * 1) >> 4;
+               err_next[(out_x + 1) * 3 + 2] += (err_b * 1) >> 4;
+            }
+
+            if (out_x % 2 == 0)
+               out_row[out_x / 2] = (out_row[out_x / 2] & 0x0F) | (best << 4);
+            else
+               out_row[out_x / 2] = (out_row[out_x / 2] & 0xF0) | (best & 0x0F);
+         }
+         rawOutFile.write(out_row, EPD_WIDTH / 2);
+         memcpy(err_curr, err_next, sizeof(err_curr));
+         memset(err_next, 0, sizeof(err_next));
+
+         current_out_y++;
+      }
+   }
+   strip_height = 0;
+}
+
+int JPEGDraw(JPEGDRAW *pDraw) {
+   if (pDraw->y != strip_y_start && strip_height > 0) {
+      flushStripBuffer();
+      strip_y_start = pDraw->y;
+   }
+   int x0 = pDraw->x;
+   int w = pDraw->iWidth;
+   int h = pDraw->iHeight;
+   uint16_t *pPixels = pDraw->pPixels;
+
+   strip_height = h;
+   for (int y = 0; y < h; y++) {
+      for (int x = 0; x < w; x++) {
+         int abs_in_x = x0 + x;
+         if (abs_in_x >= decodedWidth)
+            break;
+
+         uint16_t c = pPixels[y * w + x];
+         // Extracting RGB565:
+         int r = (c & 0xF800) >> 8;
+         int g = (c & 0x07E0) >> 3;
+         int b = (c & 0x001F) << 3;
+
+         int idx = (y * decodedWidth + abs_in_x) * 3;
+         strip_buffer[idx] = r;
+         strip_buffer[idx + 1] = g;
+         strip_buffer[idx + 2] = b;
+      }
+   }
+   return 1;
+}
+
+bool processImageFile(const char *rawFileName, const char *outFileName) {
+   SerialFlashFile inFile = SerialFlash.open(rawFileName);
+   if (!inFile)
+      return false;
+   uint8_t magic[2];
+   inFile.read(magic, 2);
+   inFile.seek(0);
+
+   if (magic[0] == 0xFF && magic[1] == 0xD8) {
+      Serial.println("[IMAGE] JPEG detected. Dithering on-device...");
+      if (SerialFlash.exists(outFileName)) {
+         SerialFlashFile sf = SerialFlash.open(outFileName);
+         sf.erase();
+         sf.close();
+      }
+      SerialFlash.createErasable(outFileName, 192000);
+      rawOutFile = SerialFlash.open(outFileName);
+
+      memset(err_curr, 0, sizeof(err_curr));
+      memset(err_next, 0, sizeof(err_next));
+      strip_y_start = 0;
+      strip_height = 0;
+
+      jpeg.open(rawFileName, myOpen, myClose, myRead, mySeek, JPEGDraw);
+      int scale = 0;
+      if (jpeg.getWidth() > 3200) {
+         scale = JPEG_SCALE_EIGHTH;
+      }
+      else if (jpeg.getWidth() > 1600) {
+         scale = JPEG_SCALE_QUARTER;
+      }
+      else if (jpeg.getWidth() > 800) {
+         scale = JPEG_SCALE_HALF;
+      }
+
+      decodedWidth = jpeg.getWidth() >> scale;
+      decodedHeight = jpeg.getHeight() >> scale;
+
+      strip_buffer = (uint8_t *)malloc(16 * decodedWidth * 3);
+      if (!strip_buffer) {
+         Serial.println("[IMAGE] OOM allocating strip_buffer");
+         jpeg.close();
+         rawOutFile.close();
+         return false;
+      }
+      current_out_y = 0;
+
+      jpeg.decode(0, 0, scale);
+      flushStripBuffer();
+      jpeg.close();
+
+      while (current_out_y < EPD_HEIGHT) {
+         uint8_t whiteLine[EPD_WIDTH / 2];
+         memset(whiteLine, 0x66, EPD_WIDTH / 2);
+         rawOutFile.write(whiteLine, EPD_WIDTH / 2);
+         current_out_y++;
+      }
+
+      free(strip_buffer);
+      strip_buffer = nullptr;
+      rawOutFile.close();
+      return true;
+   }
+   else if (magic[0] == 'B' && magic[1] == 'M') {
+      inFile.seek(0x1C);
+      uint16_t bpp;
+      inFile.read((uint8_t *)&bpp, 2);
+      if (bpp == 4) {
+         Serial.println("[IMAGE] 4-bit BMP detected. Already dithered.");
+         inFile.close();
+
+         if (SerialFlash.exists(outFileName)) {
+            SerialFlashFile sf = SerialFlash.open(outFileName);
+            sf.erase();
+            sf.close();
+         }
+         SerialFlash.createErasable(outFileName, inFile.size());
+         rawOutFile = SerialFlash.open(outFileName);
+         inFile.seek(0);
+         uint8_t buf[2048];
+         int bytesRead;
+         while ((bytesRead = inFile.read(buf, 2048)) > 0) {
+            rawOutFile.write(buf, bytesRead);
+         }
+         rawOutFile.close();
+         inFile.close();
+         return true;
+      }
+      else {
+         Serial.println("[IMAGE] 24-bit BMP detected. Dithering...");
+         if (SerialFlash.exists(outFileName)) {
+            SerialFlashFile sf = SerialFlash.open(outFileName);
+            sf.erase();
+            sf.close();
+         }
+         SerialFlash.createErasable(outFileName, 192000);
+         rawOutFile = SerialFlash.open(outFileName);
+
+         inFile.seek(0x0A);
+         uint32_t offset;
+         inFile.read((uint8_t *)&offset, 4);
+         inFile.seek(offset);
+
+         memset(err_curr, 0, sizeof(err_curr));
+         memset(err_next, 0, sizeof(err_next));
+
+         uint8_t out_row[EPD_WIDTH / 2];
+         uint8_t in_row[EPD_WIDTH * 3];
+
+         for (int y = 0; y < EPD_HEIGHT; y++) {
+            memset(out_row, 0x66, sizeof(out_row));
+            int readBytes = inFile.read(in_row, EPD_WIDTH * 3);
+            if (readBytes <= 0)
+               break;
+
+            for (int x = 0; x < EPD_WIDTH; x++) {
+               int orig_b = in_row[x * 3];
+               int orig_g = in_row[x * 3 + 1];
+               int orig_r = in_row[x * 3 + 2];
+
+               snapColor(orig_r, orig_g, orig_b);
+
+               int b = orig_b + err_curr[x * 3 + 2];
+               int g = orig_g + err_curr[x * 3 + 1];
+               int r = orig_r + err_curr[x * 3];
+
+               r = (r < 0) ? 0 : (r > 255) ? 255
+                                           : r;
+               g = (g < 0) ? 0 : (g > 255) ? 255
+                                           : g;
+               b = (b < 0) ? 0 : (b > 255) ? 255
+                                           : b;
+
+               uint8_t best = findClosestColor(r, g, b);
+               int pr = (acep_palette[best] >> 16) & 0xFF;
+               int pg = (acep_palette[best] >> 8) & 0xFF;
+               int pb = acep_palette[best] & 0xFF;
+
+               int err_r = r - pr;
+               int err_g = g - pg;
+               int err_b = b - pb;
+
+               if (x < EPD_WIDTH - 1) {
+                  err_curr[(x + 1) * 3] += (err_r * 7) >> 4;
+                  err_curr[(x + 1) * 3 + 1] += (err_g * 7) >> 4;
+                  err_curr[(x + 1) * 3 + 2] += (err_b * 7) >> 4;
+               }
+               if (x > 0) {
+                  err_next[(x - 1) * 3] += (err_r * 3) >> 4;
+                  err_next[(x - 1) * 3 + 1] += (err_g * 3) >> 4;
+                  err_next[(x - 1) * 3 + 2] += (err_b * 3) >> 4;
+               }
+               err_next[x * 3] += (err_r * 5) >> 4;
+               err_next[x * 3 + 1] += (err_g * 5) >> 4;
+               err_next[x * 3 + 2] += (err_b * 5) >> 4;
+
+               if (x < EPD_WIDTH - 1) {
+                  err_next[(x + 1) * 3] += (err_r * 1) >> 4;
+                  err_next[(x + 1) * 3 + 1] += (err_g * 1) >> 4;
+                  err_next[(x + 1) * 3 + 2] += (err_b * 1) >> 4;
+               }
+
+               if (x % 2 == 0)
+                  out_row[x / 2] = (out_row[x / 2] & 0x0F) | (best << 4);
+               else
+                  out_row[x / 2] = (out_row[x / 2] & 0xF0) | (best & 0x0F);
+            }
+            rawOutFile.write(out_row, EPD_WIDTH / 2);
+            memcpy(err_curr, err_next, sizeof(err_curr));
+            memset(err_next, 0, sizeof(err_next));
+         }
+         rawOutFile.close();
+         inFile.close();
+         return true;
+      }
+   }
+   else if (magic[0] == 0x66 && magic[1] == 0x66) {
+      Serial.println("[IMAGE] Raw dithered payload detected.");
+      inFile.close();
+
+      if (SerialFlash.exists(outFileName)) {
+         SerialFlashFile sf = SerialFlash.open(outFileName);
+         sf.erase();
+         sf.close();
+      }
+      SerialFlash.createErasable(outFileName, inFile.size());
+      rawOutFile = SerialFlash.open(outFileName);
+      inFile.seek(0);
+      uint8_t buf[2048];
+      int bytesRead;
+      while ((bytesRead = inFile.read(buf, 2048)) > 0) {
+         rawOutFile.write(buf, bytesRead);
+      }
+      rawOutFile.close();
+      inFile.close();
+      return true;
+   }
+
+   inFile.close();
+   return false;
+}
 bool periodicLedIsOn = false;
 int periodicLedTimeout = 0;
 bool epaperIsUpdating = false;
@@ -1041,25 +1454,18 @@ uint16_t getColor(uint8_t color) {
    switch (color) {
    case 0:
       return GxEPD_BLACK;
-      break;
    case 1:
       return GxEPD_BLUE;
-      break;
    case 2:
       return GxEPD_GREEN;
-      break;
    case 3:
       return GxEPD_RED;
-      break;
    case 5:
       return GxEPD_YELLOW;
-      break;
    case 6:
       return GxEPD_WHITE;
-      break;
    default:
       return GxEPD_WHITE;
-      break;
    }
 }
 
@@ -2043,6 +2449,7 @@ void runSetupMode() {
    Serial.println("[MAIN] Setup Mode Triggered");
 
    unsigned long setupModeStart = millis();
+   unsigned long bleConnectedTime = 0;
    bool bleWasConnected = false;
    bool initialWifiCheckDone = false;
 
@@ -2077,11 +2484,17 @@ void runSetupMode() {
       }
 
       if (pServer->getConnectedCount() > 0) {
-         bleWasConnected = true;
-         if (!initialWifiCheckDone && wifiSettings.ssid.length() > 0) {
+         if (!bleWasConnected) {
+            bleWasConnected = true;
+            bleConnectedTime = millis();
+         }
+         if (!initialWifiCheckDone && wifiSettings.ssid.length() > 0 && (millis() - bleConnectedTime > 8000)) {
             initialWifiCheckDone = true;
             wifiSettings.isDeployWifi = true;
          }
+      }
+      else {
+         bleWasConnected = false;
       }
 
       if (wifiSettings.isDeployWifi) {
@@ -2187,7 +2600,16 @@ int processHttpDownload(String fileName) {
    }
 
    if (WiFi.status() == WL_CONNECTED) {
-      dlSuccess = loadImageFromWeb(settings.downloadUrl, fileName);
+      dlSuccess = loadImageFromWeb(settings.downloadUrl, "tmp_raw.bin");
+      if (dlSuccess == 0) {
+         if (processImageFile("tmp_raw.bin", fileName.c_str())) {
+            dlSuccess = 0;
+         }
+         else {
+            Serial.println("[IMAGE] Failed to process image file");
+            dlSuccess = -1;
+         }
+      }
       Serial.println("[DL] Done");
       WiFi.setSleep(true);
    }
@@ -2305,7 +2727,7 @@ void setup() {
    }
 
 #if DEBUG
-   //test(); //-----------------test---------please remove
+   // test(); //-----------------test---------please remove
 #endif
 
    if (buttonWake) {

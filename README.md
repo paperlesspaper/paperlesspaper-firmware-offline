@@ -41,8 +41,10 @@ Offline first Firmware for an ESP32-C6 based E-Paper display device, featuring W
 - **Setup Mode (BLE Activation)**: Press the **reset button once** (the big button) to wake the device and activate Bluetooth (BLE). 
   - Once active, you can connect to the device via the Web-UI to configure settings or upload an image.
   - If you do not connect via BLE, the device will automatically fall back to normal operation after 30 seconds: it will try to connect to the configured WiFi to download a new image, or, if WiFi is unavailable/not configured, it will simply load the last stored image before going back to deep sleep.
-- **BLE Upload**: Easily load and dither an image in the Web-UI and transmit it to the display entirely offline via Bluetooth.
-- **WiFi Download**: Configure a Download URL (e.g., `http://local-server/image.bmp`), and the ESP32 will fetch the display contents via WiFi upon waking up.
+- **BLE Upload**: Easily load and dither an image in the Web-UI and transmit it to the display entirely offline via Bluetooth. (BLE expects pre-dithered raw payloads for maximum transmission efficiency).
+- **WiFi Download**: Configure a Download URL (e.g., `http://local-server/image.jpg` or `.bmp`), and the ESP32 will fetch the display contents via WiFi upon waking up. 
+  - **On-Device Dithering**: The firmware automatically detects whether the downloaded file is a pre-dithered 4-bit BMP, a standard 24-bit BMP, or a JPEG image. 
+  - 24-bit BMPs and JPEGs are dynamically scaled and perfectly dithered (Floyd-Steinberg) directly on the ESP32 to match the display's 6-color palette. This significantly reduces server-side preprocessing and allows fetching normal web JPEGs directly!
 - **Deep Sleep**: The device enters deep sleep to save power after an update. It wakes up via:
   - Timer (configurable duration).
   - Accelerometer (motion) (optional).
@@ -158,7 +160,7 @@ Die Firmware wird direkt in die OTA-Partition geflasht. Es gibt keinen Checkpoin
 - store multiple images
 - (done) ota upload via ble (revert back to cloud firmware)
 - (done) load device settings to web ui via ble (2 way sync)
-- on device dithering with jpg support
+- (done) on device dithering with jpg support
 - https://immich.app/ integration into firmware and config via ble
 - (done) electron tool to update offline firmware or web flasher
 - host the tool on our infrastructure (select latest firmware build too)

@@ -200,14 +200,7 @@ async function connectToDevice() {
     // Initialen Device Sync starten
     try {
       setStatus("Lese Geräteeinstellungen...", "text-blue-500");
-      // Lese WLAN
-      const ssidChar = await wifiService.getCharacteristic(WIFI_SSID_UUID);
-      const ssidVal = await ssidChar.readValue();
-      const ssidStr = new TextDecoder().decode(ssidVal).replace(/\0/g, "");
-      if (ssidStr !== "" && ssidStr !== "wifi-ssid") {
-        wifiSsid.value = ssidStr;
-        syncBadgeWifi.classList.remove("hidden");
-      }
+      // WLAN wird asynchron am Ende geladen
 
       // Lese URL
       const urlChar = await settingsService.getCharacteristic(URL_UUID);
@@ -272,7 +265,14 @@ async function connectToDevice() {
         const infoData = await infoChar.readValue();
         const info = JSON.parse(new TextDecoder().decode(infoData));
         if (info.ip) {
-            lblNetworkInfo.innerHTML = `Verbunden mit ${info.ssid}<br><span class="text-xs">IP: ${info.ip} | Signal: ${info.rssi}dBm</span>`;
+            if (typeof infoIp !== 'undefined' && infoIp) infoIp.innerText = info.ip;
+            if (typeof infoRssi !== 'undefined' && infoRssi) infoRssi.innerText = info.rssi + " dBm";
+            if (typeof infoSsid !== 'undefined' && infoSsid) infoSsid.innerText = info.ssid || "Netzwerk";
+            if (typeof infoQuality !== 'undefined' && infoQuality) {
+                if (info.rssi > -60) infoQuality.innerText = "Ausgezeichnet";
+                else if (info.rssi > -75) infoQuality.innerText = "Gut";
+                else infoQuality.innerText = "Schwach";
+            }
         }
       } catch(e) {
           console.error("Failed to read wifi info", e);
@@ -385,54 +385,68 @@ async function connectToDevice() {
       console.warn("Sync failed:", e);
     }
 
-    // Lade verfügbare WLANs herunter
-    try {
-      const deviceDataService = await server.getPrimaryService(DEVICE_DATA_SERVICE_UUID);
-      const scanChar = await deviceDataService.getCharacteristic(WIFI_SCAN_UUID);
-      
-      const processScanData = (data) => {
-        const scanText = new TextDecoder().decode(data);
-        if (scanText && scanText.length > 0) {
-          wifiList.innerHTML = ""; // Vorherige löschen
-          const networks = scanText.split("´´");
-          let foundNetworks = false;
-          networks.forEach((net) => {
-            if (!net) return;
-            const parts = net.split("´");
-            if (parts.length >= 1 && parts[0] && !parts[0].includes("...")) {
-              const option = document.createElement("option");
-              option.value = parts[0];
-              if (parts[1]) {
-                option.text = `${parts[0]} (Signal: ${parts[1]} dBm)`;
-              }
-              wifiList.appendChild(option);
-              foundNetworks = true;
-            }
-          });
-          
-          if(foundNetworks) {
-              isWifiScanned = true;
-          }
-          if(btnScanWifi && btnScanWifi.innerText === "Suche...") {
-              btnScanWifi.innerText = "Scan";
-              btnScanWifi.disabled = false;
-              btnScanWifi.classList.remove("opacity-50", "cursor-wait");
-          }
+    // Lade verfügbare WLANs und SSID asynchron herunter
+    setTimeout(async () => {
+      try {
+        const ssidChar = await wifiService.getCharacteristic(WIFI_SSID_UUID);
+        const ssidVal = await ssidChar.readValue();
+        const ssidStr = new TextDecoder().decode(ssidVal).replace(/\0/g, "");
+        if (ssidStr !== "" && ssidStr !== "wifi-ssid") {
+          wifiSsid.value = ssidStr;
+          syncBadgeWifi.classList.remove("hidden");
         }
-      };
-
-      await scanChar.startNotifications();
-      scanChar.addEventListener('characteristicvaluechanged', (event) => {
-          processScanData(event.target.value);
-      });
-      
-      const initialScanData = await scanChar.readValue();
-      if(initialScanData.byteLength > 0) {
-          processScanData(initialScanData);
+      } catch (e) {
+        console.warn("WLAN SSID konnte nicht geladen werden:", e);
       }
-    } catch (e) {
-      console.warn("WLAN Liste konnte nicht geladen werden:", e);
-    }
+
+      try {
+        const deviceDataService = await server.getPrimaryService(DEVICE_DATA_SERVICE_UUID);
+        const scanChar = await deviceDataService.getCharacteristic(WIFI_SCAN_UUID);
+        
+        const processScanData = (data) => {
+          const scanText = new TextDecoder().decode(data);
+          if (scanText && scanText.length > 0) {
+            wifiList.innerHTML = ""; // Vorherige löschen
+            const networks = scanText.split("´´");
+            let foundNetworks = false;
+            networks.forEach((net) => {
+              if (!net) return;
+              const parts = net.split("´");
+              if (parts.length >= 1 && parts[0] && !parts[0].includes("...")) {
+                const option = document.createElement("option");
+                option.value = parts[0];
+                if (parts[1]) {
+                  option.text = `${parts[0]} (Signal: ${parts[1]} dBm)`;
+                }
+                wifiList.appendChild(option);
+                foundNetworks = true;
+              }
+            });
+            
+            if(foundNetworks) {
+                isWifiScanned = true;
+            }
+            if(btnScanWifi && btnScanWifi.innerText === "Suche...") {
+                btnScanWifi.innerText = "Scan";
+                btnScanWifi.disabled = false;
+                btnScanWifi.classList.remove("opacity-50", "cursor-wait");
+            }
+          }
+        };
+
+        await scanChar.startNotifications();
+        scanChar.addEventListener('characteristicvaluechanged', (event) => {
+            processScanData(event.target.value);
+        });
+        
+        const initialScanData = await scanChar.readValue();
+        if(initialScanData.byteLength > 0) {
+            processScanData(initialScanData);
+        }
+      } catch (e) {
+        console.warn("WLAN Liste konnte nicht geladen werden:", e);
+      }
+    }, 100);
 
     setStatus("Erfolgreich Verbunden!", "text-green-600");
     btnConnect.classList.add("hidden");
