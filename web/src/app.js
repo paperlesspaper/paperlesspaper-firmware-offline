@@ -1,9 +1,8 @@
 function getBasePalette(val) {
   if (val === "spectra6Custom") return spectra6CustomPalette;
-  if (val === "spectra6Calibrated") return spectra6CalibratedPalette;
   return spectra6OriginalPalette;
 }
-import { ditherImage, applyImageAdjustments, spectra6OriginalPalette, spectra6Palette as spectra6CalibratedPalette, replaceColors, suggestCanvasProcessingOptions, getProcessingPresetOptions } from "epdoptimize";
+import { ditherImage, applyImageAdjustments, spectra6OriginalPalette, replaceColors, suggestCanvasProcessingOptions, getProcessingPresetOptions } from "epdoptimize";
 import newProfile from "./profiles/new.json";
 
 // --- Math and Profile Helpers ported from new project ---
@@ -117,7 +116,7 @@ function buildPaletteFromProfile(profile) {
   return palette;
 }
 
-function computeProfileAwareDitherOptions(profile) {
+function computeProfileAwareDitherOptions(profile, sourceCanvas) {
   const opts = {
     ditheringType: "errorDiffusion",
     errorDiffusionMatrix: "floydSteinberg",
@@ -163,13 +162,75 @@ function computeProfileAwareDitherOptions(profile) {
   
   const satBoost = Math.max(0, Math.min(0.6, (0.7 - avgSat) * 0.35));
 
+  let exposureVal = 0.05;
+  let contrastVal = 0.10;
+  let imgSatBoost = 0;
+
+  if (sourceCanvas && sourceCanvas.width > 0 && sourceCanvas.height > 0) {
+    const ctx = sourceCanvas.getContext("2d", { willReadFrequently: true });
+    const imgData = ctx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
+    const data = imgData.data;
+    
+    let totalLum = 0;
+    let totalSat = 0;
+    let lums = [];
+    
+    // Sample pixels for performance (every 16th pixel)
+    const step = 4 * 16;
+    let count = 0;
+    for (let i = 0; i < data.length; i += step) {
+      const r = data[i]/255, g = data[i+1]/255, b = data[i+2]/255;
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      const sat = max === 0 ? 0 : (max - min) / max;
+      
+      totalLum += lum;
+      totalSat += sat;
+      lums.push(lum);
+      count++;
+    }
+    
+    if (count > 0) {
+      const avgLum = totalLum / count;
+      const avgImageSat = totalSat / count;
+      
+      lums.sort((a,b) => a-b);
+      const p5 = lums[Math.floor(lums.length * 0.05)];
+      const p95 = lums[Math.floor(lums.length * 0.95)];
+      const dynamicRange = p95 - p5;
+      
+      // 1. Exposure: Push image luminance to slightly brighter than middle grey (0.55) to compensate for E-paper darkness
+      const targetLum = 0.55;
+      exposureVal = (targetLum - avgLum) * 0.5; // Apply 50% of the diff to avoid over-correction
+      exposureVal = Math.max(-0.2, Math.min(0.4, exposureVal));
+      
+      // 2. Contrast: Boost contrast if dynamic range is low
+      const targetRange = 0.8;
+      if (dynamicRange < targetRange) {
+         contrastVal = (targetRange - dynamicRange) * 0.6; 
+      } else {
+         contrastVal = 0.05; // Base contrast for E-Paper
+      }
+      contrastVal = Math.max(0, Math.min(0.5, contrastVal));
+      
+      // 3. Saturation: If image is inherently dull, boost it more
+      const targetImgSat = 0.4;
+      if (avgImageSat < targetImgSat) {
+         imgSatBoost = (targetImgSat - avgImageSat) * 0.5;
+      }
+    }
+  }
+
   opts.toneMapping = {
     mode: "scurve",
     strength: 0.9,
     shadowBoost: 0,
     highlightCompress: clampedHC,
     midpoint: 0.5,
-    saturation: satBoost,
+    exposure: exposureVal,
+    contrast: contrastVal,
+    saturation: Math.max(0.15, satBoost) + imgSatBoost,
   };
 
   return opts;
@@ -288,7 +349,6 @@ if (btnEditWifi) {
   });
 }
 
-const ditheringType = document.getElementById("ditheringType");
 const errorDiffusionMatrix = document.getElementById("errorDiffusionMatrix");
 const serpentine = document.getElementById("serpentine");
 
@@ -297,9 +357,16 @@ const paletteEditor = document.getElementById("paletteEditor");
 const processingBrightness = document.getElementById("processingBrightness");
 const processingContrast = document.getElementById("processingContrast");
 const processingSaturation = document.getElementById("processingSaturation");
-const btnRedither = document.getElementById("btnRedither");
 const btnAutoDither = document.getElementById("btnAutoDither");
 const btnRotate = document.getElementById("btnRotate");
+
+// Live Updates
+[errorDiffusionMatrix, paletteSelect, serpentine].forEach(el => {
+  if (el) el.addEventListener("change", () => { if (originalImage) updatePreviewAndBuffer(); });
+});
+[processingBrightness, processingContrast, processingSaturation].forEach(el => {
+  if (el) el.addEventListener("input", () => { if (originalImage) updatePreviewAndBuffer(); });
+});
 
 let originalImage = null;
 let customPalette = null;
@@ -1148,16 +1215,15 @@ async function updatePreviewAndBuffer(options = {}) {
   drawOriginalToCanvas(ctx);
 
   let imageData = ctx.getImageData(0, 0, EPD_WIDTH, EPD_HEIGHT);
-
-  const ditheringTypeVal = ditheringType.value;
-  const matrix = errorDiffusionMatrix.value;
-  const isSerpentine = serpentine.checked;
   let activePalette;
   if (paletteSelect && paletteSelect.value === "new") {
     activePalette = buildPaletteFromProfile({ name: "new.json", data: newProfile });
   } else {
     activePalette = customPalette || getBasePalette(paletteSelect ? paletteSelect.value : "spectra6Custom");
   }
+
+  const matrix = errorDiffusionMatrix.value;
+  const isSerpentine = serpentine.checked;
   const colorMode = "rgb";
 
   const brightnessInt = parseInt(processingBrightness.value, 10);
@@ -1168,7 +1234,7 @@ async function updatePreviewAndBuffer(options = {}) {
 
   const ditherOptions = {
     ...options, // Damit btnAutoDither das überschreiben kann
-    ditheringType: options.ditheringType ?? ditheringTypeVal,
+    ditheringType: "errorDiffusion",
     errorDiffusionMatrix: options.errorDiffusionMatrix ?? matrix,
     serpentine: options.serpentine ?? isSerpentine,
     colorMatching: options.colorMatching ?? colorMode,
@@ -1218,9 +1284,14 @@ async function updatePreviewAndBuffer(options = {}) {
 
     if (isNew) {
       renderDisplayPreview(canvas, { name: "new.json", data: newProfile });
+      const hoverCanvas = document.getElementById("previewHoverCanvas");
+      if (hoverCanvas) hoverCanvas.style.opacity = "1";
     } else {
       const hoverCanvas = document.getElementById("previewHoverCanvas");
-      if (hoverCanvas) hoverCanvas.getContext("2d").clearRect(0, 0, hoverCanvas.width, hoverCanvas.height);
+      if (hoverCanvas) {
+        hoverCanvas.getContext("2d").clearRect(0, 0, hoverCanvas.width, hoverCanvas.height);
+        hoverCanvas.style.opacity = "0";
+      }
     }
 
     btnUploadImage.disabled = false;
@@ -1258,9 +1329,7 @@ if (btnRotate) {
   });
 }
 
-btnRedither.addEventListener("click", () => {
-  if (originalImage) updatePreviewAndBuffer();
-});
+
 
 btnAutoDither.addEventListener("click", () => {
   if (!originalImage) return;
@@ -1268,10 +1337,9 @@ btnAutoDither.addEventListener("click", () => {
   drawOriginalToCanvas(ctx);
 
   if (paletteSelect && paletteSelect.value === "new") {
-    const resolvedOptions = computeProfileAwareDitherOptions({ name: "new.json", data: newProfile });
+    const resolvedOptions = computeProfileAwareDitherOptions({ name: "new.json", data: newProfile }, canvas);
     
     // UI nach Vorschlag updaten
-    ditheringType.value = resolvedOptions.ditheringType || "errorDiffusion";
     errorDiffusionMatrix.value = resolvedOptions.errorDiffusionMatrix || "floydSteinberg";
     serpentine.checked = resolvedOptions.serpentine ?? true;
 
@@ -1305,7 +1373,6 @@ btnAutoDither.addEventListener("click", () => {
     }
 
     // UI nach Vorschlag updaten
-    ditheringType.value = resolvedOptions.ditheringType || "errorDiffusion";
     errorDiffusionMatrix.value = resolvedOptions.errorDiffusionMatrix || "floydSteinberg";
     serpentine.checked = resolvedOptions.serpentine ?? true;
 
@@ -1707,12 +1774,14 @@ const previewHoverLabel = document.getElementById("previewHoverLabel");
 if (previewContainer) {
   previewContainer.addEventListener("mouseenter", () => {
     if (paletteSelect && paletteSelect.value === "new" && previewHoverCanvas && previewHoverCanvas.width > 0) {
-      previewHoverCanvas.style.opacity = "1";
+      previewHoverCanvas.style.opacity = "0";
       if (previewHoverLabel) previewHoverLabel.style.opacity = "1";
     }
   });
   previewContainer.addEventListener("mouseleave", () => {
-    if (previewHoverCanvas) previewHoverCanvas.style.opacity = "0";
+    if (paletteSelect && paletteSelect.value === "new" && previewHoverCanvas) {
+      previewHoverCanvas.style.opacity = "1";
+    }
     if (previewHoverLabel) previewHoverLabel.style.opacity = "0";
   });
 }
