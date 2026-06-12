@@ -4,7 +4,176 @@ function getBasePalette(val) {
   return spectra6OriginalPalette;
 }
 import { ditherImage, applyImageAdjustments, spectra6OriginalPalette, spectra6Palette as spectra6CalibratedPalette, replaceColors, suggestCanvasProcessingOptions, getProcessingPresetOptions } from "epdoptimize";
+import newProfile from "./profiles/new.json";
 
+// --- Math and Profile Helpers ported from new project ---
+const profilePaletteCache = new Map();
+
+function rgbArrayToHex(rgb) {
+  return "#" + rgb.map(c => Math.max(0, Math.min(255, Math.round(c))).toString(16).padStart(2, "0")).join("");
+}
+
+function matTranspose(A) {
+  const rows = A.length, cols = A[0].length;
+  const T = [];
+  for (let j = 0; j < cols; j++) {
+    T[j] = [];
+    for (let i = 0; i < rows; i++) T[j][i] = A[i][j];
+  }
+  return T;
+}
+
+function matMultiply(A, B) {
+  const m = A.length, n = B[0].length, p = B.length;
+  const C = [];
+  for (let i = 0; i < m; i++) {
+    C[i] = [];
+    for (let j = 0; j < n; j++) {
+      let s = 0;
+      for (let k = 0; k < p; k++) s += A[i][k] * B[k][j];
+      C[i][j] = s;
+    }
+  }
+  return C;
+}
+
+function matInverse(M) {
+  const n = M.length;
+  const aug = M.map((row, i) => {
+    const r = row.slice();
+    for (let j = 0; j < n; j++) r.push(i === j ? 1 : 0);
+    return r;
+  });
+  for (let col = 0; col < n; col++) {
+    let maxRow = col, maxVal = Math.abs(aug[col][col]);
+    for (let row = col + 1; row < n; row++) {
+      if (Math.abs(aug[row][col]) > maxVal) {
+        maxVal = Math.abs(aug[row][col]);
+        maxRow = row;
+      }
+    }
+    [aug[col], aug[maxRow]] = [aug[maxRow], aug[col]];
+    const pivot = aug[col][col];
+    if (Math.abs(pivot) < 1e-12) return null;
+    for (let j = 0; j < 2 * n; j++) aug[col][j] /= pivot;
+    for (let row = 0; row < n; row++) {
+      if (row === col) continue;
+      const factor = aug[row][col];
+      for (let j = 0; j < 2 * n; j++) aug[row][j] -= factor * aug[col][j];
+    }
+  }
+  return aug.map(row => row.slice(n));
+}
+
+function solveAffine(src, dst) {
+  const A_aug = src.map(row => [...row, 1]);
+  const At = matTranspose(A_aug);
+  const AtA = matMultiply(At, A_aug);
+  const AtA_inv = matInverse(AtA);
+  if (!AtA_inv) return [[1,0,0],[0,1,0],[0,0,1],[0,0,0]];
+  const AtB = matMultiply(At, dst);
+  return matMultiply(AtA_inv, AtB);
+}
+
+function computeLightingMatrix(reference) {
+  const patches = reference.filter(p => p.rgb);
+  if (patches.length < 4) return null;
+  const measured = patches.map(p => (p.measured || p.rgb).map(v => v / 255));
+  const trueRGB = patches.map(p => p.rgb.map(v => v / 255));
+  return solveAffine(measured, trueRGB);
+}
+
+function applyAffineToRGB(rgb, matrix) {
+  const r = rgb[0] / 255, g = rgb[1] / 255, b = rgb[2] / 255;
+  return [
+    Math.max(0, Math.min(255, Math.round((r * matrix[0][0] + g * matrix[1][0] + b * matrix[2][0] + matrix[3][0]) * 255))),
+    Math.max(0, Math.min(255, Math.round((r * matrix[0][1] + g * matrix[1][1] + b * matrix[2][1] + matrix[3][1]) * 255))),
+    Math.max(0, Math.min(255, Math.round((r * matrix[0][2] + g * matrix[1][2] + b * matrix[2][2] + matrix[3][2]) * 255))),
+  ];
+}
+
+function buildPaletteFromProfile(profile) {
+  const cacheKey = profile.name;
+  if (profilePaletteCache.has(cacheKey)) return profilePaletteCache.get(cacheKey);
+
+  const L_inv = profile.data.matrix || computeLightingMatrix(profile.data.reference);
+
+  const palette = profile.data.palette.map(p => {
+    let colorHex;
+    if (p.measured && L_inv) {
+      const corrected = applyAffineToRGB(p.measured, L_inv);
+      colorHex = rgbArrayToHex(corrected);
+    } else {
+      colorHex = p.deviceColor;
+    }
+    return {
+      name: p.id,
+      color: colorHex,
+      deviceColor: p.deviceColor,
+    };
+  });
+
+  profilePaletteCache.set(cacheKey, palette);
+  return palette;
+}
+
+function computeProfileAwareDitherOptions(profile) {
+  const opts = {
+    ditheringType: "errorDiffusion",
+    errorDiffusionMatrix: "floydSteinberg",
+    serpentine: true,
+  };
+
+  const paletteMeasured = profile.data.target;
+  if (!paletteMeasured || paletteMeasured.length === 0) return opts;
+
+  const whiteEntry = paletteMeasured.find(p => p.id === "white");
+  const blackEntry = paletteMeasured.find(p => p.id === "black");
+
+  let displayWhiteLum = 1.0;
+  let displayBlackLum = 0.0;
+  if (whiteEntry && whiteEntry.measured) {
+    displayWhiteLum = (whiteEntry.measured[0] * 0.299 + whiteEntry.measured[1] * 0.587 + whiteEntry.measured[2] * 0.114) / 255;
+  }
+  if (blackEntry && blackEntry.measured) {
+    displayBlackLum = (blackEntry.measured[0] * 0.299 + blackEntry.measured[1] * 0.587 + blackEntry.measured[2] * 0.114) / 255;
+  }
+
+  opts.dynamicRangeCompression = {
+    mode: "percentile",
+    strength: 0.85,
+    lowPercentile: 0.003,
+    highPercentile: 0.999,
+  };
+
+  opts.colorMatching = "rgb";
+
+  const highlightCompressValue = -1.5 - (0.65 - displayWhiteLum) * 5;
+  const clampedHC = Math.max(-3.0, Math.min(-0.5, highlightCompressValue));
+
+  const redEntry = paletteMeasured.find(p => p.id === "red");
+  const greenEntry = paletteMeasured.find(p => p.id === "green");
+  const blueEntry = paletteMeasured.find(p => p.id === "blue");
+
+  let avgSat = 1.0;
+  if (redEntry && redEntry.measured && greenEntry && greenEntry.measured && blueEntry && blueEntry.measured) {
+    const getSat = (rgb) => (Math.max(...rgb) - Math.min(...rgb)) / 255.0;
+    avgSat = (getSat(redEntry.measured) + getSat(greenEntry.measured) + getSat(blueEntry.measured)) / 3.0;
+  }
+  
+  const satBoost = Math.max(0, Math.min(0.6, (0.7 - avgSat) * 0.35));
+
+  opts.toneMapping = {
+    mode: "scurve",
+    strength: 0.9,
+    shadowBoost: 0,
+    highlightCompress: clampedHC,
+    midpoint: 0.5,
+    saturation: satBoost,
+  };
+
+  return opts;
+}
 /*
 const spectra6CustomPalette = [
   { name: "black", color: "#1f2226", deviceColor: "#000000" },
@@ -122,7 +291,7 @@ if (btnEditWifi) {
 const ditheringType = document.getElementById("ditheringType");
 const errorDiffusionMatrix = document.getElementById("errorDiffusionMatrix");
 const serpentine = document.getElementById("serpentine");
-const colorMatchingMode = document.getElementById("colorMatchingMode");
+
 const paletteSelect = document.getElementById("paletteSelect");
 const paletteEditor = document.getElementById("paletteEditor");
 const processingBrightness = document.getElementById("processingBrightness");
@@ -888,11 +1057,11 @@ function hexToRgb(h) {
   return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
 }
 
-function getClosestColorIndex(r, g, b, palette) {
+function getClosestColorIndex(r, g, b, palette, isNewProfile = false) {
   let minDst = Infinity;
   let bestIdx = 6;
   for (const entry of palette) {
-    const c = hexToRgb(entry.color);
+    const c = hexToRgb(isNewProfile ? entry.deviceColor : entry.color);
     const dst = (r - c.r) ** 2 + (g - c.g) ** 2 + (b - c.b) ** 2;
     if (dst < minDst) {
       minDst = dst;
@@ -900,6 +1069,51 @@ function getClosestColorIndex(r, g, b, palette) {
     }
   }
   return bestIdx;
+}
+
+function renderDisplayPreview(sourceCanvas, profile) {
+  if (!profile || !profile.data.palette.every(p => p.measured)) return;
+
+  const hoverCanvas = document.getElementById("previewHoverCanvas");
+  if (!hoverCanvas) return;
+
+  hoverCanvas.width = sourceCanvas.width;
+  hoverCanvas.height = sourceCanvas.height;
+
+  const hCtx = hoverCanvas.getContext("2d", { willReadFrequently: true });
+  const srcCtx = sourceCanvas.getContext("2d", { willReadFrequently: true });
+  const imgData = srcCtx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
+  const data = imgData.data;
+
+  const L_inv = profile.data.matrix || computeLightingMatrix(profile.data.reference);
+  const colorMap = new Map();
+  for (const p of profile.data.palette) {
+    if (p.measured) {
+      const corrected = L_inv ? applyAffineToRGB(p.measured, L_inv) : p.measured;
+      colorMap.set(p.deviceColor.toUpperCase(), corrected);
+    }
+  }
+
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    let minDist = Infinity;
+    let bestColor = null;
+    for (const [devHex, corrected] of colorMap) {
+      const ec = hexToRgb(devHex);
+      const dist = (r - ec.r) ** 2 + (g - ec.g) ** 2 + (b - ec.b) ** 2;
+      if (dist < minDist) {
+        minDist = dist;
+        bestColor = corrected;
+      }
+    }
+    if (bestColor) {
+      data[i] = bestColor[0];
+      data[i + 1] = bestColor[1];
+      data[i + 2] = bestColor[2];
+    }
+  }
+
+  hCtx.putImageData(imgData, 0, 0);
 }
 
 function drawOriginalToCanvas(targetCtx) {
@@ -938,8 +1152,13 @@ async function updatePreviewAndBuffer(options = {}) {
   const ditheringTypeVal = ditheringType.value;
   const matrix = errorDiffusionMatrix.value;
   const isSerpentine = serpentine.checked;
-  const activePalette = customPalette || getBasePalette(paletteSelect ? paletteSelect.value : "spectra6Custom");
-  const colorMode = colorMatchingMode.value;
+  let activePalette;
+  if (paletteSelect && paletteSelect.value === "new") {
+    activePalette = buildPaletteFromProfile({ name: "new.json", data: newProfile });
+  } else {
+    activePalette = customPalette || getBasePalette(paletteSelect ? paletteSelect.value : "spectra6Custom");
+  }
+  const colorMode = "rgb";
 
   const brightnessInt = parseInt(processingBrightness.value, 10);
   const contrastInt = parseInt(processingContrast.value, 10);
@@ -969,6 +1188,11 @@ async function updatePreviewAndBuffer(options = {}) {
       palette: activePalette,
     });
 
+    const isNew = (paletteSelect && paletteSelect.value === "new");
+    if (isNew) {
+      replaceColors(canvas, canvas, activePalette);
+    }
+
     const ditheredData = ctx.getImageData(0, 0, EPD_WIDTH, EPD_HEIGHT);
 
     let ditheredRaw = ditheredData.data;
@@ -984,12 +1208,19 @@ async function updatePreviewAndBuffer(options = {}) {
 
         // Finde über den Euklidischen Abstand immer die allerbeste Farbe aus dem Array von KNOWN_COLORS,
         // so umgehen wir fehlerhafte Hex-Vergleiche, falls der Dither leicht abweichende RGB-Werte nutzt (010101 anstatt 000000).
-        let colorIndex = getClosestColorIndex(r, g, b, activePalette);
+        let colorIndex = getClosestColorIndex(r, g, b, activePalette, isNew);
 
         let outIdx = Math.floor((y * EPD_WIDTH + x) / 2);
         if (x % 2 === 0) processedImageBuffer[outIdx] = colorIndex << 4;
         else processedImageBuffer[outIdx] |= colorIndex;
       }
+    }
+
+    if (isNew) {
+      renderDisplayPreview(canvas, { name: "new.json", data: newProfile });
+    } else {
+      const hoverCanvas = document.getElementById("previewHoverCanvas");
+      if (hoverCanvas) hoverCanvas.getContext("2d").clearRect(0, 0, hoverCanvas.width, hoverCanvas.height);
     }
 
     btnUploadImage.disabled = false;
@@ -1036,6 +1267,29 @@ btnAutoDither.addEventListener("click", () => {
 
   drawOriginalToCanvas(ctx);
 
+  if (paletteSelect && paletteSelect.value === "new") {
+    const resolvedOptions = computeProfileAwareDitherOptions({ name: "new.json", data: newProfile });
+    
+    // UI nach Vorschlag updaten
+    ditheringType.value = resolvedOptions.ditheringType || "errorDiffusion";
+    errorDiffusionMatrix.value = resolvedOptions.errorDiffusionMatrix || "floydSteinberg";
+    serpentine.checked = resolvedOptions.serpentine ?? true;
+
+    if (resolvedOptions.toneMapping) {
+      processingBrightness.value = Math.round((resolvedOptions.toneMapping.exposure ?? 0) * 100) || 0;
+      processingContrast.value = Math.round((resolvedOptions.toneMapping.contrast ?? 0) * 100) || 0;
+      processingSaturation.value = Math.round((resolvedOptions.toneMapping.saturation ?? 0) * 100) || 0;
+    } else {
+      processingBrightness.value = 0;
+      processingContrast.value = 0;
+      processingSaturation.value = 0;
+    }
+
+    setStatus(`Automatisches Setting gefunden: Custom Profile (new.json)`, "text-blue-500");
+    updatePreviewAndBuffer(resolvedOptions);
+    return;
+  }
+
   const activePalette = customPalette || getBasePalette(paletteSelect ? paletteSelect.value : "spectra6Custom");
 
   const suggestion = suggestCanvasProcessingOptions(canvas, activePalette, {
@@ -1054,7 +1308,6 @@ btnAutoDither.addEventListener("click", () => {
     ditheringType.value = resolvedOptions.ditheringType || "errorDiffusion";
     errorDiffusionMatrix.value = resolvedOptions.errorDiffusionMatrix || "floydSteinberg";
     serpentine.checked = resolvedOptions.serpentine ?? true;
-    colorMatchingMode.value = resolvedOptions.colorMatching || "rgb";
 
     if (resolvedOptions.toneMapping) {
       processingBrightness.value = Math.round((resolvedOptions.toneMapping.exposure ?? 0) * 100) || 0;
@@ -1400,13 +1653,10 @@ fwInput.addEventListener("change", (e) => {
 paletteSelect.addEventListener("change", () => {
   customPalette = null;
   renderPaletteEditor();
-  // By default, just reset the colorMatchingMode to rgb when switching palettes
-  colorMatchingMode.value = "rgb";
   if (originalImage) updatePreviewAndBuffer();
 });
 
-// Initialize correct color mode on load
-colorMatchingMode.value = "rgb";
+
 renderPaletteEditor();
 
 function renderPaletteEditor() {
@@ -1446,5 +1696,23 @@ function renderPaletteEditor() {
     wrap.appendChild(input);
     wrap.appendChild(label);
     paletteEditor.appendChild(wrap);
+  });
+}
+
+// --- Hover preview logic ---
+const previewContainer = document.getElementById("previewContainer");
+const previewHoverCanvas = document.getElementById("previewHoverCanvas");
+const previewHoverLabel = document.getElementById("previewHoverLabel");
+
+if (previewContainer) {
+  previewContainer.addEventListener("mouseenter", () => {
+    if (paletteSelect && paletteSelect.value === "new" && previewHoverCanvas && previewHoverCanvas.width > 0) {
+      previewHoverCanvas.style.opacity = "1";
+      if (previewHoverLabel) previewHoverLabel.style.opacity = "1";
+    }
+  });
+  previewContainer.addEventListener("mouseleave", () => {
+    if (previewHoverCanvas) previewHoverCanvas.style.opacity = "0";
+    if (previewHoverLabel) previewHoverLabel.style.opacity = "0";
   });
 }

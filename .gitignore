@@ -14,3 +14,8 @@ secrets.h
 *dist
 *testfiles
 *compile_commands.json
+*dither-test
+*web_old
+*web_new
+/web_old
+/web_new

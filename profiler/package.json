@@ -1,0 +1,19 @@
+{
+  "name": "profiler",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:open": "vite build && vite preview --open",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^8.0.12"
+  },
+  "dependencies": {
+    "epdoptimize": "^1.3.0",
+    "mathjs": "^15.2.0"
+  }
+}

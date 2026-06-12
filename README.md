@@ -164,3 +164,5 @@ Die Firmware wird direkt in die OTA-Partition geflasht. Es gibt keinen Checkpoin
 - https://immich.app/ integration into firmware and config via ble
 - (done) electron tool to update offline firmware or web flasher
 - host the tool on our infrastructure (select latest firmware build too)
+- bluetooth broadcast mode
+- add rotation setting to bluetooth

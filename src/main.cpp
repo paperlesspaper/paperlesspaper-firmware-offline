@@ -2666,6 +2666,7 @@ void setup() {
       gotToDeepSleep(86000, false, false);
    }
    systemData.wakeupCause = getWakeupReason();
+   tickerFailsave.once_ms(FAILSAVE_TIMER * 1000, timeoutFailsafe, 0);
 
    if (systemData.wakeupCause == wakeup_reason_t::BUTTON) {
       buttonWake = true;
@@ -2731,7 +2732,7 @@ void setup() {
 #endif
 
    if (buttonWake) {
-      tickerFailsave.once_ms(FAILSAVE_TIMER * 1000, timeoutFailsafe, 0);
+      tickerFailsave.detach();
       BleInit(CLIENT_ID, true);
       updateDisplayAsync("connect_bt");
       runSetupMode();
@@ -2741,11 +2742,10 @@ void setup() {
       // Always proceed to loop to fetch URL or refresh picture
       downloadStart = true;
       delay(200);
+      tickerFailsave.once_ms(FAILSAVE_TIMER * 1000, timeoutFailsafe, 0);
    }
 
    ledBlink(500, true);
-   tickerFailsave.detach();
-   tickerFailsave.once_ms(FAILSAVE_TIMER * 1000, timeoutFailsafe, 0);
 
    saveSettingsToFlash(EEPROM_SETTINGS_ADR);
    storeSleepTimeMem(settings.timeout);
