@@ -361,11 +361,28 @@ const btnAutoDither = document.getElementById("btnAutoDither");
 const btnRotate = document.getElementById("btnRotate");
 
 // Live Updates
+let updateTimeout = null;
+let lastUpdate = 0;
+function throttledUpdatePreview() {
+  if (!originalImage) return;
+  const now = Date.now();
+  if (now - lastUpdate >= 500) {
+    updatePreviewAndBuffer();
+    lastUpdate = now;
+  } else {
+    clearTimeout(updateTimeout);
+    updateTimeout = setTimeout(() => {
+      if (originalImage) updatePreviewAndBuffer();
+      lastUpdate = Date.now();
+    }, 500 - (now - lastUpdate));
+  }
+}
+
 [errorDiffusionMatrix, paletteSelect, serpentine].forEach(el => {
   if (el) el.addEventListener("change", () => { if (originalImage) updatePreviewAndBuffer(); });
 });
 [processingBrightness, processingContrast, processingSaturation].forEach(el => {
-  if (el) el.addEventListener("input", () => { if (originalImage) updatePreviewAndBuffer(); });
+  if (el) el.addEventListener("input", throttledUpdatePreview);
 });
 
 let originalImage = null;
@@ -1728,6 +1745,14 @@ renderPaletteEditor();
 
 function renderPaletteEditor() {
   if (!paletteEditor) return;
+
+  if (paletteSelect.value !== "spectra6Custom") {
+    paletteEditor.style.display = "none";
+    return;
+  } else {
+    paletteEditor.style.display = "flex";
+  }
+
   const basePalette = getBasePalette(paletteSelect.value);
 
   if (!customPalette) {
@@ -1749,10 +1774,7 @@ function renderPaletteEditor() {
     input.addEventListener("input", (e) => {
       customPalette[idx].color = e.target.value;
       input.title = c.name + " (" + e.target.value + ")";
-    });
-
-    input.addEventListener("change", () => {
-      if (originalImage) updatePreviewAndBuffer();
+      throttledUpdatePreview();
     });
 
     const label = document.createElement("span");
