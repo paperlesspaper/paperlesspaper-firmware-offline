@@ -7,7 +7,7 @@ Offline first Firmware for an ESP32-C6 based E-Paper display device, featuring W
 ## Hardware Requirements
 
 - **Microcontroller**: ESP32-C6-DevKitM-1
-- **Display**: Spectra 6 7.3 (EL073TF1)
+- **Display**: Spectra 6 7.3" (EL073TF1) **OR** Spectra 6 13.3" (EL133UF3)
 - **Sensors**: KXTJ3-1057 Accelerometer
 - **Other**: Battery, Charger circuit (see Hardware Settings below)
 
@@ -34,6 +34,7 @@ Offline first Firmware for an ESP32-C6 based E-Paper display device, featuring W
     - You can set WiFi credentials, a local HTTP download URL, the sleep timeout, or upload an image directly via Web-BLE.
 
 3.  **Build and Upload Firmware**
+    - Select your display size in `src/main.cpp` via the macro `#define SET_DISPLAY` (`0` for 7-inch, `1` for 13-inch).
     - Start your Devices **Boot Mode** (see "Hardware Settings" below for instructions)
     - Run the PlatformIO task: `General` -> `Upload`.
 
@@ -41,7 +42,7 @@ Offline first Firmware for an ESP32-C6 based E-Paper display device, featuring W
 - **Setup Mode (BLE Activation)**: Press the **reset button once** (the big button) to wake the device and activate Bluetooth (BLE). 
   - Once active, you can connect to the device via the Web-UI to configure settings or upload an image.
   - If you do not connect via BLE, the device will automatically fall back to normal operation after 30 seconds: it will try to connect to the configured WiFi to download a new image, or, if WiFi is unavailable/not configured, it will simply load the last stored image before going back to deep sleep.
-- **BLE Upload**: Easily load and dither an image in the Web-UI and transmit it to the display entirely offline via Bluetooth. (BLE expects pre-dithered raw payloads for maximum transmission efficiency).
+- **BLE Upload**: Easily load and dither an image in the Web-UI and transmit it to the display entirely offline via Bluetooth. (BLE expects pre-dithered raw payloads for maximum transmission efficiency). The Web-UI automatically detects your display size via BLE (7" vs 13") and adjusts the layout. For the 13" display, the live-preview is rendered at 1/4 resolution for smooth slider performance, while the final image is automatically processed in full 1200x1600 resolution upon upload.
 - **WiFi Download**: Configure a Download URL (e.g., `http://local-server/image.jpg` or `.bmp`), and the ESP32 will fetch the display contents via WiFi upon waking up. 
   - **On-Device Dithering**: The firmware automatically detects whether the downloaded file is a pre-dithered 4-bit BMP, a standard 24-bit BMP, or a JPEG image. 
   - 24-bit BMPs and JPEGs are dynamically scaled and perfectly dithered (Floyd-Steinberg) directly on the ESP32 to match the display's 6-color palette. This significantly reduces server-side preprocessing and allows fetching normal web JPEGs directly!
@@ -128,6 +129,7 @@ Verwaltet alle Einstellungen und kümmert sich um den Upload von Bildern und Fir
 | `10000008-...` | **HTTP Pass** | Read, Write | Passwort für HTTP Basic Auth. |
 | `10000009-...` | **Motion Wakeup** | Read, Write | `1` / `true` = Aufwecken bei Bewegung aktiviert (nur URL Modus). |
 | `1000000a-...` | **Charger Mode** | Read, Write | `1` / `true` = Ladefunktion für NiMH-Akkus aktiviert. |
+| `1000000c-...` | **Auto Rotation** | Read, Write | `1` / `true` = Automatische Bildschirmausrichtung via Accelerometer aktiviert. |
 
 ---
 

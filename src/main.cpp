@@ -209,7 +209,8 @@ struct settings
    bool chargerMode;
    String settingsUrl;
    String settingsLastModified;
-} settings = {.timeout = DEFAULT_SLEEP, .lut = "default", .showBatteryWarning = true, .showWifiWarning = true, .sleepDisabled = false, .downloadUrl = "", .httpAuthUser = "", .httpAuthPassword = "", .lastModified = "", .imageMode = 1, .motionWakeup = false, .chargerMode = false, .settingsUrl = "", .settingsLastModified = ""};
+   bool autoRotation;
+} settings = {.timeout = DEFAULT_SLEEP, .lut = "default", .showBatteryWarning = true, .showWifiWarning = true, .sleepDisabled = false, .downloadUrl = "", .httpAuthUser = "", .httpAuthPassword = "", .lastModified = "", .imageMode = 1, .motionWakeup = false, .chargerMode = false, .settingsUrl = "", .settingsLastModified = "", .autoRotation = true};
 
 // system read data
 struct systemData
@@ -320,7 +321,7 @@ void displaySetText(String info, bool blackBoard, bool quickRefresh = true);
 bool waitDisplayComplete(bool quick);
 int accInit(bool skipInit = false);
 bool accIntSet(int sensity);
-void checkOrientationInBackground(int setOrientValue, bool isRunning = true);
+void checkOrientationInBackground(int setOrientValue = -1, bool isRunning = true);
 bool chargeMode(bool enable);
 bool usbInit();
 bool usbCheckConnect();
@@ -959,6 +960,7 @@ void saveSettingsToFlash(int startAddr) {
    writeIntToFlash(settings.chargerMode, startAddr + 550);
    writeStringToFlash(settings.settingsUrl.c_str(), startAddr + 555);
    writeStringToFlash(settings.settingsLastModified.c_str(), startAddr + 685);
+   writeIntToFlash(settings.autoRotation, startAddr + 815);
    Serial.println("[MEM] Settings saved to EEPROM");
 }
 
@@ -978,6 +980,8 @@ void restoreSettingsToFlash(int startAddr) {
    settings.chargerMode = readIntFromFlash(startAddr + 550);
    settings.settingsUrl = readStringFromFlash(startAddr + 555);
    settings.settingsLastModified = readStringFromFlash(startAddr + 685);
+   int autoRot = readIntFromFlash(startAddr + 815);
+   settings.autoRotation = (autoRot == 0) ? false : true;
    Serial.println("[MEM] Settings restored from EEPROM");
    if (DEBUG_FLAG) {
       Serial.printf("[MEM] Settings - BatteryWarning: %d WifiWarning: %d SleepDisabled: %d ImageMode: %d MotionWakeup: %d ChargerMode: %d\n", settings.showBatteryWarning, settings.showWifiWarning, settings.sleepDisabled, settings.imageMode, settings.motionWakeup, settings.chargerMode);
@@ -1097,6 +1101,20 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
       }
       else if (uuidStr == "10000006-0000-0000-0000-000000000001") {
          String strVal = pCharacteristic->getValue().c_str();
+      }
+      else if (pCharacteristic->getUUID().toString() == "1000000a-0000-0000-0000-000000000001") {
+         String val = pCharacteristic->getValue().c_str();
+         settings.chargerMode = (val == "1" || val == "true");
+         Serial.printf("[BLE] Charger Mode updated to: %d\n", settings.chargerMode);
+         saveSettingsToFlash(EEPROM_SETTINGS_ADR);
+         chargeMode(settings.chargerMode);
+      }
+      else if (pCharacteristic->getUUID().toString() == "1000000c-0000-0000-0000-000000000001") {
+         String val = pCharacteristic->getValue().c_str();
+         settings.autoRotation = (val == "1" || val == "true");
+         Serial.printf("[BLE] Auto Rotation updated to: %d\n", settings.autoRotation);
+         saveSettingsToFlash(EEPROM_SETTINGS_ADR);
+         checkOrientationInBackground(-1);
       }
       else if (pCharacteristic->getUUID().toString() == "1000000b-0000-0000-0000-000000000001") {
          settings.settingsUrl = pCharacteristic->getValue().c_str();
@@ -1337,6 +1355,7 @@ bool BleInit(String deviceId, bool enable) {
    NimBLECharacteristic *httpAuthPasswordCharacteristic = epaperSettingsService->createCharacteristic("10000008-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
    NimBLECharacteristic *motionWakeupCharacteristic = epaperSettingsService->createCharacteristic("10000009-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
    NimBLECharacteristic *chargerModeCharacteristic = epaperSettingsService->createCharacteristic("1000000a-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+   NimBLECharacteristic *autoRotationCharacteristic = epaperSettingsService->createCharacteristic("1000000c-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
 
    wifiSsidCharacteristic->setCallbacks(&chrCallbacks);
    wifiPwCharacteristic->setCallbacks(&chrCallbacks);
@@ -1351,6 +1370,7 @@ bool BleInit(String deviceId, bool enable) {
    httpAuthPasswordCharacteristic->setCallbacks(&chrCallbacks);
    motionWakeupCharacteristic->setCallbacks(&chrCallbacks);
    chargerModeCharacteristic->setCallbacks(&chrCallbacks);
+   autoRotationCharacteristic->setCallbacks(&chrCallbacks);
 
    // Services are started when the server is started
 
@@ -1387,6 +1407,7 @@ bool BleInit(String deviceId, bool enable) {
    httpAuthPasswordCharacteristic->setValue(settings.httpAuthPassword.c_str());
    motionWakeupCharacteristic->setValue(settings.motionWakeup ? "1" : "0");
    chargerModeCharacteristic->setValue(settings.chargerMode ? "1" : "0");
+   autoRotationCharacteristic->setValue(settings.autoRotation ? "1" : "0");
 
    pAdvertising = NimBLEDevice::getAdvertising();
    pAdvertising->setName(deviceId.c_str());
@@ -1954,14 +1975,29 @@ int setImageFromFS_13inch(String fileName) {
    // EPD physical resolution is 1200x1600 (2 controllers of 600x1600 each)
    const int physWidth = EPD_HEIGHT;
    const int physHeight = EPD_WIDTH;
-   const int numChunks = 16;
-   const int linesPerChunk = physHeight / numChunks; // 1600 / 8 = 200
-   const int bytesPerHalfLine = physWidth / 4;       // 1200 / 4 = 300 Bytes
+
+   int numChunks = 16;
+   int linesPerChunk = physHeight / numChunks;
+   int bytesPerHalfLine = physWidth / 4;
 
    uint8_t *chunkBuffer = (uint8_t *)malloc(linesPerChunk * bytesPerHalfLine);
    if (!chunkBuffer) {
-      Serial.println("[BMP] Malloc for Streaming Buffer failed!");
-      return -1;
+      Serial.println("[BMP] Malloc for 16 chunks failed! Trying 32 chunks...");
+      numChunks = 32;
+      linesPerChunk = physHeight / numChunks;
+      chunkBuffer = (uint8_t *)malloc(linesPerChunk * bytesPerHalfLine);
+
+      if (!chunkBuffer) {
+         Serial.println("[BMP] Malloc for 32 chunks failed! Trying 64 chunks...");
+         numChunks = 64;
+         linesPerChunk = physHeight / numChunks;
+         chunkBuffer = (uint8_t *)malloc(linesPerChunk * bytesPerHalfLine);
+
+         if (!chunkBuffer) {
+            Serial.println("[BMP] Malloc for 64 chunks failed! Aborting.");
+            return -1;
+         }
+      }
    }
 
    Serial.println("[EPD] Streaming Partial Image to Display... ");
@@ -2583,6 +2619,27 @@ void recheckAccOrient(int setOrientValue) {
 }
 
 void checkOrientationInBackground(int setOrientValue, bool isRunning) {
+   if (setOrientValue < 0 || !settings.autoRotation) {
+      if (!settings.autoRotation) {
+         systemData.deviceOrientation = 0;
+         stopAccRecheck = true;
+         periodicAccCheck.detach();
+      }
+      else {
+         systemData.deviceOrientation = accInit();
+      }
+      // default is rotationText = 3 and rotationPicture = 2
+      if (systemData.deviceOrientation == 2 || systemData.deviceOrientation == 3) {
+         displaySettings.rotationText = 1;
+         displaySettings.rotationPicture = 0;
+      }
+      if (displaySettings.displayType == 1) {
+
+         displaySettings.rotationText++;
+         displaySettings.rotationPicture++;
+      }
+      return;
+   }
    if (isRunning) {
       stopAccRecheck = false;
       Serial.printf("[ACC] Background update start\n");
@@ -3151,18 +3208,7 @@ void setup() {
 
    setDeviceUid();
    // TODO: maybe do a function to generally check updated mem values
-
-   systemData.deviceOrientation = accInit();
-   // default is rotationText = 3 and rotationPicture = 2
-   if (systemData.deviceOrientation == 2 || systemData.deviceOrientation == 3) {
-      displaySettings.rotationText = 1;
-      displaySettings.rotationPicture = 0;
-   }
-   if (displaySettings.displayType == 1) {
-
-      displaySettings.rotationText++;
-      displaySettings.rotationPicture++;
-   }
+   checkOrientationInBackground(-1);
    checkDeviceBatch(displaySettings.displayType);
    float temperature = temperatureRead();
    if (DEBUG_FLAG)

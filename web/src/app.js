@@ -269,6 +269,7 @@ const HTTP_AUTH_PASS_UUID = "10000008-0000-0000-0000-000000000001"; // READ/WRIT
 const MOTION_WAKEUP_UUID = "10000009-0000-0000-0000-000000000001"; // READ/WRITE
 const CHARGER_MODE_UUID = "1000000a-0000-0000-0000-000000000001"; // READ/WRITE
 const SETTINGS_URL_UUID = "1000000b-0000-0000-0000-000000000001"; // READ/WRITE
+const AUTO_ROTATION_UUID = "1000000c-0000-0000-0000-000000000001"; // READ/WRITE
 
 const DEVICE_DATA_SERVICE_UUID = "7f74170e-7b0e-11ed-a1eb-0242ac120002";
 const WIFI_SCAN_UUID = "5131a3fc-7b0e-11ed-a1eb-0242ac120002";
@@ -311,6 +312,7 @@ const settingHttpAuthUser = document.getElementById("settingHttpAuthUser");
 const settingHttpAuthPassword = document.getElementById("settingHttpAuthPassword");
 const settingMotionWakeup = document.getElementById("settingMotionWakeup");
 const settingChargerMode = document.getElementById("settingChargerMode");
+const settingAutoRotation = document.getElementById("settingAutoRotation");
 const btnToggleHttpAuthPass = document.getElementById("btnToggleHttpAuthPass");
 const eyeHttpAuthIconOpen = document.getElementById("eyeHttpAuthIconOpen");
 const eyeHttpAuthIconClosed = document.getElementById("eyeHttpAuthIconClosed");
@@ -367,19 +369,19 @@ function throttledUpdatePreview() {
   if (!originalImage) return;
   const now = Date.now();
   if (now - lastUpdate >= 500) {
-    updatePreviewAndBuffer();
+    updatePreview();
     lastUpdate = now;
   } else {
     clearTimeout(updateTimeout);
     updateTimeout = setTimeout(() => {
-      if (originalImage) updatePreviewAndBuffer();
+      if (originalImage) updatePreview();
       lastUpdate = Date.now();
     }, 500 - (now - lastUpdate));
   }
 }
 
 [errorDiffusionMatrix, paletteSelect, serpentine].forEach(el => {
-  if (el) el.addEventListener("change", () => { if (originalImage) updatePreviewAndBuffer(); });
+  if (el) el.addEventListener("change", () => { if (originalImage) updatePreview(); });
 });
 [processingBrightness, processingContrast, processingSaturation].forEach(el => {
   if (el) el.addEventListener("input", throttledUpdatePreview);
@@ -492,6 +494,15 @@ async function connectToDevice() {
         const chargerModeData = await chargerModeChar.readValue();
         const chargerModeVal = new TextDecoder().decode(chargerModeData);
         settingChargerMode.checked = (chargerModeVal === "1" || chargerModeVal === "true");
+
+        try {
+          const autoRotationChar = await settingsService.getCharacteristic(AUTO_ROTATION_UUID);
+          const autoRotationData = await autoRotationChar.readValue();
+          const autoRotationVal = new TextDecoder().decode(autoRotationData);
+          settingAutoRotation.checked = (autoRotationVal === "1" || autoRotationVal === "true");
+        } catch (e) {
+          console.warn("Auto Rotation not supported by this firmware", e);
+        }
 
         const settingsUrlChar = await settingsService.getCharacteristic(SETTINGS_URL_UUID);
         const settingsUrlData = await settingsUrlChar.readValue();
@@ -767,7 +778,7 @@ btnConnect.addEventListener("click", async () => {
     canvas.width = EPD_WIDTH;
     canvas.height = EPD_HEIGHT;
     if (originalImage) {
-      updatePreviewAndBuffer();
+      updatePreview();
     }
 
     bleDevice.addEventListener("gattserverdisconnected", () => {
@@ -984,6 +995,9 @@ btnSaveSettings.addEventListener("click", async () => {
       const chargerModeChar = await settingsService.getCharacteristic(CHARGER_MODE_UUID);
       await chargerModeChar.writeValue(encoder.encode(settingChargerMode.checked ? "1" : "0"));
 
+      const autoRotationChar = await settingsService.getCharacteristic(AUTO_ROTATION_UUID);
+      await autoRotationChar.writeValue(encoder.encode(settingAutoRotation.checked ? "1" : "0"));
+
       const settingsUrlChar = await settingsService.getCharacteristic(SETTINGS_URL_UUID);
       await settingsUrlChar.writeValue(encoder.encode(settingSettingsUrl.value));
     } catch (e) {
@@ -1146,6 +1160,28 @@ settingChargerMode.addEventListener("change", async (e) => {
   }
 });
 
+settingAutoRotation.addEventListener("change", async (e) => {
+  if (!settingsService) return;
+  if (isWritingDirectSettings) {
+    e.target.checked = !e.target.checked; // Revert UI
+    return;
+  }
+  try {
+    isWritingDirectSettings = true;
+    settingAutoRotation.disabled = true;
+    const autoRotationChar = await settingsService.getCharacteristic(AUTO_ROTATION_UUID);
+    await autoRotationChar.writeValue(encodeText(settingAutoRotation.checked ? "1" : "0"));
+
+    const cmdChar = await settingsService.getCharacteristic(UPLOAD_CMD_UUID);
+    await cmdChar.writeValue(encodeText("SAVE_SETTINGS"));
+  } catch (err) {
+    console.error("Failed to update auto rotation directly", err);
+  } finally {
+    settingAutoRotation.disabled = false;
+    isWritingDirectSettings = false;
+  }
+});
+
 const SPECTRA_COLOR_INDICES = {
   black: 0,
   blue: 1,
@@ -1219,24 +1255,24 @@ function renderDisplayPreview(sourceCanvas, profile) {
   hCtx.putImageData(imgData, 0, 0);
 }
 
-function drawOriginalToCanvas(targetCtx) {
+function drawOriginalToCanvas(targetCtx, targetW = EPD_WIDTH, targetH = EPD_HEIGHT) {
   if (!originalImage) return;
 
   targetCtx.fillStyle = "white";
-  targetCtx.fillRect(0, 0, EPD_WIDTH, EPD_HEIGHT);
+  targetCtx.fillRect(0, 0, targetW, targetH);
 
   const isRotated = imageRotation === 90 || imageRotation === 270;
   const virtW = isRotated ? originalImage.height : originalImage.width;
   const virtH = isRotated ? originalImage.width : originalImage.height;
 
   // Modus: CONTAIN (Bild komplett sichtbar, "eingepasst").
-  let scale = Math.min(EPD_WIDTH / virtW, EPD_HEIGHT / virtH);
+  let scale = Math.min(targetW / virtW, targetH / virtH);
   let renderW = originalImage.width * scale;
   let renderH = originalImage.height * scale;
 
   targetCtx.save();
   // Zum Mittelpunkt des Canvas verschieben
-  targetCtx.translate(EPD_WIDTH / 2, EPD_HEIGHT / 2);
+  targetCtx.translate(targetW / 2, targetH / 2);
   targetCtx.rotate((imageRotation * Math.PI) / 180);
 
   // Das Bild relativ zu seinem eigenen Zentrum zeichnen
@@ -1245,12 +1281,23 @@ function drawOriginalToCanvas(targetCtx) {
   targetCtx.restore();
 }
 
-async function updatePreviewAndBuffer(options = {}) {
+let currentDitherOptions = {};
+
+async function updatePreview(options = {}) {
+  currentDitherOptions = options;
   if (!originalImage) return;
 
-  drawOriginalToCanvas(ctx);
+  const isPaperL = (EPD_WIDTH === 1200 && EPD_HEIGHT === 1600);
+  const scaleRatio = isPaperL ? 0.5 : 1.0;
+  
+  const previewW = Math.floor(EPD_WIDTH * scaleRatio);
+  const previewH = Math.floor(EPD_HEIGHT * scaleRatio);
 
-  let imageData = ctx.getImageData(0, 0, EPD_WIDTH, EPD_HEIGHT);
+  canvas.width = previewW;
+  canvas.height = previewH;
+
+  drawOriginalToCanvas(ctx, previewW, previewH);
+
   let activePalette;
   if (paletteSelect && paletteSelect.value === "new") {
     activePalette = buildPaletteFromProfile({ name: "new.json", data: newProfile });
@@ -1282,7 +1329,7 @@ async function updatePreviewAndBuffer(options = {}) {
     },
   };
 
-  setStatus("Erzeuge Dithering...", "text-yellow-600");
+  setStatus("Erzeuge Dithering Vorschau...", "text-yellow-600");
 
   try {
     await ditherImage(canvas, canvas, {
@@ -1293,29 +1340,6 @@ async function updatePreviewAndBuffer(options = {}) {
     const isNew = (paletteSelect && paletteSelect.value === "new");
     if (isNew) {
       replaceColors(canvas, canvas, activePalette);
-    }
-
-    const ditheredData = ctx.getImageData(0, 0, EPD_WIDTH, EPD_HEIGHT);
-
-    let ditheredRaw = ditheredData.data;
-    let outputCount = Math.ceil((EPD_WIDTH * EPD_HEIGHT) / 2);
-    processedImageBuffer = new Uint8Array(outputCount);
-
-    for (let y = 0; y < EPD_HEIGHT; y++) {
-      for (let x = 0; x < EPD_WIDTH; x++) {
-        let i = (y * EPD_WIDTH + x) * 4;
-        let r = ditheredRaw[i],
-          g = ditheredRaw[i + 1],
-          b = ditheredRaw[i + 2];
-
-        // Finde über den Euklidischen Abstand immer die allerbeste Farbe aus dem Array von KNOWN_COLORS,
-        // so umgehen wir fehlerhafte Hex-Vergleiche, falls der Dither leicht abweichende RGB-Werte nutzt (010101 anstatt 000000).
-        let colorIndex = getClosestColorIndex(r, g, b, activePalette, isNew);
-
-        let outIdx = Math.floor((y * EPD_WIDTH + x) / 2);
-        if (x % 2 === 0) processedImageBuffer[outIdx] = colorIndex << 4;
-        else processedImageBuffer[outIdx] |= colorIndex;
-      }
     }
 
     if (isNew) {
@@ -1332,10 +1356,80 @@ async function updatePreviewAndBuffer(options = {}) {
 
     btnUploadImage.disabled = false;
     btnDownloadBin.disabled = false;
-    setStatus("Bild optimiert und bereit zum Upload!", "text-green-600");
+    setStatus("Bildvorschau optimiert und bereit zum Upload!", "text-green-600");
   } catch (e) {
     setStatus("Fehler beim Dithering: " + e.message, "text-red-500");
     console.error(e);
+  }
+}
+
+async function generateFullBuffer(options = {}) {
+  if (!originalImage) return;
+
+  const fullCanvas = document.createElement("canvas");
+  fullCanvas.width = EPD_WIDTH;
+  fullCanvas.height = EPD_HEIGHT;
+  const fullCtx = fullCanvas.getContext("2d", { willReadFrequently: true });
+
+  drawOriginalToCanvas(fullCtx, EPD_WIDTH, EPD_HEIGHT);
+
+  let activePalette;
+  if (paletteSelect && paletteSelect.value === "new") {
+    activePalette = buildPaletteFromProfile({ name: "new.json", data: newProfile });
+  } else {
+    activePalette = customPalette || getBasePalette(paletteSelect ? paletteSelect.value : "spectra6Custom");
+  }
+
+  const matrix = errorDiffusionMatrix.value;
+  const isSerpentine = serpentine.checked;
+  const colorMode = "rgb";
+  const brightnessInt = parseInt(processingBrightness.value, 10);
+  const contrastInt = parseInt(processingContrast.value, 10);
+  const saturationInt = parseInt(processingSaturation.value, 10);
+  const toneMappingMode = brightnessInt !== 0 || contrastInt !== 0 || saturationInt !== 0 ? "contrast" : "off";
+
+  const ditherOptions = {
+    ...options,
+    ditheringType: "errorDiffusion",
+    errorDiffusionMatrix: options.errorDiffusionMatrix ?? matrix,
+    serpentine: options.serpentine ?? isSerpentine,
+    colorMatching: options.colorMatching ?? colorMode,
+    toneMapping: options.toneMapping || {
+      mode: toneMappingMode,
+      exposure: brightnessInt / 100,
+      contrast: contrastInt / 100,
+      saturation: saturationInt / 100,
+    },
+  };
+
+  await ditherImage(fullCanvas, fullCanvas, {
+    ...ditherOptions,
+    palette: activePalette,
+  });
+
+  const isNew = (paletteSelect && paletteSelect.value === "new");
+  if (isNew) {
+    replaceColors(fullCanvas, fullCanvas, activePalette);
+  }
+
+  const ditheredData = fullCtx.getImageData(0, 0, EPD_WIDTH, EPD_HEIGHT);
+  let ditheredRaw = ditheredData.data;
+  let outputCount = Math.ceil((EPD_WIDTH * EPD_HEIGHT) / 2);
+  processedImageBuffer = new Uint8Array(outputCount);
+
+  for (let y = 0; y < EPD_HEIGHT; y++) {
+    for (let x = 0; x < EPD_WIDTH; x++) {
+      let i = (y * EPD_WIDTH + x) * 4;
+      let r = ditheredRaw[i],
+        g = ditheredRaw[i + 1],
+        b = ditheredRaw[i + 2];
+
+      let colorIndex = getClosestColorIndex(r, g, b, activePalette, isNew);
+
+      let outIdx = Math.floor((y * EPD_WIDTH + x) / 2);
+      if (x % 2 === 0) processedImageBuffer[outIdx] = colorIndex << 4;
+      else processedImageBuffer[outIdx] |= colorIndex;
+    }
   }
 }
 
@@ -1352,7 +1446,7 @@ fileInput.addEventListener("change", (e) => {
     } else {
       imageRotation = 0;
     }
-    updatePreviewAndBuffer();
+    updatePreview();
   };
   originalImage.src = URL.createObjectURL(file);
 });
@@ -1361,7 +1455,7 @@ if (btnRotate) {
   btnRotate.addEventListener("click", () => {
     if (originalImage) {
       imageRotation = (imageRotation + 90) % 360;
-      updatePreviewAndBuffer();
+      updatePreview();
     }
   });
 }
@@ -1391,7 +1485,7 @@ btnAutoDither.addEventListener("click", () => {
     }
 
     setStatus(`Automatisches Setting gefunden: Custom Profile (new.json)`, "text-blue-500");
-    updatePreviewAndBuffer(resolvedOptions);
+    updatePreview(resolvedOptions);
     return;
   }
 
@@ -1428,12 +1522,20 @@ btnAutoDither.addEventListener("click", () => {
     // Anwenden ohne Preset Name, da wir die Parameter explizit manuell setzen
     // und so dem Benutzer weitere Anpassungen ermöglichen
     delete resolvedOptions.processingPreset;
-    updatePreviewAndBuffer(resolvedOptions);
+    updatePreview(resolvedOptions);
   }
 });
 
-btnDownloadBin.addEventListener("click", () => {
-  if (!processedImageBuffer) return;
+btnDownloadBin.addEventListener("click", async () => {
+  if (!originalImage) return;
+
+  try {
+    setStatus("Generiere volle Auflösung für Download...", "text-blue-500");
+    await generateFullBuffer(currentDitherOptions);
+  } catch (err) {
+    setStatus("Fehler beim Generieren: " + err.message, "text-red-500");
+    return;
+  }
 
   const headerSize = 118;
   const bufferSize = processedImageBuffer.length;
@@ -1515,7 +1617,17 @@ function calcCRC32(data) {
 
 // --- BLE Upload ---
 btnUploadImage.addEventListener("click", async () => {
-  if (!settingsService || !processedImageBuffer) return;
+  if (!settingsService || !originalImage) return;
+
+  try {
+    btnUploadImage.disabled = true;
+    setStatus("Generiere volle Auflösung für Upload...", "text-blue-500");
+    await generateFullBuffer(currentDitherOptions);
+  } catch (err) {
+    setStatus("Fehler beim Generieren: " + err.message, "text-red-500");
+    btnUploadImage.disabled = false;
+    return;
+  }
 
   try {
     btnUploadImage.disabled = true;
@@ -1757,7 +1869,7 @@ fwInput.addEventListener("change", (e) => {
 paletteSelect.addEventListener("change", () => {
   customPalette = null;
   renderPaletteEditor();
-  if (originalImage) updatePreviewAndBuffer();
+  if (originalImage) updatePreview();
 });
 
 
