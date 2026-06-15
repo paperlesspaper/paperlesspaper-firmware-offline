@@ -1,6 +1,7 @@
 #include <FS.h>
 #include <HTTPClient.h>
 #include <WiFi.h>
+#include <cstdint>
 #define DEST_FS_USES_SPIFFS
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -27,7 +28,7 @@
 #include <rom/rtc.h>
 
 #define DEBUG 1
-#define SET_DISPLAY 0 // 0 = 7-inch display, 1 = 13-inch display
+#define SET_DISPLAY 1 // 0 = 7-inch display, 1 = 13-inch display
 
 #if DEBUG
 #define PRINTS(s)         \
@@ -545,7 +546,7 @@ bool processImageFile(const char *rawFileName, const char *outFileName) {
          sf.erase();
          sf.close();
       }
-      SerialFlash.createErasable(outFileName, 192000);
+      SerialFlash.createErasable(outFileName, (EPD_WIDTH * EPD_HEIGHT / 2));
       rawOutFile = SerialFlash.open(outFileName);
 
       memset(err_curr, 0, sizeof(err_curr));
@@ -625,7 +626,7 @@ bool processImageFile(const char *rawFileName, const char *outFileName) {
             sf.erase();
             sf.close();
          }
-         SerialFlash.createErasable(outFileName, 192000);
+         SerialFlash.createErasable(outFileName, (EPD_WIDTH * EPD_HEIGHT / 2));
          rawOutFile = SerialFlash.open(outFileName);
 
          inFile.seek(0x0A);
@@ -1131,7 +1132,7 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
                f.erase();
                f.close();
             }
-            SerialFlash.createErasable("tmp.bmp", 192000);
+            SerialFlash.createErasable("tmp.bmp", (EPD_WIDTH * EPD_HEIGHT / 2) + 200); // Added 200 bytes for BMP header
             bleFile = SerialFlash.open("tmp.bmp");
             bleBytesReceived = 0;
             bleWriteBufferPos = 0;
@@ -1165,8 +1166,8 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
                bleFile.close();
             }
             Serial.printf("[BLE] Upload ENDED. Bytes: %d\n", bleBytesReceived);
-            if (bleBytesReceived != 192000) {
-               Serial.printf("[BLE] WARNING: Payload size mismatch! Expected 192000, got %d. Image will be corrupted!\n", bleBytesReceived);
+            if (bleBytesReceived != (EPD_WIDTH * EPD_HEIGHT / 2)) {
+               Serial.printf("[BLE] WARNING: Payload size mismatch! Expected %d, got %d. Image will be corrupted!\n", (EPD_WIDTH * EPD_HEIGHT / 2), bleBytesReceived);
             }
          }
          else if (cmd == "APPLY") {
@@ -1516,19 +1517,40 @@ int downloadAndSaveFile(String fileName, String url) {
 uint16_t getColor(uint8_t color) {
    switch (color) {
    case 0:
-      return GxEPD_BLACK;
+      if (displaySettings.displayType == 0)
+         return GxEPD_BLACK;
+      else
+         return 0x00;
    case 1:
-      return GxEPD_BLUE;
+      if (displaySettings.displayType == 0)
+         return GxEPD_BLUE;
+      else
+         return 0x05;
    case 2:
-      return GxEPD_GREEN;
+      if (displaySettings.displayType == 0)
+         return GxEPD_GREEN;
+      else
+         return 0x06;
    case 3:
-      return GxEPD_RED;
+      if (displaySettings.displayType == 0)
+         return GxEPD_RED;
+      else
+         return 0x03;
    case 5:
-      return GxEPD_YELLOW;
+      if (displaySettings.displayType == 0)
+         return GxEPD_YELLOW;
+      else
+         return 0x02;
    case 6:
-      return GxEPD_WHITE;
+      if (displaySettings.displayType == 0)
+         return GxEPD_WHITE;
+      else
+         return 0x01;
    default:
-      return GxEPD_WHITE;
+      if (displaySettings.displayType == 0)
+         return GxEPD_WHITE;
+      else
+         return 0x01;
    }
 }
 
@@ -1888,7 +1910,6 @@ int setImageFromFS_7inch(String fileName) {
 }
 
 int setImageFromFS_13inch(String fileName) {
-   unsigned char picInfoBuffer[4];
    epaperIsUpdating = true;
    powerSupplyDisplay(true);
    saveFile = SerialFlash.open(fileName.c_str());
@@ -1897,13 +1918,32 @@ int setImageFromFS_13inch(String fileName) {
       return -1;
    }
 
+   uint16_t width = EPD_WIDTH;
+   uint16_t height = EPD_HEIGHT;
+   int offsetData = 0;
+
+   // Check if the file is a standard BMP (starts with 'BM')
+   uint8_t magic[2];
    saveFile.seek(0);
-   saveFile.read(picInfoBuffer, 4);
-   uint16_t height = (picInfoBuffer[1] << 8) | (picInfoBuffer[0] & 0xff);
-   uint16_t width = (picInfoBuffer[3] << 8) | (picInfoBuffer[2] & 0xff);
-   Serial.printf("[BMP] Image H: %d W: %d \n", height, width);
-   if (width != EPD_WIDTH || height != EPD_HEIGHT) {
-      Serial.printf("[BMP] Image dimension mismatch! Must be %dx%d.\n", EPD_WIDTH, EPD_HEIGHT);
+   if (saveFile.read(magic, 2) == 2) {
+      if (magic[0] == 'B' && magic[1] == 'M') {
+         // It's a standard BMP file. Read the pixel data offset at byte 0x0A
+         saveFile.seek(0x0A);
+         uint32_t bmpOffset = 0;
+         saveFile.read((uint8_t *)&bmpOffset, 4);
+         offsetData = bmpOffset;
+         Serial.printf("[BMP] Detected Windows BMP. Pixel Data starts at offset: %d\n", offsetData);
+      }
+      else {
+         Serial.println("[BMP] Detected RAW payload (no BM magic). Reading from byte 0.");
+         offsetData = 0;
+      }
+   }
+
+   Serial.printf("[BMP] Loading Image H: %d W: %d\n", height, width);
+
+   if (width > EPD_WIDTH || height > EPD_HEIGHT) {
+      Serial.printf("[BMP] Image too wide or tall!");
       return -1;
    }
 
@@ -1942,7 +1982,7 @@ int setImageFromFS_13inch(String fileName) {
          for (int i = 0; i < linesPerChunk; i++) {
             int lineInImage = yImageStart + i;
             int byteOffsetInImage = (lineInImage * 600) + (half * 300);
-            saveFile.seek(4 + byteOffsetInImage);
+            saveFile.seek(offsetData + byteOffsetInImage);
             saveFile.read(chunkBuffer + i * bytesPerHalfLine, bytesPerHalfLine);
          }
          SPI.endTransaction();
@@ -3008,9 +3048,9 @@ void test() {
    //  displaySettings.displayQuickRefreshTime = 2900;//works cold
    ledBlink(200, false);
    setImageFromFS("tmp.bmp");
-   displayWipe(false);
+   // displayWipe(false);
 
-   displaySetText("Connect via Bluetooth", false, true);
+   // displaySetText("Connect via Bluetooth", false, true);
    delay(5000);
    gotToDeepSleep(0, true, false);
 

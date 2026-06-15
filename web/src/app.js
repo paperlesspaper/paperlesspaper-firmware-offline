@@ -69,7 +69,7 @@ function solveAffine(src, dst) {
   const At = matTranspose(A_aug);
   const AtA = matMultiply(At, A_aug);
   const AtA_inv = matInverse(AtA);
-  if (!AtA_inv) return [[1,0,0],[0,1,0],[0,0,1],[0,0,0]];
+  if (!AtA_inv) return [[1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, 0]];
   const AtB = matMultiply(At, dst);
   return matMultiply(AtA_inv, AtB);
 }
@@ -159,7 +159,7 @@ function computeProfileAwareDitherOptions(profile, sourceCanvas) {
     const getSat = (rgb) => (Math.max(...rgb) - Math.min(...rgb)) / 255.0;
     avgSat = (getSat(redEntry.measured) + getSat(greenEntry.measured) + getSat(blueEntry.measured)) / 3.0;
   }
-  
+
   const satBoost = Math.max(0, Math.min(0.6, (0.7 - avgSat) * 0.35));
 
   let exposureVal = 0.05;
@@ -170,54 +170,54 @@ function computeProfileAwareDitherOptions(profile, sourceCanvas) {
     const ctx = sourceCanvas.getContext("2d", { willReadFrequently: true });
     const imgData = ctx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
     const data = imgData.data;
-    
+
     let totalLum = 0;
     let totalSat = 0;
     let lums = [];
-    
+
     // Sample pixels for performance (every 16th pixel)
     const step = 4 * 16;
     let count = 0;
     for (let i = 0; i < data.length; i += step) {
-      const r = data[i]/255, g = data[i+1]/255, b = data[i+2]/255;
+      const r = data[i] / 255, g = data[i + 1] / 255, b = data[i + 2] / 255;
       const max = Math.max(r, g, b);
       const min = Math.min(r, g, b);
       const lum = 0.299 * r + 0.587 * g + 0.114 * b;
       const sat = max === 0 ? 0 : (max - min) / max;
-      
+
       totalLum += lum;
       totalSat += sat;
       lums.push(lum);
       count++;
     }
-    
+
     if (count > 0) {
       const avgLum = totalLum / count;
       const avgImageSat = totalSat / count;
-      
-      lums.sort((a,b) => a-b);
+
+      lums.sort((a, b) => a - b);
       const p5 = lums[Math.floor(lums.length * 0.05)];
       const p95 = lums[Math.floor(lums.length * 0.95)];
       const dynamicRange = p95 - p5;
-      
+
       // 1. Exposure: Push image luminance to slightly brighter than middle grey (0.55) to compensate for E-paper darkness
       const targetLum = 0.55;
       exposureVal = (targetLum - avgLum) * 0.5; // Apply 50% of the diff to avoid over-correction
       exposureVal = Math.max(-0.2, Math.min(0.4, exposureVal));
-      
+
       // 2. Contrast: Boost contrast if dynamic range is low
       const targetRange = 0.8;
       if (dynamicRange < targetRange) {
-         contrastVal = (targetRange - dynamicRange) * 0.6; 
+        contrastVal = (targetRange - dynamicRange) * 0.6;
       } else {
-         contrastVal = 0.05; // Base contrast for E-Paper
+        contrastVal = 0.05; // Base contrast for E-Paper
       }
       contrastVal = Math.max(0, Math.min(0.5, contrastVal));
-      
+
       // 3. Saturation: If image is inherently dull, boost it more
       const targetImgSat = 0.4;
       if (avgImageSat < targetImgSat) {
-         imgSatBoost = (targetImgSat - avgImageSat) * 0.5;
+        imgSatBoost = (targetImgSat - avgImageSat) * 0.5;
       }
     }
   }
@@ -275,9 +275,9 @@ const WIFI_SCAN_UUID = "5131a3fc-7b0e-11ed-a1eb-0242ac120002";
 const WIFI_CONNECTED_UUID = "4c578d4c-7b0e-11ed-a1eb-0242ac120002";
 const WIFI_INFO_UUID = "4c578d4d-7b0e-11ed-a1eb-0242ac120002";
 const SYSTEM_INFO_UUID = "60000001-7b0e-11ed-a1eb-0242ac120002";
-// ACHTUNG: Passe EPD_WIDTH/HEIGHT bei Bedarf an dein Panel an
-const EPD_WIDTH = 800;
-const EPD_HEIGHT = 480;
+// ACHTUNG: Wird dynamisch angepasst, basierend auf dem Bluetooth Namen
+let EPD_WIDTH = 800;
+let EPD_HEIGHT = 480;
 
 let bleDevice = null;
 let settingsService = null;
@@ -492,7 +492,7 @@ async function connectToDevice() {
         const chargerModeData = await chargerModeChar.readValue();
         const chargerModeVal = new TextDecoder().decode(chargerModeData);
         settingChargerMode.checked = (chargerModeVal === "1" || chargerModeVal === "true");
-        
+
         const settingsUrlChar = await settingsService.getCharacteristic(SETTINGS_URL_UUID);
         const settingsUrlData = await settingsUrlChar.readValue();
         settingSettingsUrl.value = new TextDecoder().decode(settingsUrlData).replace(/\0/g, "");
@@ -518,17 +518,17 @@ async function connectToDevice() {
         const infoData = await infoChar.readValue();
         const info = JSON.parse(new TextDecoder().decode(infoData));
         if (info.ip) {
-            if (typeof infoIp !== 'undefined' && infoIp) infoIp.innerText = info.ip;
-            if (typeof infoRssi !== 'undefined' && infoRssi) infoRssi.innerText = info.rssi + " dBm";
-            if (typeof infoSsid !== 'undefined' && infoSsid) infoSsid.innerText = info.ssid || "Netzwerk";
-            if (typeof infoQuality !== 'undefined' && infoQuality) {
-                if (info.rssi > -60) infoQuality.innerText = "Ausgezeichnet";
-                else if (info.rssi > -75) infoQuality.innerText = "Gut";
-                else infoQuality.innerText = "Schwach";
-            }
+          if (typeof infoIp !== 'undefined' && infoIp) infoIp.innerText = info.ip;
+          if (typeof infoRssi !== 'undefined' && infoRssi) infoRssi.innerText = info.rssi + " dBm";
+          if (typeof infoSsid !== 'undefined' && infoSsid) infoSsid.innerText = info.ssid || "Netzwerk";
+          if (typeof infoQuality !== 'undefined' && infoQuality) {
+            if (info.rssi > -60) infoQuality.innerText = "Ausgezeichnet";
+            else if (info.rssi > -75) infoQuality.innerText = "Gut";
+            else infoQuality.innerText = "Schwach";
+          }
         }
-      } catch(e) {
-          console.error("Failed to read wifi info", e);
+      } catch (e) {
+        console.error("Failed to read wifi info", e);
       }
 
       try {
@@ -536,7 +536,7 @@ async function connectToDevice() {
         const sysInfoData = await sysInfoChar.readValue();
         const jsonStr = new TextDecoder().decode(sysInfoData).replace(/\0/g, "");
         const sysInfo = JSON.parse(jsonStr);
-        
+
         const statusBar = document.getElementById("systemStatusBar");
         const voltageEl = document.getElementById("systemVoltage");
         const chargerEl = document.getElementById("systemChargerStatus");
@@ -546,57 +546,57 @@ async function connectToDevice() {
         const batteryIcon = document.getElementById("batteryIcon");
 
         const updateSystemStatusBar = (info) => {
-            if (!statusBar) return;
-            // Unhide status bar
-            statusBar.classList.remove("hidden");
-            setTimeout(() => statusBar.classList.remove("scale-95", "opacity-0"), 50);
+          if (!statusBar) return;
+          // Unhide status bar
+          statusBar.classList.remove("hidden");
+          setTimeout(() => statusBar.classList.remove("scale-95", "opacity-0"), 50);
 
-            // Update voltage
-            if (info.voltage > 4000) {
-                const v = (info.voltage / 1000).toFixed(2);
-                voltageEl.innerText = `${v} V`;
-                batteryIconBg.setAttribute("class", "bg-green-100 p-2 rounded-full");
-                batteryIcon.setAttribute("class", "w-5 h-5 text-green-600");
-            } else {
-                voltageEl.innerText = "Keine Batterie";
-                batteryIconBg.setAttribute("class", "bg-red-100 p-2 rounded-full");
-                batteryIcon.setAttribute("class", "w-5 h-5 text-red-600");
-            }
+          // Update voltage
+          if (info.voltage > 4000) {
+            const v = (info.voltage / 1000).toFixed(2);
+            voltageEl.innerText = `${v} V`;
+            batteryIconBg.setAttribute("class", "bg-green-100 p-2 rounded-full");
+            batteryIcon.setAttribute("class", "w-5 h-5 text-green-600");
+          } else {
+            voltageEl.innerText = "Keine Batterie";
+            batteryIconBg.setAttribute("class", "bg-red-100 p-2 rounded-full");
+            batteryIcon.setAttribute("class", "w-5 h-5 text-red-600");
+          }
 
-            // Update USB status
-            if (info.usb) {
-                if (info.charging) {
-                    chargerEl.innerText = "Verbunden (Lädt)";
-                    chargerEl.className = "text-sm font-bold text-green-600";
-                    chargerIconBg.setAttribute("class", "bg-green-100 p-2 rounded-full transition-colors");
-                    chargerIcon.setAttribute("class", "w-5 h-5 text-green-600 transition-colors");
-                } else {
-                    chargerEl.innerText = "Verbunden";
-                    chargerEl.className = "text-sm font-bold text-blue-600";
-                    chargerIconBg.setAttribute("class", "bg-blue-100 p-2 rounded-full transition-colors");
-                    chargerIcon.setAttribute("class", "w-5 h-5 text-blue-600 transition-colors");
-                }
+          // Update USB status
+          if (info.usb) {
+            if (info.charging) {
+              chargerEl.innerText = "Verbunden (Lädt)";
+              chargerEl.className = "text-sm font-bold text-green-600";
+              chargerIconBg.setAttribute("class", "bg-green-100 p-2 rounded-full transition-colors");
+              chargerIcon.setAttribute("class", "w-5 h-5 text-green-600 transition-colors");
             } else {
-                chargerEl.innerText = "Nicht verbunden";
-                chargerEl.className = "text-sm font-bold text-gray-500";
-                chargerIconBg.setAttribute("class", "bg-gray-100 p-2 rounded-full transition-colors");
-                chargerIcon.setAttribute("class", "w-5 h-5 text-gray-500 transition-colors");
+              chargerEl.innerText = "Verbunden";
+              chargerEl.className = "text-sm font-bold text-blue-600";
+              chargerIconBg.setAttribute("class", "bg-blue-100 p-2 rounded-full transition-colors");
+              chargerIcon.setAttribute("class", "w-5 h-5 text-blue-600 transition-colors");
             }
+          } else {
+            chargerEl.innerText = "Nicht verbunden";
+            chargerEl.className = "text-sm font-bold text-gray-500";
+            chargerIconBg.setAttribute("class", "bg-gray-100 p-2 rounded-full transition-colors");
+            chargerIcon.setAttribute("class", "w-5 h-5 text-gray-500 transition-colors");
+          }
         };
 
         updateSystemStatusBar(sysInfo);
 
         sysInfoChar.addEventListener("characteristicvaluechanged", (e) => {
-            const str = new TextDecoder().decode(e.target.value).replace(/\0/g, "");
-            if (str.length > 2) {
-                try {
-                    updateSystemStatusBar(JSON.parse(str));
-                } catch(err) { }
-            }
+          const str = new TextDecoder().decode(e.target.value).replace(/\0/g, "");
+          if (str.length > 2) {
+            try {
+              updateSystemStatusBar(JSON.parse(str));
+            } catch (err) { }
+          }
         });
         await sysInfoChar.startNotifications();
-      } catch(e) {
-          console.error("Failed to read system info", e);
+      } catch (e) {
+        console.error("Failed to read system info", e);
       }
 
       // Hide loading screen and show app
@@ -655,7 +655,7 @@ async function connectToDevice() {
       try {
         const deviceDataService = await server.getPrimaryService(DEVICE_DATA_SERVICE_UUID);
         const scanChar = await deviceDataService.getCharacteristic(WIFI_SCAN_UUID);
-        
+
         const processScanData = (data) => {
           const scanText = new TextDecoder().decode(data);
           if (scanText && scanText.length > 0) {
@@ -675,26 +675,26 @@ async function connectToDevice() {
                 foundNetworks = true;
               }
             });
-            
-            if(foundNetworks) {
-                isWifiScanned = true;
+
+            if (foundNetworks) {
+              isWifiScanned = true;
             }
-            if(btnScanWifi && btnScanWifi.innerText === "Suche...") {
-                btnScanWifi.innerText = "Scan";
-                btnScanWifi.disabled = false;
-                btnScanWifi.classList.remove("opacity-50", "cursor-wait");
+            if (btnScanWifi && btnScanWifi.innerText === "Suche...") {
+              btnScanWifi.innerText = "Scan";
+              btnScanWifi.disabled = false;
+              btnScanWifi.classList.remove("opacity-50", "cursor-wait");
             }
           }
         };
 
         await scanChar.startNotifications();
         scanChar.addEventListener('characteristicvaluechanged', (event) => {
-            processScanData(event.target.value);
+          processScanData(event.target.value);
         });
-        
+
         const initialScanData = await scanChar.readValue();
-        if(initialScanData.byteLength > 0) {
-            processScanData(initialScanData);
+        if (initialScanData.byteLength > 0) {
+          processScanData(initialScanData);
         }
       } catch (e) {
         console.warn("WLAN Liste konnte nicht geladen werden:", e);
@@ -704,16 +704,16 @@ async function connectToDevice() {
     setStatus("Erfolgreich Verbunden!", "text-green-600");
     btnConnect.classList.add("hidden");
     btnDisconnect.classList.remove("hidden");
-    
+
     if (controlsOta) {
-        controlsOta.classList.remove("hidden");
-        setTimeout(() => controlsOta.classList.remove("opacity-0"), 100);
+      controlsOta.classList.remove("hidden");
+      setTimeout(() => controlsOta.classList.remove("opacity-0"), 100);
     }
-    
+
     if (btnUploadImage) {
-        btnUploadImage.disabled = false;
-        btnUploadImage.classList.replace("bg-gray-400", "bg-green-500");
-        btnUploadImage.innerText = "Bild auf Display senden (BLE)";
+      btnUploadImage.disabled = false;
+      btnUploadImage.classList.replace("bg-gray-400", "bg-green-500");
+      btnUploadImage.innerText = "Bild auf Display senden (BLE)";
     }
 
     // UI einblenden
@@ -722,22 +722,22 @@ async function connectToDevice() {
   } catch (error) {
     console.error(error);
     if (!manualDisconnect) {
-        reconnectAttempts++;
-        if (reconnectAttempts <= 12) {
-            setStatus(`Verbindungsfehler. Reconnect in 5s... (${reconnectAttempts}/12)`, "text-orange-500");
-            if (reconnectInterval) clearTimeout(reconnectInterval);
-            reconnectInterval = setTimeout(() => {
-                connectToDevice();
-            }, 5000);
-        } else {
-            setStatus("Verbindung endgültig verloren.", "text-red-500");
-            btnConnect.classList.remove("hidden");
-            btnDisconnect.classList.add("hidden");
-        }
-    } else {
-        setStatus("Verbindung abgebrochen oder getrennt.", "text-orange-500");
+      reconnectAttempts++;
+      if (reconnectAttempts <= 12) {
+        setStatus(`Verbindungsfehler. Reconnect in 5s... (${reconnectAttempts}/12)`, "text-orange-500");
+        if (reconnectInterval) clearTimeout(reconnectInterval);
+        reconnectInterval = setTimeout(() => {
+          connectToDevice();
+        }, 5000);
+      } else {
+        setStatus("Verbindung endgültig verloren.", "text-red-500");
         btnConnect.classList.remove("hidden");
         btnDisconnect.classList.add("hidden");
+      }
+    } else {
+      setStatus("Verbindung abgebrochen oder getrennt.", "text-orange-500");
+      btnConnect.classList.remove("hidden");
+      btnDisconnect.classList.add("hidden");
     }
   }
 }
@@ -751,41 +751,60 @@ btnConnect.addEventListener("click", async () => {
       optionalServices: [SETTINGS_SERVICE_UUID, WIFI_SERVICE_UUID, DEVICE_DATA_SERVICE_UUID],
     });
 
+    if (bleDevice.name && bleDevice.name.startsWith("epd13-")) {
+      EPD_WIDTH = 1200;
+      EPD_HEIGHT = 1600;
+      document.title = "paper L Setup";
+      const headerTitle = document.querySelector("h1");
+      if (headerTitle) headerTitle.innerText = "paper L Setup";
+    } else {
+      EPD_WIDTH = 800;
+      EPD_HEIGHT = 480;
+      document.title = "paper 7 Setup";
+      const headerTitle = document.querySelector("h1");
+      if (headerTitle) headerTitle.innerText = "E-Paper Setup";
+    }
+    canvas.width = EPD_WIDTH;
+    canvas.height = EPD_HEIGHT;
+    if (originalImage) {
+      updatePreviewAndBuffer();
+    }
+
     bleDevice.addEventListener("gattserverdisconnected", () => {
       controls.classList.add("hidden", "opacity-0");
       settingsService = null;
       wifiService = null;
-      
+
       if (controlsOta) controlsOta.classList.add("hidden", "opacity-0");
-      
+
       const statusBar = document.getElementById("systemStatusBar");
       if (statusBar) {
-          statusBar.classList.add("opacity-0", "scale-95");
-          setTimeout(() => statusBar.classList.add("hidden"), 500);
+        statusBar.classList.add("opacity-0", "scale-95");
+        setTimeout(() => statusBar.classList.add("hidden"), 500);
       }
-      
+
       if (btnUploadImage) {
-          btnUploadImage.disabled = true;
-          btnUploadImage.classList.replace("bg-green-500", "bg-gray-400");
-          btnUploadImage.innerText = "Bild auf Display senden (BLE - nicht verbunden)";
+        btnUploadImage.disabled = true;
+        btnUploadImage.classList.replace("bg-green-500", "bg-gray-400");
+        btnUploadImage.innerText = "Bild auf Display senden (BLE - nicht verbunden)";
       }
-      
+
       isScanningWifi = false;
       isWifiScanned = false;
       wifiList.innerHTML = "";
-      
+
       if (reconnectInterval) clearTimeout(reconnectInterval);
-      
+
       if (!manualDisconnect) {
-          reconnectAttempts = 1;
-          setStatus(`Verbindung unterbrochen. Reconnect in 5s... (${reconnectAttempts}/12)`, "text-orange-500");
-          reconnectInterval = setTimeout(() => {
-              connectToDevice();
-          }, 5000);
+        reconnectAttempts = 1;
+        setStatus(`Verbindung unterbrochen. Reconnect in 5s... (${reconnectAttempts}/12)`, "text-orange-500");
+        reconnectInterval = setTimeout(() => {
+          connectToDevice();
+        }, 5000);
       } else {
-          setStatus("Gerät getrennt.", "text-orange-500");
-          btnConnect.classList.remove("hidden");
-          btnDisconnect.classList.add("hidden");
+        setStatus("Gerät getrennt.", "text-orange-500");
+        btnConnect.classList.remove("hidden");
+        btnDisconnect.classList.add("hidden");
       }
     });
 
@@ -801,14 +820,14 @@ btnDisconnect.addEventListener("click", async () => {
     manualDisconnect = true;
     if (reconnectInterval) clearTimeout(reconnectInterval);
     setStatus("Trenne Verbindung...", "text-orange-500");
-    
+
     try {
-        const cmdChar = await settingsService.getCharacteristic(UPLOAD_CMD_UUID);
-        await cmdChar.writeValue(encodeText("EXIT_SETUP"));
-    } catch(e) {
-        console.warn("Could not send EXIT_SETUP", e);
+      const cmdChar = await settingsService.getCharacteristic(UPLOAD_CMD_UUID);
+      await cmdChar.writeValue(encodeText("EXIT_SETUP"));
+    } catch (e) {
+      console.warn("Could not send EXIT_SETUP", e);
     }
-    
+
     bleDevice.gatt.disconnect();
   }
 });
@@ -817,30 +836,30 @@ let isScanningWifi = false;
 let isWifiScanned = false;
 
 btnScanWifi.addEventListener("click", async () => {
-    if (settingsService && !isScanningWifi && !isWifiScanned) {
-        try {
-            isScanningWifi = true;
-            btnScanWifi.innerText = "Suche...";
-            btnScanWifi.disabled = true;
-            btnScanWifi.classList.add("opacity-50", "cursor-wait");
-            const cmdChar = await settingsService.getCharacteristic(UPLOAD_CMD_UUID);
-            await cmdChar.writeValue(encodeText("SCAN_WIFI"));
-            setTimeout(() => { 
-                isScanningWifi = false; 
-                if (btnScanWifi.innerText === "Suche...") {
-                    btnScanWifi.innerText = "Scan";
-                    btnScanWifi.disabled = false;
-                    btnScanWifi.classList.remove("opacity-50", "cursor-wait");
-                }
-            }, 5000);
-        } catch (e) {
-            console.error("Failed to trigger WLAN Scan:", e);
-            btnScanWifi.innerText = "Scan";
-            btnScanWifi.disabled = false;
-            btnScanWifi.classList.remove("opacity-50", "cursor-wait");
-            isScanningWifi = false;
+  if (settingsService && !isScanningWifi && !isWifiScanned) {
+    try {
+      isScanningWifi = true;
+      btnScanWifi.innerText = "Suche...";
+      btnScanWifi.disabled = true;
+      btnScanWifi.classList.add("opacity-50", "cursor-wait");
+      const cmdChar = await settingsService.getCharacteristic(UPLOAD_CMD_UUID);
+      await cmdChar.writeValue(encodeText("SCAN_WIFI"));
+      setTimeout(() => {
+        isScanningWifi = false;
+        if (btnScanWifi.innerText === "Suche...") {
+          btnScanWifi.innerText = "Scan";
+          btnScanWifi.disabled = false;
+          btnScanWifi.classList.remove("opacity-50", "cursor-wait");
         }
+      }, 5000);
+    } catch (e) {
+      console.error("Failed to trigger WLAN Scan:", e);
+      btnScanWifi.innerText = "Scan";
+      btnScanWifi.disabled = false;
+      btnScanWifi.classList.remove("opacity-50", "cursor-wait");
+      isScanningWifi = false;
     }
+  }
 });
 
 btnSaveWifi.addEventListener("click", async () => {
@@ -928,7 +947,7 @@ btnSaveSettings.addEventListener("click", async () => {
         urlValidationStatus.classList.remove("hidden");
         urlValidationStatus.className = "text-sm font-medium mb-4 text-purple-500";
         urlValidationStatus.innerText = "Prüfe URL...";
-        
+
         try {
           await new Promise((resolve, reject) => {
             const img = new Image();
@@ -945,32 +964,32 @@ btnSaveSettings.addEventListener("click", async () => {
         }
       }
     } else {
-        const urlChar = await settingsService.getCharacteristic(URL_UUID);
-        await urlChar.writeValue(encoder.encode(""));
+      const urlChar = await settingsService.getCharacteristic(URL_UUID);
+      await urlChar.writeValue(encoder.encode(""));
     }
 
     const timeoutChar = await settingsService.getCharacteristic(TIMEOUT_UUID);
     await timeoutChar.writeValue(encoder.encode(settingTimeout.value || "3600"));
 
     try {
-        const httpAuthUserChar = await settingsService.getCharacteristic(HTTP_AUTH_USER_UUID);
-        await httpAuthUserChar.writeValue(encoder.encode(settingHttpAuthUser.value));
+      const httpAuthUserChar = await settingsService.getCharacteristic(HTTP_AUTH_USER_UUID);
+      await httpAuthUserChar.writeValue(encoder.encode(settingHttpAuthUser.value));
 
-        const httpAuthPasswordChar = await settingsService.getCharacteristic(HTTP_AUTH_PASS_UUID);
-        await httpAuthPasswordChar.writeValue(encoder.encode(settingHttpAuthPassword.value));
+      const httpAuthPasswordChar = await settingsService.getCharacteristic(HTTP_AUTH_PASS_UUID);
+      await httpAuthPasswordChar.writeValue(encoder.encode(settingHttpAuthPassword.value));
 
-        const motionWakeupChar = await settingsService.getCharacteristic(MOTION_WAKEUP_UUID);
-        await motionWakeupChar.writeValue(encoder.encode(settingMotionWakeup.checked ? "1" : "0"));
+      const motionWakeupChar = await settingsService.getCharacteristic(MOTION_WAKEUP_UUID);
+      await motionWakeupChar.writeValue(encoder.encode(settingMotionWakeup.checked ? "1" : "0"));
 
-        const chargerModeChar = await settingsService.getCharacteristic(CHARGER_MODE_UUID);
-        await chargerModeChar.writeValue(encoder.encode(settingChargerMode.checked ? "1" : "0"));
-        
-        const settingsUrlChar = await settingsService.getCharacteristic(SETTINGS_URL_UUID);
-        await settingsUrlChar.writeValue(encoder.encode(settingSettingsUrl.value));
+      const chargerModeChar = await settingsService.getCharacteristic(CHARGER_MODE_UUID);
+      await chargerModeChar.writeValue(encoder.encode(settingChargerMode.checked ? "1" : "0"));
+
+      const settingsUrlChar = await settingsService.getCharacteristic(SETTINGS_URL_UUID);
+      await settingsUrlChar.writeValue(encoder.encode(settingSettingsUrl.value));
     } catch (e) {
-        console.warn("Alte Firmware: Erweiterte Settings werden ignoriert", e);
+      console.warn("Alte Firmware: Erweiterte Settings werden ignoriert", e);
     }
-    
+
     // Tell the firmware to save all written settings to EEPROM at once
     const cmdChar = await settingsService.getCharacteristic(UPLOAD_CMD_UUID);
     await cmdChar.writeValue(encoder.encode("SAVE_SETTINGS"));
@@ -986,75 +1005,75 @@ btnSaveSettings.addEventListener("click", async () => {
 let tempJsonSettings = null;
 
 document.getElementById("btnPreviewJson")?.addEventListener("click", async () => {
-    const rawUrl = settingSettingsUrl.value;
-    if (!rawUrl) {
-        alert("Bitte zuerst eine JSON URL eingeben.");
-        return;
-    }
-    
-    // Cache-Busting: Anfügen eines Timestamps, damit Proxys/Browser nicht cachen
-    const cacheBuster = "nocache=" + new Date().getTime();
-    const url = rawUrl + (rawUrl.includes("?") ? "&" : "?") + cacheBuster;
-    
-    document.getElementById("btnPreviewJson").innerText = "Lade...";
+  const rawUrl = settingSettingsUrl.value;
+  if (!rawUrl) {
+    alert("Bitte zuerst eine JSON URL eingeben.");
+    return;
+  }
+
+  // Cache-Busting: Anfügen eines Timestamps, damit Proxys/Browser nicht cachen
+  const cacheBuster = "nocache=" + new Date().getTime();
+  const url = rawUrl + (rawUrl.includes("?") ? "&" : "?") + cacheBuster;
+
+  document.getElementById("btnPreviewJson").innerText = "Lade...";
+  try {
+    let response;
     try {
-        let response;
-        try {
-            response = await fetch(url, { cache: "no-store" });
-        } catch (err) {
-            console.warn("Direct fetch failed (likely CORS). Trying via Proxy 1...", err);
-            try {
-                // Versuch 1: corsproxy.io
-                response = await fetch("https://corsproxy.io/?" + encodeURIComponent(url));
-            } catch (err2) {
-                console.warn("Proxy 1 failed. Trying Proxy 2...", err2);
-                // Versuch 2: allorigins (get mode) -> liefert { contents: "..." }
-                const proxyResp = await fetch("https://api.allorigins.win/get?url=" + encodeURIComponent(url), { cache: "no-store" });
-                if (!proxyResp.ok) throw new Error("HTTP Fehler Proxy: " + proxyResp.status);
-                const proxyJson = await proxyResp.json();
-                
-                tempJsonSettings = JSON.parse(proxyJson.contents);
-                document.getElementById("jsonPreviewContent").innerText = JSON.stringify(tempJsonSettings, null, 2);
-                document.getElementById("jsonPreviewModal").classList.remove("hidden");
-                document.getElementById("btnPreviewJson").innerText = "Prüfen";
-                return;
-            }
-        }
-        
-        if (!response.ok) throw new Error("HTTP Fehler " + response.status);
-        const json = await response.json();
-        
-        tempJsonSettings = json;
-        document.getElementById("jsonPreviewContent").innerText = JSON.stringify(json, null, 2);
+      response = await fetch(url, { cache: "no-store" });
+    } catch (err) {
+      console.warn("Direct fetch failed (likely CORS). Trying via Proxy 1...", err);
+      try {
+        // Versuch 1: corsproxy.io
+        response = await fetch("https://corsproxy.io/?" + encodeURIComponent(url));
+      } catch (err2) {
+        console.warn("Proxy 1 failed. Trying Proxy 2...", err2);
+        // Versuch 2: allorigins (get mode) -> liefert { contents: "..." }
+        const proxyResp = await fetch("https://api.allorigins.win/get?url=" + encodeURIComponent(url), { cache: "no-store" });
+        if (!proxyResp.ok) throw new Error("HTTP Fehler Proxy: " + proxyResp.status);
+        const proxyJson = await proxyResp.json();
+
+        tempJsonSettings = JSON.parse(proxyJson.contents);
+        document.getElementById("jsonPreviewContent").innerText = JSON.stringify(tempJsonSettings, null, 2);
         document.getElementById("jsonPreviewModal").classList.remove("hidden");
-    } catch (e) {
-        console.error(e);
-        alert("Fehler beim Abrufen der JSON (CORS oder ungültige URL). Wenn die Datei lokal (z.B. NAS) liegt, stelle sicher, dass der Server CORS-Header sendet (Access-Control-Allow-Origin: *). Details: " + e.message);
+        document.getElementById("btnPreviewJson").innerText = "Prüfen";
+        return;
+      }
     }
-    document.getElementById("btnPreviewJson").innerText = "Prüfen";
+
+    if (!response.ok) throw new Error("HTTP Fehler " + response.status);
+    const json = await response.json();
+
+    tempJsonSettings = json;
+    document.getElementById("jsonPreviewContent").innerText = JSON.stringify(json, null, 2);
+    document.getElementById("jsonPreviewModal").classList.remove("hidden");
+  } catch (e) {
+    console.error(e);
+    alert("Fehler beim Abrufen der JSON (CORS oder ungültige URL). Wenn die Datei lokal (z.B. NAS) liegt, stelle sicher, dass der Server CORS-Header sendet (Access-Control-Allow-Origin: *). Details: " + e.message);
+  }
+  document.getElementById("btnPreviewJson").innerText = "Prüfen";
 });
 
 document.getElementById("btnCloseJsonPreview")?.addEventListener("click", () => {
-    document.getElementById("jsonPreviewModal").classList.add("hidden");
+  document.getElementById("jsonPreviewModal").classList.add("hidden");
 });
 document.getElementById("btnCancelJson")?.addEventListener("click", () => {
-    document.getElementById("jsonPreviewModal").classList.add("hidden");
+  document.getElementById("jsonPreviewModal").classList.add("hidden");
 });
 
 document.getElementById("btnApplyJson")?.addEventListener("click", async () => {
-    document.getElementById("jsonPreviewModal").classList.add("hidden");
-    if (!tempJsonSettings) return;
-    
-    // Apply JSON directly into input fields
-    if (tempJsonSettings.timeout !== undefined) settingTimeout.value = tempJsonSettings.timeout;
-    if (tempJsonSettings.downloadUrl !== undefined) settingUrl.value = tempJsonSettings.downloadUrl;
-    if (tempJsonSettings.httpAuthUser !== undefined) settingHttpAuthUser.value = tempJsonSettings.httpAuthUser;
-    if (tempJsonSettings.httpAuthPassword !== undefined) settingHttpAuthPassword.value = tempJsonSettings.httpAuthPassword;
-    if (tempJsonSettings.motionWakeup !== undefined) settingMotionWakeup.checked = tempJsonSettings.motionWakeup;
-    if (tempJsonSettings.chargerMode !== undefined) settingChargerMode.checked = tempJsonSettings.chargerMode;
-    
-    // Auto-save via existing save button logic
-    document.getElementById("btnSaveSettings").click();
+  document.getElementById("jsonPreviewModal").classList.add("hidden");
+  if (!tempJsonSettings) return;
+
+  // Apply JSON directly into input fields
+  if (tempJsonSettings.timeout !== undefined) settingTimeout.value = tempJsonSettings.timeout;
+  if (tempJsonSettings.downloadUrl !== undefined) settingUrl.value = tempJsonSettings.downloadUrl;
+  if (tempJsonSettings.httpAuthUser !== undefined) settingHttpAuthUser.value = tempJsonSettings.httpAuthUser;
+  if (tempJsonSettings.httpAuthPassword !== undefined) settingHttpAuthPassword.value = tempJsonSettings.httpAuthPassword;
+  if (tempJsonSettings.motionWakeup !== undefined) settingMotionWakeup.checked = tempJsonSettings.motionWakeup;
+  if (tempJsonSettings.chargerMode !== undefined) settingChargerMode.checked = tempJsonSettings.chargerMode;
+
+  // Auto-save via existing save button logic
+  document.getElementById("btnSaveSettings").click();
 });
 
 btnFactoryReset.addEventListener("click", async () => {
@@ -1084,47 +1103,47 @@ btnFactoryReset.addEventListener("click", async () => {
 let isWritingDirectSettings = false;
 
 settingMotionWakeup.addEventListener("change", async (e) => {
-    if (!settingsService) return;
-    if (isWritingDirectSettings) {
-        e.target.checked = !e.target.checked; // Revert UI
-        return;
-    }
-    try {
-        isWritingDirectSettings = true;
-        settingMotionWakeup.disabled = true;
-        const motionWakeupChar = await settingsService.getCharacteristic(MOTION_WAKEUP_UUID);
-        await motionWakeupChar.writeValue(encodeText(settingMotionWakeup.checked ? "1" : "0"));
-        
-        const cmdChar = await settingsService.getCharacteristic(UPLOAD_CMD_UUID);
-        await cmdChar.writeValue(encodeText("SAVE_SETTINGS"));
-    } catch (err) {
-        console.error("Failed to update motion wakeup directly", err);
-    } finally {
-        settingMotionWakeup.disabled = false;
-        isWritingDirectSettings = false;
-    }
+  if (!settingsService) return;
+  if (isWritingDirectSettings) {
+    e.target.checked = !e.target.checked; // Revert UI
+    return;
+  }
+  try {
+    isWritingDirectSettings = true;
+    settingMotionWakeup.disabled = true;
+    const motionWakeupChar = await settingsService.getCharacteristic(MOTION_WAKEUP_UUID);
+    await motionWakeupChar.writeValue(encodeText(settingMotionWakeup.checked ? "1" : "0"));
+
+    const cmdChar = await settingsService.getCharacteristic(UPLOAD_CMD_UUID);
+    await cmdChar.writeValue(encodeText("SAVE_SETTINGS"));
+  } catch (err) {
+    console.error("Failed to update motion wakeup directly", err);
+  } finally {
+    settingMotionWakeup.disabled = false;
+    isWritingDirectSettings = false;
+  }
 });
 
 settingChargerMode.addEventListener("change", async (e) => {
-    if (!settingsService) return;
-    if (isWritingDirectSettings) {
-        e.target.checked = !e.target.checked; // Revert UI
-        return;
-    }
-    try {
-        isWritingDirectSettings = true;
-        settingChargerMode.disabled = true;
-        const chargerModeChar = await settingsService.getCharacteristic(CHARGER_MODE_UUID);
-        await chargerModeChar.writeValue(encodeText(settingChargerMode.checked ? "1" : "0"));
-        
-        const cmdChar = await settingsService.getCharacteristic(UPLOAD_CMD_UUID);
-        await cmdChar.writeValue(encodeText("SAVE_SETTINGS"));
-    } catch (err) {
-        console.error("Failed to update charger mode directly", err);
-    } finally {
-        settingChargerMode.disabled = false;
-        isWritingDirectSettings = false;
-    }
+  if (!settingsService) return;
+  if (isWritingDirectSettings) {
+    e.target.checked = !e.target.checked; // Revert UI
+    return;
+  }
+  try {
+    isWritingDirectSettings = true;
+    settingChargerMode.disabled = true;
+    const chargerModeChar = await settingsService.getCharacteristic(CHARGER_MODE_UUID);
+    await chargerModeChar.writeValue(encodeText(settingChargerMode.checked ? "1" : "0"));
+
+    const cmdChar = await settingsService.getCharacteristic(UPLOAD_CMD_UUID);
+    await cmdChar.writeValue(encodeText("SAVE_SETTINGS"));
+  } catch (err) {
+    console.error("Failed to update charger mode directly", err);
+  } finally {
+    settingChargerMode.disabled = false;
+    isWritingDirectSettings = false;
+  }
 });
 
 const SPECTRA_COLOR_INDICES = {
@@ -1326,8 +1345,9 @@ fileInput.addEventListener("change", (e) => {
 
   originalImage = new Image();
   originalImage.onload = () => {
-    // Automatisches rotieren, wenn das Bild im Hochformat (Portrait) ist und das Display Querformat hat
-    if (originalImage.height > originalImage.width && EPD_WIDTH > EPD_HEIGHT) {
+    // Automatisches rotieren, wenn das Bild im Hochformat ist und das Display Querformat, oder umgekehrt
+    if ((originalImage.height > originalImage.width && EPD_WIDTH > EPD_HEIGHT) ||
+        (originalImage.width > originalImage.height && EPD_HEIGHT > EPD_WIDTH)) {
       imageRotation = 270; // 90° gegen den Uhrzeigersinn
     } else {
       imageRotation = 0;
@@ -1355,7 +1375,7 @@ btnAutoDither.addEventListener("click", () => {
 
   if (paletteSelect && paletteSelect.value === "new") {
     const resolvedOptions = computeProfileAwareDitherOptions({ name: "new.json", data: newProfile }, canvas);
-    
+
     // UI nach Vorschlag updaten
     errorDiffusionMatrix.value = resolvedOptions.errorDiffusionMatrix || "floydSteinberg";
     serpentine.checked = resolvedOptions.serpentine ?? true;
@@ -1633,10 +1653,10 @@ async function uploadFirmwareBle(buffer) {
         let isLastInWindow = (currentOffset + chunkSize) >= windowEnd;
 
         if (isLastInWindow) {
-          await dataChar.writeValue(packet); 
+          await dataChar.writeValue(packet);
         } else {
           await dataChar.writeValueWithoutResponse(packet);
-          await new Promise((r) => setTimeout(r, 6)); 
+          await new Promise((r) => setTimeout(r, 6));
         }
       }
 
@@ -1645,7 +1665,7 @@ async function uploadFirmwareBle(buffer) {
 
       if (ramBytes === bytesToSend) {
         await cmdChar.writeValue(encodeText("FLUSH"));
-        offset = windowEnd; 
+        offset = windowEnd;
         retryCount = 0;
       } else {
         console.warn(`FW Paketverlust! Erwartet: ${bytesToSend}, RAM hat: ${ramBytes}`);
@@ -1666,7 +1686,7 @@ async function uploadFirmwareBle(buffer) {
     fwProgressBar.style.width = "100%";
     setStatus("Beende Firmware Update & Neustart...", "text-blue-500");
     await cmdChar.writeValue(encodeText("END_FW"));
-    
+
     // Disconnect after reboot
     setTimeout(() => {
       if (bleDevice && bleDevice.gatt.connected) {
@@ -1688,22 +1708,22 @@ btnFetchOriginalFw.addEventListener("click", async () => {
     setStatus("Bitte zuerst mit dem E-Paper verbinden.", "text-red-500");
     return;
   }
-  
+
   try {
     setStatus("Lade Update-Informationen...", "text-blue-500");
     const res = await fetch("http://ul.epaperframe.de/espfota_epd7.json");
     if (!res.ok) throw new Error("JSON konnte nicht geladen werden.");
     const data = await res.json();
-    
+
     if (!data.url) throw new Error("Keine Firmware URL im JSON gefunden.");
-    
+
     setStatus("Lade Original-Firmware herunter...", "text-blue-500");
     const fwRes = await fetch(data.url);
     if (!fwRes.ok) throw new Error("Firmware konnte nicht geladen werden.");
-    
+
     const arrayBuffer = await fwRes.arrayBuffer();
     const buffer = new Uint8Array(arrayBuffer);
-    
+
     await uploadFirmwareBle(buffer);
   } catch (err) {
     console.error(err);
