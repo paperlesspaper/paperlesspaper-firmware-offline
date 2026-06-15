@@ -11,6 +11,7 @@
 #include "Adafruit_GFX.h"
 #include "EEPROM.h"
 #include "SPIFFS.h"
+#include "SdFat.h"
 #include "Ticker.h"
 #include "driver/rtc_io.h"
 #include "kxtj3-1057.h"
@@ -26,6 +27,7 @@
 #include <rom/rtc.h>
 
 #define DEBUG 1
+#define SET_DISPLAY 0 // 0 = 7-inch display, 1 = 13-inch display
 
 #if DEBUG
 #define PRINTS(s)         \
@@ -50,22 +52,12 @@
 #endif
 #define BUTTON_PIN_BITMASK(GPIO) (1ULL << GPIO) // 2 ^ GPIO_NUMBER in hex
 
-#define SET_DISPLAY 1 // 0 = 7-inch display, 1 = 13-inch display
-
 // E-Paper Pins
-#if SET_DISPLAY == 0
 #define BUSY_PIN 18
-#define RST_PIN 1
 #define DC_PIN 19
-#define CS_EPD_PIN 20
-#else
-#define BUSY_PIN 18
+#define EPD_CS_S 19
 #define RST_PIN 1
 #define CS_EPD_PIN 20
-#define EPD_CS_S 19
-#define DC_PIN EPD_CS_S
-#endif
-
 #define CS_SD_PIN 13
 #define DISP_POWER 12
 
@@ -99,42 +91,30 @@
 #define EPD_WIDTH 1600
 #define EPD_HEIGHT 1200
 #endif
+
 #define MAX_EPD_WIDTH 1600
 #define MAX_EPD_HEIGHT 1200
 
-#define DISPLAY_SPI_SPEED 20000000
-#define uS_TO_S_FACTOR 1000000ULL /* Conversion factor for micro seconds to seconds */
-#define LENGTH(x) (strlen(x) + 1) // length of char string
-#define EEPROM_SIZE 2048          // EEPROM size
-#define EEPROM_SETTINGS_ADR 500   // start address to store settings
-#define SOFTWARE_VERSION "0.0.0"  // Software version
 #if SET_DISPLAY == 0
 #define EPD_TYPE_IDENTIFIER "epd7-" // Type of device (screen type)
 #else
 #define EPD_TYPE_IDENTIFIER "epd13-" // Type of device (screen type)
 #endif
 
-#ifndef ENV_WIFI_PW_DEPLOY
-#define ENV_WIFI_PW_DEPLOY ""
-#endif
-
-#ifndef ENV_WIFI_SSID_DEPLOY
-#define ENV_WIFI_SSID_DEPLOY ""
-#endif
-
-#define DEFAULT_WIFI_PW ENV_WIFI_PW_DEPLOY
-#define DEFAULT_WIFI_SSID ENV_WIFI_SSID_DEPLOY
-#define DEFAULT_SLEEP 3600         // Default time how long to sleep after update
-#define FAILSAVE_TIMER 180         // Time to shutdown the device if no reaction or hangup
+#define DISPLAY_SPI_SPEED 20000000
+#define uS_TO_S_FACTOR 1000000ULL  /* Conversion factor for micro seconds to seconds */
+#define LENGTH(x) (strlen(x) + 1)  // length of char string
+#define EEPROM_SIZE 2048           // EEPROM size
+#define EEPROM_SETTINGS_ADR 500    // start address to store settings
+#define SOFTWARE_VERSION "0.0.0"   // Software version
 #define VDD_CORRECTION_FACTOR 2.30 // factor to get real VDD voltage from measured value
+#define BLE_BUFFER_SIZE 19200
+
+#define DEFAULT_SLEEP 3600 // Default time how long to sleep after update
+#define FAILSAVE_TIMER 180 // Time to shutdown the device if no reaction or hangup
 #define SLEEP_RECALCULATION_PERIOD_SECONDS 30
 #define SETUP_MODE_TIMEOUT 30 // seconds to wait in setup mode for BLE connection before switching to fetch/refresh mode
-
-#if DEBUG
-const bool DEBUG_FLAG = true;
-#else
-const bool DEBUG_FLAG = false;
-#endif
+#define LED_DIM_VALUE 5       // brightness of led in percent (0-100)
 
 #define FONT_MAIN u8g2_font_helvB24_tf // Font for main text
 #define FONT_BIG u8g2_font_helvB14_tf  // Font for big text
@@ -142,6 +122,12 @@ const bool DEBUG_FLAG = false;
 #define FONT_SMALL u8g2_font_helvR08_tf
 #define FONT_INFO u8g2_font_7x14_tf
 #define FONT_VERSION u8g2_font_tom_thumb_4x6_tf
+
+#if DEBUG
+const bool DEBUG_FLAG = true;
+#else
+const bool DEBUG_FLAG = false;
+#endif
 
 typedef enum
 {
@@ -229,19 +215,24 @@ struct systemData
 {
    wakeup_reason_t wakeupCause;
    int vddValue;
+   u_int8_t ledDimValue;
    int sleepPrediction;
    bool newSleepTimeSet;
    bool usbConnected;
    int deviceOrientation;
    bool displayPowerOn;
+   bool sdReady;
 } systemData = {
     .wakeupCause = SYSTEM_RESET,
     .vddValue = 5000,
+    .ledDimValue = 100,
     .sleepPrediction = DEFAULT_SLEEP,
     .newSleepTimeSet = false,
     .usbConnected = true,
     .deviceOrientation = 0,
-    .displayPowerOn = false};
+    .displayPowerOn = false,
+    .sdReady = false,
+};
 
 esp_sleep_wakeup_cause_t wakeup_reason;
 #if SET_DISPLAY == 0
@@ -252,32 +243,6 @@ using DisplayType = GxEPD2_7C<GxEPD2_1330c_EL133UF3, GxEPD2_1330c_EL133UF3::HEIG
 DisplayType display(GxEPD2_1330c_EL133UF3(/*CS=*/CS_EPD_PIN, /*CS-S=*/EPD_CS_S, /*DC=*/-1, /*RST=*/RST_PIN, BUSY_PIN)); // 13 inch
 #endif
 
-// Power supply display
-#if SET_DISPLAY == 1
-bool powerSupplyDisplay(bool enable) {
-   bool tempState = systemData.displayPowerOn;
-   if (enable) {
-      pinMode(DISP_POWER, OUTPUT);
-      digitalWrite(DISP_POWER, HIGH);
-      systemData.displayPowerOn = true;
-   }
-   else {
-      pinMode(DISP_POWER, INPUT);
-      digitalWrite(DISP_POWER, LOW);
-      systemData.displayPowerOn = false;
-   }
-   if (tempState != systemData.displayPowerOn) {
-      return true;
-   }
-   else {
-      return false;
-   }
-}
-#else
-bool powerSupplyDisplay(bool enable) {
-   return true;
-}
-#endif
 KXTJ3 myIMU(ACC_ADDR); // Address can be 0x0E or 0x0F
 WiFiClientSecure net = WiFiClientSecure();
 Preferences preferences;
@@ -289,14 +254,19 @@ Ticker periodicAccCheck;
 Ticker tickerStatupCounter;
 Ticker onceDisplay;
 SerialFlashFile saveFile;
+SerialFlashFile rawOutFile;
+SerialFlashFile jpgInFile;
+SerialFlashFile bleFile;
+SdFs sd;
 RTC_DATA_ATTR timeval previousWakeup = timeval{.tv_sec = 0, .tv_usec = 0};
+JPEGDEC jpeg;
+QRCode QR;
 
 NimBLECharacteristic *wifiConnectedCharacteristic;
 NimBLECharacteristic *wifiInfoCharacteristic;
 NimBLECharacteristic *wifiScanCharacteristic;
 NimBLECharacteristic *systemInfoCharacteristic;
 
-bool wifiScanRequested = false;
 NimBLEAdvertising *pAdvertising;
 static NimBLEServer *pServer;
 
@@ -308,17 +278,61 @@ struct dataLayout
 
 const uint8_t QR_VERSION = 3;    // QR Code Version
 const uint8_t QR_QUIET_ZONE = 4; // quiet zone all around
-QRCode QR;
-
+int periodicLedTimeout = 0;
 int httpFileSize = 0;
 int StartCounter = 0;
-
+int strip_y_start = 0;
+int strip_height = 0;
+int decodedWidth = 0;
+int decodedHeight = 0;
+int current_out_y = 0;
+uint16_t bleWriteBufferPos = 0;
+uint32_t bleBytesReceived = 0;
+unsigned long lastDisconnectTime = 0;
+bool wifiScanRequested = false;
+bool periodicLedIsOn = false;
+bool epaperIsUpdating = false;
 bool downloadStart = true;
+bool applyPending = false;
+bool bleImageApplied = false;
+bool forceExitSetup = false;
+bool isBleClientConnected = false;
+bool buttonWake = false; // true if wakeup via reset button
+bool fwUpdateInProgress = false;
+bool stopAccRecheck = false;
+uint8_t *strip_buffer = nullptr;
+int16_t err_curr[MAX_EPD_WIDTH * 3];
+int16_t err_next[MAX_EPD_WIDTH * 3];
 char CLIENT_ID[20];
+uint8_t bleWriteBuffer[BLE_BUFFER_SIZE];
 
-JPEGDEC jpeg;
-SerialFlashFile rawOutFile;
-SerialFlashFile jpgInFile;
+void ledBlink(int timeout, bool on, int dimValue = 100);
+void debugFS(void);
+bool BleInit(String deviceId, bool enable);
+void writeIntToFlash(int value, int startAddr);
+int storeSleepTimeMem(int updateTime = 0);
+void gotToDeepSleep(int seconds, bool showScreen = true, bool motionWake = true);
+void displayOverlays(DisplayType &display, displayInfo displayData, bool invertColors, bool fullcolor = false);
+int setImageFromFS(String fileName);
+void displayWipe(bool quick);
+void displaySetText(String info, bool blackBoard, bool quickRefresh = true);
+bool waitDisplayComplete(bool quick);
+int accInit(bool skipInit = false);
+bool accIntSet(int sensity);
+void checkOrientationInBackground(int setOrientValue, bool isRunning = true);
+bool chargeMode(bool enable);
+bool usbInit();
+bool usbCheckConnect();
+int calculateSleepDuration(int defaultTimeout, bool forceReset, bool getDataOnly = false);
+bool resetAll(bool resetWifi);
+wakeup_reason_t getWakeupReason();
+void runSetupMode();
+int processHttpDownload(String fileName);
+bool sdInit(void);
+
+uint32_t calcCRC32(const uint8_t *data, size_t len) {
+   return crc32_le(0, data, len);
+}
 
 const uint32_t acep_palette[7] = {
     0x000000, // 0: Black
@@ -329,50 +343,6 @@ const uint32_t acep_palette[7] = {
     0xFFFF00, // 5: Yellow
     0xFFFFFF  // 6: White
 };
-
-uint8_t findClosestColor(int r, int g, int b) {
-   uint8_t best = 6; // Default to white
-   long min_dist = 2000000000;
-   uint8_t valid_indices[] = {0, 1, 2, 3, 5, 6};
-
-   for (int i = 0; i < 6; i++) {
-      uint8_t idx = valid_indices[i];
-      int pr = (acep_palette[idx] >> 16) & 0xFF;
-      int pg = (acep_palette[idx] >> 8) & 0xFF;
-      int pb = acep_palette[idx] & 0xFF;
-      long dist = (long)(r - pr) * (r - pr) + (long)(g - pg) * (g - pg) + (long)(b - pb) * (b - pb);
-      if (dist < min_dist) {
-         min_dist = dist;
-         best = idx;
-      }
-   }
-   return best;
-}
-
-uint8_t *strip_buffer = nullptr;
-int16_t err_curr[MAX_EPD_WIDTH * 3];
-int16_t err_next[MAX_EPD_WIDTH * 3];
-int strip_y_start = 0;
-int strip_height = 0;
-
-int decodedWidth = 0;
-int decodedHeight = 0;
-int current_out_y = 0;
-
-void *myOpen(const char *filename, int32_t *size) {
-   jpgInFile = SerialFlash.open(filename);
-   if (jpgInFile) {
-      *size = jpgInFile.size();
-      return (void *)1;
-   }
-   return NULL;
-}
-void myClose(void *handle) { jpgInFile.close(); }
-int32_t myRead(JPEGFILE *pFile, uint8_t *pBuf, int32_t iLen) { return jpgInFile.read(pBuf, iLen); }
-int32_t mySeek(JPEGFILE *pFile, int32_t iPosition) {
-   jpgInFile.seek(iPosition);
-   return iPosition;
-}
 
 void snapColor(int &r, int &g, int &b) {
    int t = 25; // Aggressive threshold for snapping to pure colors
@@ -412,6 +382,40 @@ void snapColor(int &r, int &g, int &b) {
       b = 0;
       return;
    } // Yellow
+}
+
+uint8_t findClosestColor(int r, int g, int b) {
+   uint8_t best = 6; // Default to white
+   long min_dist = 2000000000;
+   uint8_t valid_indices[] = {0, 1, 2, 3, 5, 6};
+
+   for (int i = 0; i < 6; i++) {
+      uint8_t idx = valid_indices[i];
+      int pr = (acep_palette[idx] >> 16) & 0xFF;
+      int pg = (acep_palette[idx] >> 8) & 0xFF;
+      int pb = acep_palette[idx] & 0xFF;
+      long dist = (long)(r - pr) * (r - pr) + (long)(g - pg) * (g - pg) + (long)(b - pb) * (b - pb);
+      if (dist < min_dist) {
+         min_dist = dist;
+         best = idx;
+      }
+   }
+   return best;
+}
+
+void *myOpen(const char *filename, int32_t *size) {
+   jpgInFile = SerialFlash.open(filename);
+   if (jpgInFile) {
+      *size = jpgInFile.size();
+      return (void *)1;
+   }
+   return NULL;
+}
+void myClose(void *handle) { jpgInFile.close(); }
+int32_t myRead(JPEGFILE *pFile, uint8_t *pBuf, int32_t iLen) { return jpgInFile.read(pBuf, iLen); }
+int32_t mySeek(JPEGFILE *pFile, int32_t iPosition) {
+   jpgInFile.seek(iPosition);
+   return iPosition;
 }
 
 void flushStripBuffer() {
@@ -727,52 +731,38 @@ bool processImageFile(const char *rawFileName, const char *outFileName) {
    inFile.close();
    return false;
 }
-bool periodicLedIsOn = false;
-int periodicLedTimeout = 0;
-bool epaperIsUpdating = false;
-bool applyPending = false;
-bool bleImageApplied = false;
-bool forceExitSetup = false;
-unsigned long lastDisconnectTime = 0;
-bool isBleClientConnected = false;
-bool buttonWake = false; // true if wakeup via reset button
-bool fwUpdateInProgress = false;
-bool stopAccRecheck = false;
-SerialFlashFile bleFile;
-uint32_t bleBytesReceived = 0;
 
-#define BLE_BUFFER_SIZE 19200
-uint8_t bleWriteBuffer[BLE_BUFFER_SIZE];
-uint16_t bleWriteBufferPos = 0;
-
-uint32_t calcCRC32(const uint8_t *data, size_t len) {
-   return crc32_le(0, data, len);
+// Power supply display
+#if SET_DISPLAY == 1
+bool powerSupplyDisplay(bool enable) {
+   bool tempState = systemData.displayPowerOn;
+   if (enable) {
+      pinMode(DISP_POWER, OUTPUT);
+      digitalWrite(DISP_POWER, HIGH);
+      systemData.displayPowerOn = true;
+   }
+   else {
+      pinMode(DISP_POWER, INPUT);
+      digitalWrite(DISP_POWER, LOW);
+      systemData.displayPowerOn = false;
+   }
+   if (tempState != systemData.displayPowerOn) {
+      if (enable) {
+         Serial.printf("[POWER] Supply ON\n");
+         delay(100);
+         sdInit();
+      }
+      return true;
+   }
+   else {
+      return false;
+   }
 }
-
-void ledBlink(int timeout, bool on);
-void debugFS(void);
-bool BleInit(String deviceId, bool enable);
-void writeIntToFlash(int value, int startAddr);
-int storeSleepTimeMem(int updateTime = 0);
-void gotToDeepSleep(int seconds, bool showScreen = true, bool motionWake = true);
-void displayOverlays(DisplayType &display, displayInfo displayData, bool invertColors, bool fullcolor = false);
-int setImageFromFS(String fileName);
-void displayWipe(bool quick);
-void displaySetText(String info, bool blackBoard, bool quickRefresh = true);
-bool waitDisplayComplete(bool quick);
-int accInit(bool skipInit = false);
-bool accIntSet(int sensity);
-void checkOrientationInBackground(int setOrientValue, bool isRunning = true);
-bool chargeMode(bool enable);
-bool usbInit();
-bool usbCheckConnect();
-int calculateSleepDuration(int defaultTimeout, bool forceReset, bool getDataOnly = false);
-bool resetAll(bool resetWifi);
-wakeup_reason_t getWakeupReason();
-
-// Refactored functions
-void runSetupMode();
-int processHttpDownload(String fileName);
+#else
+bool powerSupplyDisplay(bool enable) {
+   return true;
+}
+#endif
 
 void WiFiEvent(WiFiEvent_t event) {
    if (DEBUG_FLAG)
@@ -832,22 +822,31 @@ void timeoutFailsafe(int time) {
 }
 
 void ledBlinkFunctionOff() {
-   digitalWrite(LED_PIN, LOW);
+   analogWrite(LED_PIN, 0);
    perdiodicLedOff.detach();
 }
 
 void ledBlinkFunction() {
-   digitalWrite(LED_PIN, HIGH);
+   analogWrite(LED_PIN, systemData.ledDimValue);
    perdiodicLedOff.attach_ms(periodicLedTimeout * 0.2, ledBlinkFunctionOff);
 }
 
 // set blink with timeout in ms
-void ledBlink(int timeout, bool on) {
+void ledBlink(int timeout, bool on, int dimValue) {
+   pinMode(LED_PIN, OUTPUT);
+   if (dimValue > 100)
+      dimValue = 100;
+   if (dimValue < 0)
+      dimValue = 0;
+   systemData.ledDimValue = (dimValue * 255) / 100;
+   if (DEBUG_FLAG)
+      Serial.printf("[LED] Set DIM: %d Set Time: %d On: %d (dimInput:%d)\n", systemData.ledDimValue, timeout, on, dimValue);
+
    if (on) {
       if (timeout <= 0) {
          perdiodicLed.detach();
          perdiodicLedOff.detach();
-         digitalWrite(LED_PIN, HIGH);
+         analogWrite(LED_PIN, systemData.ledDimValue); // Dim brightness (0-255)
          return;
       }
       periodicLedIsOn = true;
@@ -857,9 +856,9 @@ void ledBlink(int timeout, bool on) {
    else {
       perdiodicLed.detach();
       perdiodicLedOff.detach();
-      digitalWrite(LED_PIN, LOW);
+      analogWrite(LED_PIN, 0);
       delay(periodicLedTimeout * 0.3);
-      digitalWrite(LED_PIN, LOW);
+      analogWrite(LED_PIN, 0);
       periodicLedIsOn = false;
    }
 }
@@ -963,6 +962,9 @@ void saveSettingsToFlash(int startAddr) {
 }
 
 void restoreSettingsToFlash(int startAddr) {
+   wifiSettings.ssid = readStringFromFlash(0);
+   wifiSettings.pss = readStringFromFlash(40);
+   settings.timeout = storeSleepTimeMem(0);
    settings.showBatteryWarning = readIntFromFlash(startAddr + 5);
    settings.showWifiWarning = readIntFromFlash(startAddr + 10);
    settings.sleepDisabled = readIntFromFlash(startAddr + 15);
@@ -1720,6 +1722,76 @@ void displayOverlays(DisplayType &display, displayInfo displayData, bool invertC
       pos = pos + 60;
    }
 }
+void sdTest() {
+   // Test read/write
+   FsFile testFile;
+   if (testFile.open("test.txt", O_WRONLY | O_CREAT | O_TRUNC)) {
+      Serial.println("Writing to test.txt...");
+      testFile.println("Hello SD Card! This is a test of the SdFat library.");
+      testFile.close();
+      Serial.println("Write complete.");
+
+      if (testFile.open("test.txt", O_RDONLY)) {
+         Serial.println("Reading from test.txt:");
+         while (testFile.available()) {
+            Serial.write(testFile.read());
+         }
+         testFile.close();
+         Serial.println("\nRead complete.");
+      }
+      else {
+         Serial.println("Failed to open test.txt for reading.");
+      }
+   }
+   else {
+      Serial.println("Failed to create test.txt.");
+   }
+}
+
+bool sdInit() {
+   if (systemData.sdReady) {
+      if (DEBUG_FLAG)
+         Serial.println("[SD] skip, init is done...");
+      return true;
+   }
+   if (!sd.begin(SdSpiConfig(CS_SD_PIN, SHARED_SPI, DISPLAY_SPI_SPEED))) {
+      Serial.println("[SD] mount failed, attempting to format the card...");
+      FatFormatter fatFormatter;
+      uint8_t buffer[512];
+      SdCardFactory cardFactory;
+      SdCard *m_card = cardFactory.newCard(SdSpiConfig(CS_SD_PIN, SHARED_SPI, DISPLAY_SPI_SPEED));
+
+      if (!m_card || m_card->errorCode()) {
+         Serial.println("[SD] Hardware error: could not detect SD card!");
+         return false;
+      }
+      else {
+         bool formatSuccess = fatFormatter.format(m_card, buffer, &Serial);
+         if (formatSuccess) {
+            Serial.println("Format complete! Retrying mount...");
+            if (sd.begin(SdSpiConfig(CS_SD_PIN, SHARED_SPI, DISPLAY_SPI_SPEED))) {
+               Serial.println("[SD] mounted successfully after format.");
+               systemData.sdReady = true;
+               return true;
+            }
+            else {
+               Serial.println("[SD] mount failed even after format.");
+               return false;
+            }
+         }
+         else {
+            Serial.println("[SD] Format failed!");
+            return false;
+         }
+      }
+   }
+   else {
+      Serial.println("[SD] initialization done.");
+      systemData.sdReady = true;
+      return true;
+   }
+   return false;
+}
 
 int loadImageFromWeb(String url, String fileName) {
    if (url.length() < 1)
@@ -1746,9 +1818,9 @@ int loadImageFromWeb(String url, String fileName) {
    return -1;
 }
 
-int setImageFromFS(String fileName) {
-   powerSupplyDisplay(true);
-   epaperIsUpdating = true;
+int setImageFromFS_7inch(String fileName) {
+   if (powerSupplyDisplay(true))
+      epaperIsUpdating = true;
    saveFile = SerialFlash.open(fileName.c_str());
    if (!saveFile) {
       Serial.println("[BMP] File missing");
@@ -1815,151 +1887,13 @@ int setImageFromFS(String fileName) {
    return 0;
 }
 
-int setImageFromSDDirect(String fileName) {
+int setImageFromFS_13inch(String fileName) {
    unsigned char picInfoBuffer[4];
    epaperIsUpdating = true;
    powerSupplyDisplay(true);
-
-   FsFile sdFile;
-   if (!sdFile.open(fileName.c_str(), O_RDONLY)) {
-      Serial.println("File missing");
-      return -1;
-   }
-
-   sdFile.seekSet(0);
-   sdFile.read(picInfoBuffer, 4);
-   uint16_t height = (picInfoBuffer[1] << 8) | (picInfoBuffer[0] & 0xff);
-   uint16_t width = (picInfoBuffer[3] << 8) | (picInfoBuffer[2] & 0xff);
-   Serial.printf("[BMP] Image H: %d W: %d \n", height, width);
-   if (width != EPD_WIDTH || height != EPD_HEIGHT) {
-      Serial.printf("[BMP] Image dimension mismatch! Must be %dx%d.\n", EPD_WIDTH, EPD_HEIGHT);
-      return -1;
-   }
-
-   display.enableQuickRefresh(displaySettings.displayQuickRefreshTime, false);
-   display.init(115200);
-   display.clearScreen(0x01); // Clear screen memory
-
-   // EPD physical resolution is 1200x1600 (2 controllers of 600x1600 each)
-   const int physWidth = 1200;
-   const int physHeight = 1600;
-   const int numChunks = 16;
-   const int linesPerChunk = physHeight / numChunks; // 1600 / 8 = 200
-   const int bytesPerHalfLine = physWidth / 4;       // 1200 / 4 = 300 Bytes
-
-   uint8_t *chunkBuffer = (uint8_t *)malloc(linesPerChunk * bytesPerHalfLine);
-   if (!chunkBuffer) {
-      Serial.println("[BMP] Malloc for Streaming Buffer failed!");
-      return -1;
-   }
-
-   Serial.println("[EPD] Streaming Partial Image to Display... ");
-
-   for (int half = 0; half < 2; half++) {
-      int csPin = (half == 0) ? CS_EPD_PIN : EPD_CS_S;
-
-      for (int chunk = 0; chunk < numChunks; chunk++) {
-         int yImageStart = chunk * linesPerChunk;
-
-         uint16_t xStartCtrl = 0;
-         uint16_t xPixel = physWidth / 2; // 600 Pixel
-         uint16_t HRST = xStartCtrl * 2;
-         uint16_t HRED = (xStartCtrl + xPixel) * 2 - 1; // 1199
-         uint16_t VRST = yImageStart / 2;
-         uint16_t VRED = (yImageStart + linesPerChunk) / 2 - 1;
-
-         for (int i = 0; i < linesPerChunk; i++) {
-            int lineInImage = yImageStart + i;
-            int byteOffsetInImage = (lineInImage * 600) + (half * 300);
-            sdFile.seekSet(4 + byteOffsetInImage);
-            sdFile.read(chunkBuffer + i * bytesPerHalfLine, bytesPerHalfLine);
-         }
-         SPI.endTransaction();
-         SPI.beginTransaction(SPISettings(DISPLAY_SPI_SPEED, MSBFIRST, SPI_MODE0));
-
-         /*
-         //TODO: Not sure if this block is needed
-         digitalWrite(csPin, LOW);
-         SPI.transfer(0xF0);
-         SPI.transfer(0x49);
-         SPI.transfer(0x55);
-         SPI.transfer(0x13);
-         SPI.transfer(0x5D);
-         SPI.transfer(0x05);
-         SPI.transfer(0x10);
-         digitalWrite(csPin, HIGH);
-*/
-         // PTLW (Partial Window) Command Setting 0x83
-         digitalWrite(csPin, LOW);
-         SPI.transfer(0x83);
-         SPI.transfer(HRST >> 8);
-         SPI.transfer(HRST & 0xFF);
-         SPI.transfer(HRED >> 8);
-         SPI.transfer(HRED & 0xFF);
-         SPI.transfer(VRST >> 8);
-         SPI.transfer(VRST & 0xFF);
-         SPI.transfer(VRED >> 8);
-         SPI.transfer(VRED & 0xFF);
-         SPI.transfer(0x01); // PTLW_ENABLE
-         digitalWrite(csPin, HIGH);
-         // PTIN (Partial In) command 0x91
-         digitalWrite(csPin, LOW);
-         SPI.transfer(0x91);
-         digitalWrite(csPin, HIGH);
-         // DTM command 0x10
-         digitalWrite(csPin, LOW);
-         SPI.transfer(0x10);
-
-         // Hardware LUT conversion
-         for (int i = 0; i < linesPerChunk * bytesPerHalfLine; i++) {
-            uint8_t low = getColor(chunkBuffer[i] & 0x0F);
-            uint8_t high = getColor(chunkBuffer[i] >> 4);
-            // uint8_t raw = chunkBuffer[i];
-            chunkBuffer[i] = (high << 4) | low;
-         }
-
-         SPI.writeBytes(chunkBuffer, linesPerChunk * bytesPerHalfLine);
-         digitalWrite(csPin, HIGH);
-
-         SPI.endTransaction();
-         delay(1);
-      }
-   }
-
-   free(chunkBuffer);
-
-   Serial.println("[EPD] End Partial Streaming... Refreshing now.");
-
-   // PTLW (Partial Window) für beide Controller wieder deaktivieren,
-   // damit der nachfolgende Refresh (DRF) den gesamten Bildschirm erfasst!
-   digitalWrite(CS_EPD_PIN, LOW);
-   SPI.transfer(0x83);
-   for (int i = 0; i < 9; i++)
-      SPI.transfer(0x00);
-   digitalWrite(CS_EPD_PIN, HIGH);
-
-   digitalWrite(EPD_CS_S, LOW);
-   SPI.transfer(0x83);
-   for (int i = 0; i < 9; i++)
-      SPI.transfer(0x00);
-   digitalWrite(EPD_CS_S, HIGH);
-
-   display.refresh();
-
-   sdFile.close();
-
-   epaperIsUpdating = false;
-   return 0;
-}
-
-int setImageFromFSDirect(String fileName) {
-   unsigned char picInfoBuffer[4];
-   epaperIsUpdating = true;
-   powerSupplyDisplay(true);
-
    saveFile = SerialFlash.open(fileName.c_str());
    if (!saveFile) {
-      Serial.println("File missing");
+      Serial.println("[BMP] File missing");
       return -1;
    }
 
@@ -1978,8 +1912,8 @@ int setImageFromFSDirect(String fileName) {
    display.clearScreen(0x01); // Clear screen memory
 
    // EPD physical resolution is 1200x1600 (2 controllers of 600x1600 each)
-   const int physWidth = 1200;
-   const int physHeight = 1600;
+   const int physWidth = EPD_HEIGHT;
+   const int physHeight = EPD_WIDTH;
    const int numChunks = 16;
    const int linesPerChunk = physHeight / numChunks; // 1600 / 8 = 200
    const int bytesPerHalfLine = physWidth / 4;       // 1200 / 4 = 300 Bytes
@@ -2068,20 +2002,34 @@ int setImageFromFSDirect(String fileName) {
    Serial.println("[EPD] End Partial Streaming... Refreshing now.");
 
    // PTLW (Partial Window) für beide Controller wieder deaktivieren,
+   // damit der nachfolgende Refresh (DRF) den gesamten Bildschirm erfasst!
    digitalWrite(CS_EPD_PIN, LOW);
    SPI.transfer(0x83);
    for (int i = 0; i < 9; i++)
       SPI.transfer(0x00);
    digitalWrite(CS_EPD_PIN, HIGH);
+
    digitalWrite(EPD_CS_S, LOW);
    SPI.transfer(0x83);
    for (int i = 0; i < 9; i++)
       SPI.transfer(0x00);
    digitalWrite(EPD_CS_S, HIGH);
+
    display.refresh();
+
+   saveFile.close();
 
    epaperIsUpdating = false;
    return 0;
+}
+
+int setImageFromFS(String fileName) {
+
+#if SET_DISPLAY == 0
+   return setImageFromFS_7inch(fileName);
+#else
+   return setImageFromFS_13inch(fileName);
+#endif
 }
 
 void displaySetText(String info, bool isBlackboard, bool quickRefresh) {
@@ -2151,8 +2099,7 @@ void displaySetText(String info, bool isBlackboard, bool quickRefresh) {
 void displayWipe(bool quick) {
    Serial.print(F("[EPD] wipe screen\n"));
 
-   if (powerSupplyDisplay(true))
-      delay(100);
+   powerSupplyDisplay(true);
 
    if (quick) {
       display.enableQuickRefresh(displaySettings.displayQuickRefreshTime, true);
@@ -3060,10 +3007,10 @@ void test() {
    Serial.println("[DEBUG] Test Function");
    //  displaySettings.displayQuickRefreshTime = 2900;//works cold
    ledBlink(200, false);
-   if (powerSupplyDisplay(true))
-      delay(100);
-   displaySetText("Connect via Bluetooth", false, true);
+   setImageFromFS("tmp.bmp");
    displayWipe(false);
+
+   displaySetText("Connect via Bluetooth", false, true);
    delay(5000);
    gotToDeepSleep(0, true, false);
 
@@ -3091,7 +3038,8 @@ void setup() {
    displaySettings.displayType = 1;
 
 #endif
-   chargeMode(settings.chargerMode); // enable charge mode
+   chargeMode(false); // enable charge mode
+   powerSupplyDisplay(false);
    pinMode(BAT_VOLT_EN_PIN, OUTPUT);
    digitalWrite(BAT_VOLT_EN_PIN, LOW);
    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
@@ -3106,7 +3054,7 @@ void setup() {
    if (!systemData.usbConnected && systemData.vddValue < 4000) {
       if (DEBUG_FLAG)
          Serial.printf("[MAIN] Bat low protection: %dmV\n", systemData.vddValue);
-      digitalWrite(LED_PIN, HIGH);
+      analogWrite(LED_PIN, LED_DIM_VALUE);
       gotToDeepSleep(86000, false, false);
    }
    systemData.wakeupCause = getWakeupReason();
@@ -3119,17 +3067,14 @@ void setup() {
 
    EepromInit(EEPROM_SIZE);
    // pinMode(DISP_POWER, INPUT); // USB TEST PINS TODO: only paper 7
-   pinMode(CS_SD_PIN, OUTPUT);
-
    pinMode(INT_PIN, INPUT);
    pinMode(BUSY_PIN, INPUT);
+   pinMode(RST_PIN, OUTPUT);
+   pinMode(CS_EPD_PIN, OUTPUT);
    pinMode(EPD_CS_S, OUTPUT);
    pinMode(CS_SD_PIN, OUTPUT);
    pinMode(SCK_PIN, OUTPUT);
    pinMode(MOSI_PIN, OUTPUT);
-   pinMode(RST_PIN, OUTPUT);
-   pinMode(CS_EPD_PIN, OUTPUT);
-   pinMode(DC_PIN, OUTPUT);
    digitalWrite(CS_EPD_PIN, HIGH);
    digitalWrite(EPD_CS_S, HIGH);
    digitalWrite(CS_SD_PIN, HIGH);
@@ -3139,9 +3084,6 @@ void setup() {
    initFirstBoot();
 
    // Load credentials & settings from EEPROM
-   wifiSettings.ssid = readStringFromFlash(0);
-   wifiSettings.pss = readStringFromFlash(40);
-   settings.timeout = storeSleepTimeMem(0);
    restoreSettingsToFlash(EEPROM_SETTINGS_ADR);
 
    displayInfos.deviceInfoString = true;
@@ -3191,7 +3133,7 @@ void setup() {
    }
 
 #if DEBUG
-   test(); //-----------------test---------please remove
+   // test(); //-----------------test---------please remove
 #endif
 
    if (buttonWake) {
