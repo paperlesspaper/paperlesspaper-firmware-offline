@@ -159,12 +159,12 @@ Die Firmware wird direkt in die OTA-Partition geflasht. Es gibt keinen Checkpoin
 
 - (done) settings json for http endpoint to change device behavior in local network
 - (done) settings for motion wakeup and charger via ble
-- store multiple images
 - (done) ota upload via ble (revert back to cloud firmware)
 - (done) load device settings to web ui via ble (2 way sync)
 - (done) on device dithering with jpg support
-- https://immich.app/ integration into firmware and config via ble
 - (done) electron tool to update offline firmware or web flasher
+- (done) add rotation setting to bluetooth
+- store multiple images
+- https://immich.app/ integration into firmware and config via ble
 - host the tool on our infrastructure (select latest firmware build too)
 - bluetooth broadcast mode
-- add rotation setting to bluetooth

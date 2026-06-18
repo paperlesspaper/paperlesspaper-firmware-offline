@@ -20,3 +20,4 @@ secrets.h
 /web_old
 /web_new
 main_13.cpp.disabled
+*.code-workspace
