@@ -59,8 +59,6 @@
         </div>
 
         <div id="viewConnect" class="hidden space-y-6">
-            <p class="text-center text-gray-500 text-sm -mt-2">Konfiguration des E-Papers</p>
-
             <div id="controls" class="hidden space-y-6 opacity-0 transition-opacity duration-500">
                 <div class="bg-blue-50/50 p-5 rounded-xl border border-blue-100">
                     <h2 class="text-xl font-bold mb-4 text-gray-700 flex items-center justify-between">
@@ -148,7 +146,7 @@
                         <label class="block text-sm text-gray-600">Aktualisierungsintervall (Sekunden)</label>
                         <input type="number" id="settingTimeout" placeholder="z.B. 3600" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none transition mb-2" />
 
-                        <button id="btnSaveSettings" class="w-full bg-purple-500 hover:bg-purple-600 text-white font-bold py-2 rounded-lg transition-colors">Einstellungen Speichern</button>
+                        <button id="btnSaveSettings" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 rounded-lg transition-colors">Einstellungen Speichern</button>
                         <br />
                         <br />
                         <details class="mt-6 bg-gray-50 border border-gray-200 rounded-lg">
@@ -201,13 +199,11 @@
         </div>
 
         <div id="viewOta" class="hidden space-y-6">
-            <p class="text-center text-gray-500 text-sm -mt-2">Firmware Over-the-Air Update via Bluetooth (BLE)</p>
-
             <div id="controlsOta" class="hidden space-y-6 opacity-0 transition-opacity duration-500">
                 <div class="bg-indigo-50/50 p-5 rounded-xl border border-indigo-100">
                     <h2 class="text-xl font-bold mb-4 text-gray-700">Firmware Update (OTA)</h2>
                     <div class="space-y-3">
-                        <button id="btnFetchOriginalFw" class="w-full bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-2 rounded-lg transition-colors shadow">Original Firmware wiederherstellen (Web-Download)</button>
+                        <button id="btnFetchOriginalFw" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 rounded-lg transition-colors shadow">Original Firmware wiederherstellen (Web-Download)</button>
                         <div class="text-center text-sm text-gray-500 my-2">oder</div>
 
                         <input type="file" id="fwInput" accept=".bin" class="hidden" />
@@ -222,17 +218,15 @@
         </div>
 
         <div id="viewEditor" class="hidden space-y-6">
-            <p class="text-center text-gray-500 text-sm -mt-2">Bild bearbeiten, aufbereiten und per BLE hochladen oder als BMP speichern.</p>
-
             <div id="sharedImageContainer" class="bg-indigo-50/50 p-5 rounded-xl border border-indigo-100">
-                <h2 id="imageSecTitle" class="text-xl font-bold mb-1 text-gray-700">Bild laden & bearbeiten</h2>
+                <h2 id="imageSecTitle" class="text-xl font-bold mb-1 text-gray-700">Download und Upload Picture</h2>
                 <p id="imageSecDesc" class="text-xs text-gray-500 mb-4">Lade ein Bild. Es wird automatisch für das E-Paper aufbereitet.</p>
 
                 <input type="file" id="fileInput" accept="image/*" class="w-full mb-4 text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:font-semibold file:bg-indigo-100 file:text-indigo-700 hover:file:bg-indigo-200 cursor-pointer" />
 
                 <details class="my-4 bg-white shadow-sm border border-gray-200 rounded-lg">
                     <summary class="cursor-pointer text-sm font-semibold text-gray-700 bg-gray-50 px-4 py-3 rounded-lg hover:bg-gray-100 transition-colors list-none flex justify-between items-center">
-                        <span>Bild-Einstellungen anpassen</span>
+                        <span>Erweiterte Bild-Einstellungen</span>
                         <svg class="w-5 h-5 text-gray-500 transform transition-transform duration-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
                         </svg>

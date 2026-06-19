@@ -479,6 +479,7 @@ document.getElementById("btnApplyJson")?.addEventListener("click", async () => {
   if (tempJsonSettings.httpAuthPassword !== undefined) settingHttpAuthPassword.value = tempJsonSettings.httpAuthPassword;
   if (tempJsonSettings.motionWakeup !== undefined) settingMotionWakeup.checked = tempJsonSettings.motionWakeup;
   if (tempJsonSettings.chargerMode !== undefined) settingChargerMode.checked = tempJsonSettings.chargerMode;
+  if (tempJsonSettings.autoRotation !== undefined) settingAutoRotation.checked = tempJsonSettings.autoRotation;
 
   document.getElementById("btnSaveSettings").click();
 });
@@ -597,7 +598,7 @@ btnAutoDither.addEventListener("click", () => {
     }
 
     if (paletteSelect && paletteSelect.value === "new") {
-      setStatus("Automatisches Setting gefunden: Custom Profile (new.json)", "text-blue-500");
+      setStatus("Automatisches Setting gefunden: Custom Color Profile", "text-blue-500");
     } else {
       setStatus(`Automatisches Setting gefunden: ${suggestion.classification.style}, Typ: ${suggestion.imageKind}`, "text-blue-500");
     }

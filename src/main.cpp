@@ -28,7 +28,7 @@
 #include <rom/rtc.h>
 
 #define DEBUG 1
-#define SET_DISPLAY 1 // 0 = 7-inch display, 1 = 13-inch display
+#define SET_DISPLAY 0 // 0 = 7-inch display, 1 = 13-inch display
 
 #if DEBUG
 #define PRINTS(s)         \
@@ -3024,6 +3024,10 @@ void fetchRemoteSettings() {
          }
          if (doc["chargerMode"].is<bool>()) {
             settings.chargerMode = doc["chargerMode"];
+            changed = true;
+         }
+         if (doc["autoRotation"].is<bool>()) {
+            settings.autoRotation = doc["autoRotation"];
             changed = true;
          }
          if (doc["downloadUrl"].is<String>()) {
