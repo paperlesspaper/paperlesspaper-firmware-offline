@@ -80,6 +80,22 @@ const processingContrast = document.getElementById("processingContrast");
 const processingSaturation = document.getElementById("processingSaturation");
 const btnAutoDither = document.getElementById("btnAutoDither");
 const btnRotate = document.getElementById("btnRotate");
+const displaySizeSelect = document.getElementById("displaySizeSelect");
+
+if (displaySizeSelect) {
+  displaySizeSelect.addEventListener("change", (e) => {
+    if (e.target.value === "13") {
+      EPD_WIDTH = 1200;
+      EPD_HEIGHT = 1600;
+    } else {
+      EPD_WIDTH = 800;
+      EPD_HEIGHT = 480;
+    }
+    canvas.width = EPD_WIDTH;
+    canvas.height = EPD_HEIGHT;
+    if (generatePicture.getOriginalImage()) updatePreview();
+  });
+}
 
 let updateTimeout = null;
 let lastUpdate = 0;
@@ -166,12 +182,14 @@ bleInterface.onConnected = (isPaperL) => {
     document.title = "paper L Setup";
     const headerTitle = document.querySelector("h1");
     if (headerTitle) headerTitle.innerText = "paper L Setup";
+    if (displaySizeSelect) displaySizeSelect.value = "13";
   } else {
     EPD_WIDTH = 800;
     EPD_HEIGHT = 480;
     document.title = "paper 7 Setup";
     const headerTitle = document.querySelector("h1");
     if (headerTitle) headerTitle.innerText = "E-Paper Setup";
+    if (displaySizeSelect) displaySizeSelect.value = "7";
   }
   canvas.width = EPD_WIDTH;
   canvas.height = EPD_HEIGHT;
