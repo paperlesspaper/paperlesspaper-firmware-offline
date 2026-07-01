@@ -203,7 +203,8 @@
                 <div class="bg-indigo-50/50 p-5 rounded-xl border border-indigo-100">
                     <h2 class="text-xl font-bold mb-4 text-gray-700">Firmware Update (OTA)</h2>
                     <div class="space-y-3">
-                        <button id="btnFetchOriginalFw" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 rounded-lg transition-colors shadow">Original Firmware wiederherstellen (Web-Download)</button>
+                        <button id="btnFetchGitHubFw" class="w-full bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-2 rounded-lg transition-colors shadow mb-2">Offline Firmware</button>
+                        <button id="btnFetchOriginalFw" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 rounded-lg transition-colors shadow">Original Firmware (Cloud)</button>
                         <div class="text-center text-sm text-gray-500 my-2">oder</div>
 
                         <input type="file" id="fwInput" accept=".bin" class="hidden" />
@@ -331,6 +332,30 @@
             </div>
         </div>
     </div>
+
+    <!-- Status Bar -->
+    <div id="status" class="fixed bottom-0 left-0 right-0 bg-white shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] py-3 px-4 text-center font-medium text-sm transition-colors text-gray-500 z-50">
+        Warte auf Verbindung...
+    </div>
+
+    <!-- OTA Confirmation Dialog -->
+    <dialog id="otaDialog" class="p-6 rounded-xl shadow-2xl backdrop:bg-black/50 backdrop:backdrop-blur-sm border-0 w-11/12 max-w-md">
+        <h3 class="text-xl font-bold mb-4 text-gray-800">Original Firmware (Cloud)</h3>
+        <p class="text-sm text-gray-600 mb-4">Wähle die passende Firmware für dein Gerät. Gefundene Version: <span id="otaVersion" class="font-bold">wird geladen...</span></p>
+
+        <div class="mb-4">
+            <label class="block text-sm font-medium text-gray-700 mb-1">Gerätetyp</label>
+            <select id="otaDeviceSelect" class="w-full border-gray-300 rounded-lg shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border">
+                <option value="epd7">Paper 7 (epd7)</option>
+                <option value="epd13">Paper L (epd13)</option>
+            </select>
+        </div>
+
+        <div class="flex justify-end gap-3 mt-6">
+            <button id="btnCancelOta" class="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">Abbrechen</button>
+            <button id="btnConfirmOta" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition-colors disabled:opacity-50" disabled>Update starten</button>
+        </div>
+    </dialog>
 
     <script type="module" src="app.js"></script>
     <script>

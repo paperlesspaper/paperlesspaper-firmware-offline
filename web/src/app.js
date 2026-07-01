@@ -47,6 +47,12 @@ const progressContainer = document.getElementById("progressContainer");
 const progressBar = document.getElementById("progressBar");
 
 const btnFetchOriginalFw = document.getElementById("btnFetchOriginalFw");
+const btnFetchGitHubFw = document.getElementById("btnFetchGitHubFw");
+const otaDialog = document.getElementById("otaDialog");
+const otaDeviceSelect = document.getElementById("otaDeviceSelect");
+const otaVersion = document.getElementById("otaVersion");
+const btnCancelOta = document.getElementById("btnCancelOta");
+const btnConfirmOta = document.getElementById("btnConfirmOta");
 const fwInput = document.getElementById("fwInput");
 const btnSelectFw = document.getElementById("btnSelectFw");
 const fwProgressContainer = document.getElementById("fwProgressContainer");
@@ -730,6 +736,7 @@ btnUploadImage.addEventListener("click", async () => {
 async function uploadFirmwareBle(buffer) {
   try {
     btnSelectFw.disabled = true;
+    btnFetchGitHubFw.disabled = true;
     btnFetchOriginalFw.disabled = true;
     fwProgressContainer.classList.remove("hidden");
     fwProgressBar.style.width = "0%";
@@ -737,26 +744,20 @@ async function uploadFirmwareBle(buffer) {
     await bleInterface.uploadFirmware(buffer);
   } finally {
     btnSelectFw.disabled = false;
+    btnFetchGitHubFw.disabled = false;
     btnFetchOriginalFw.disabled = false;
   }
 }
 
-btnFetchOriginalFw.addEventListener("click", async () => {
-  if (!settingsService) {
+btnFetchGitHubFw.addEventListener("click", async () => {
+  if (!bleInterface || !bleInterface.settingsService) {
     setStatus("Bitte zuerst mit dem E-Paper verbinden.", "text-red-500");
     return;
   }
 
   try {
-    setStatus("Lade Update-Informationen...", "text-blue-500");
-    const res = await fetch("http://ul.epaperframe.de/espfota_epd7.json");
-    if (!res.ok) throw new Error("JSON konnte nicht geladen werden.");
-    const data = await res.json();
-
-    if (!data.url) throw new Error("Keine Firmware URL im JSON gefunden.");
-
-    setStatus("Lade Original-Firmware herunter...", "text-blue-500");
-    const fwRes = await fetch(data.url);
+    setStatus("Lade GitHub-Firmware herunter...", "text-blue-500");
+    const fwRes = await fetch("./firmware.bin");
     if (!fwRes.ok) throw new Error("Firmware konnte nicht geladen werden.");
 
     const arrayBuffer = await fwRes.arrayBuffer();
@@ -765,13 +766,75 @@ btnFetchOriginalFw.addEventListener("click", async () => {
     await uploadFirmwareBle(buffer);
   } catch (err) {
     console.error(err);
-    setStatus("Fehler beim Download der Original-Firmware: " + err.message, "text-red-500");
+    setStatus("Fehler beim Download der GitHub-Firmware: " + err.message, "text-red-500");
   }
+});
+
+let currentOtaUrl = null;
+
+async function checkCloudFw() {
+    otaVersion.innerText = "wird geladen...";
+    btnConfirmOta.disabled = true;
+    currentOtaUrl = null;
+    try {
+        const type = otaDeviceSelect.value;
+        const res = await fetch(`http://ul.epaperframe.de/espfota_${type}.json`);
+        if (!res.ok) throw new Error("JSON konnte nicht geladen werden.");
+        const data = await res.json();
+        if (!data.url) throw new Error("Keine Firmware URL gefunden.");
+        
+        otaVersion.innerText = data.version || data.date || "Verfügbar";
+        currentOtaUrl = data.url;
+        btnConfirmOta.disabled = false;
+    } catch (e) {
+        otaVersion.innerText = "Fehler (" + e.message + ")";
+    }
+}
+
+btnFetchOriginalFw.addEventListener("click", () => {
+    if (!bleInterface || !bleInterface.settingsService) {
+        setStatus("Bitte zuerst mit dem E-Paper verbinden.", "text-red-500");
+        return;
+    }
+    
+    if (bleInterface.bleDevice && bleInterface.bleDevice.name && bleInterface.bleDevice.name.startsWith("epd13-")) {
+        otaDeviceSelect.value = "epd13";
+    } else {
+        otaDeviceSelect.value = "epd7";
+    }
+    
+    otaDialog.showModal();
+    checkCloudFw();
+});
+
+otaDeviceSelect.addEventListener("change", checkCloudFw);
+
+btnCancelOta.addEventListener("click", () => {
+    otaDialog.close();
+});
+
+btnConfirmOta.addEventListener("click", async () => {
+    otaDialog.close();
+    if (!currentOtaUrl) return;
+    
+    try {
+        setStatus("Lade Cloud-Firmware herunter...", "text-blue-500");
+        const fwRes = await fetch(currentOtaUrl);
+        if (!fwRes.ok) throw new Error("Firmware konnte nicht geladen werden.");
+        
+        const arrayBuffer = await fwRes.arrayBuffer();
+        const buffer = new Uint8Array(arrayBuffer);
+        
+        await uploadFirmwareBle(buffer);
+    } catch (err) {
+        console.error(err);
+        setStatus("Fehler beim Download der Cloud-Firmware: " + err.message, "text-red-500");
+    }
 });
 
 if (btnSelectFw) {
   btnSelectFw.addEventListener("click", () => {
-    if (!settingsService) {
+    if (!bleInterface || !bleInterface.settingsService) {
       setStatus("Bitte zuerst mit dem E-Paper verbinden.", "text-red-500");
       return;
     }
