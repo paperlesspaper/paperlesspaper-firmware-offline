@@ -7,7 +7,6 @@ const bleInterface = new DeviceBleInterface();
 async function fetchWithProxy(url, options = {}) {
   try {
     const res = await fetch(url, options);
-    // If it succeeds or returns a valid HTTP error (not CORS), return it
     return res;
   } catch (err) {
     console.warn("Direct fetch failed (likely CORS). Trying Proxy 1 (corsproxy.io)...", err);
@@ -15,9 +14,10 @@ async function fetchWithProxy(url, options = {}) {
 
   try {
     const res = await fetch("https://corsproxy.io/?" + encodeURIComponent(url), options);
-    return res;
+    if (res.ok) return res;
+    console.warn(`Proxy 1 returned ${res.status}. Trying Proxy 2 (allorigins)...`);
   } catch (err2) {
-    console.warn("Proxy 1 failed. Trying Proxy 2 (allorigins)...", err2);
+    console.warn("Proxy 1 fetch failed. Trying Proxy 2 (allorigins)...", err2);
   }
 
   return await fetch("https://api.allorigins.win/raw?url=" + encodeURIComponent(url), options);
