@@ -167,7 +167,7 @@ Die Firmware wird direkt in die OTA-Partition geflasht. Es gibt keinen Checkpoin
 - (done) on device dithering with jpg support
 - (done) electron tool to update offline firmware or web flasher
 - (done) add rotation setting to bluetooth
-- store multiple images
-- (done) https://immich.app/ integration into firmware and config via ble
 - (done) host the tool on our infrastructure (select latest firmware build too)
+- store multiple images
+- https://immich.app/ integration into firmware and config via ble
 - bluetooth broadcast mode
