@@ -4,6 +4,25 @@ import { DeviceBleInterface } from "./DeviceBleInterface.js";
 const generatePicture = new GeneratePicture();
 const bleInterface = new DeviceBleInterface();
 
+async function fetchWithProxy(url, options = {}) {
+  try {
+    const res = await fetch(url, options);
+    // If it succeeds or returns a valid HTTP error (not CORS), return it
+    return res;
+  } catch (err) {
+    console.warn("Direct fetch failed (likely CORS). Trying Proxy 1 (corsproxy.io)...", err);
+  }
+
+  try {
+    const res = await fetch("https://corsproxy.io/?" + encodeURIComponent(url), options);
+    return res;
+  } catch (err2) {
+    console.warn("Proxy 1 failed. Trying Proxy 2 (allorigins)...", err2);
+  }
+
+  return await fetch("https://api.allorigins.win/raw?url=" + encodeURIComponent(url), options);
+}
+
 let EPD_WIDTH = 800;
 let EPD_HEIGHT = 480;
 
@@ -451,29 +470,9 @@ document.getElementById("btnPreviewJson")?.addEventListener("click", async () =>
 
   document.getElementById("btnPreviewJson").innerText = "Lade...";
   try {
-    let response;
-    try {
-      response = await fetch(url, { cache: "no-store" });
-    } catch (err) {
-      console.warn("Direct fetch failed (likely CORS). Trying via Proxy 1...", err);
-      try {
-        response = await fetch("https://corsproxy.io/?" + encodeURIComponent(url));
-      } catch (err2) {
-        console.warn("Proxy 1 failed. Trying Proxy 2...", err2);
-
-        const proxyResp = await fetch("https://api.allorigins.win/get?url=" + encodeURIComponent(url), { cache: "no-store" });
-        if (!proxyResp.ok) throw new Error("HTTP Fehler Proxy: " + proxyResp.status);
-        const proxyJson = await proxyResp.json();
-
-        tempJsonSettings = JSON.parse(proxyJson.contents);
-        document.getElementById("jsonPreviewContent").innerText = JSON.stringify(tempJsonSettings, null, 2);
-        document.getElementById("jsonPreviewModal").classList.remove("hidden");
-        document.getElementById("btnPreviewJson").innerText = "Prüfen";
-        return;
-      }
-    }
-
+    const response = await fetchWithProxy(url, { cache: "no-store" });
     if (!response.ok) throw new Error("HTTP Fehler " + response.status);
+    
     const json = await response.json();
 
     tempJsonSettings = json;
@@ -778,7 +777,8 @@ async function checkCloudFw() {
     currentOtaUrl = null;
     try {
         const type = otaDeviceSelect.value;
-        const res = await fetch(`http://ul.epaperframe.de/espfota_${type}.json`);
+        const targetUrl = `http://ul.epaperframe.de/espfota_${type}.json`;
+        const res = await fetchWithProxy(targetUrl);
         if (!res.ok) throw new Error("JSON konnte nicht geladen werden.");
         const data = await res.json();
         if (!data.url) throw new Error("Keine Firmware URL gefunden.");
@@ -819,10 +819,10 @@ btnConfirmOta.addEventListener("click", async () => {
     
     try {
         setStatus("Lade Cloud-Firmware herunter...", "text-blue-500");
-        const fwRes = await fetch(currentOtaUrl);
-        if (!fwRes.ok) throw new Error("Firmware konnte nicht geladen werden.");
+        const res = await fetchWithProxy(currentOtaUrl);
+        if (!res.ok) throw new Error("Firmware konnte nicht geladen werden.");
         
-        const arrayBuffer = await fwRes.arrayBuffer();
+        const arrayBuffer = await res.arrayBuffer();
         const buffer = new Uint8Array(arrayBuffer);
         
         await uploadFirmwareBle(buffer);
