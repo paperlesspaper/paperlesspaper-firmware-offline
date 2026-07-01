@@ -27,10 +27,13 @@ Offline first Firmware for an ESP32-C6 based E-Paper display device, featuring W
     ```
 
 2.  **Web-UI (BLE Setup & Image Upload)**
-    This project includes a web-based frontend in the `web/` directory. It uses Web Bluetooth (BLE) to communicate with the E-Paper display directly from your browser.
+    You can use the **hosted version** of the Web-UI directly from your browser (requires a Web Bluetooth compatible browser like Chrome or Edge):
+    👉 **[Launch Web-UI & Flasher](https://paperlesspaper.github.io/paperlesspaper-firmware-offline/)**
+
+    *Alternatively, to run the web frontend locally:*
     - Navigate to the `web/` folder.
     - Install dependencies: `npm install`
-    - Build or run via Vite: `npm run build`
+    - Build or run via Vite: `npm run dev` or `npm run build`
     - You can set WiFi credentials, a local HTTP download URL, the sleep timeout, or upload an image directly via Web-BLE.
 
 3.  **Build and Upload Firmware**
@@ -165,6 +168,6 @@ Die Firmware wird direkt in die OTA-Partition geflasht. Es gibt keinen Checkpoin
 - (done) electron tool to update offline firmware or web flasher
 - (done) add rotation setting to bluetooth
 - store multiple images
-- https://immich.app/ integration into firmware and config via ble
-- host the tool on our infrastructure (select latest firmware build too)
+- (done) https://immich.app/ integration into firmware and config via ble
+- (done) host the tool on our infrastructure (select latest firmware build too)
 - bluetooth broadcast mode
