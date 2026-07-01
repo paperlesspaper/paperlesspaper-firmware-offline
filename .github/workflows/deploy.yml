@@ -5,6 +5,8 @@ on:
     branches:
       - main
   workflow_dispatch:
+  repository_dispatch:
+    types: [trigger-web-build]
 
 permissions:
   contents: read
@@ -88,6 +90,28 @@ jobs:
       - name: Copy Firmware to Web Dist
         run: |
           cp .pio/build/ESP32-C6-DevKitM-1/firmware.bin web/dist/firmware.bin
+
+      - name: Download Original Firmware (EPD13 & EPD7)
+        uses: dawidd6/action-download-artifact@v3
+        continue-on-error: true
+        with:
+          github_token: ${{secrets.GITHUB_TOKEN}}
+          repo: paperlesspaper/paperlesspaper-firmware
+          workflow: dev.yml
+          branch: main
+          name: ^epaper_fw_.*_dev_.*$
+          name_is_regexp: true
+          path: web/dist/downloaded_factory
+
+      - name: Flatten Factory Firmware
+        continue-on-error: true
+        run: |
+          mkdir -p web/dist/factory
+          # Finde alle .json und .bin Dateien und kopiere sie ins factory Verzeichnis
+          find web/dist/downloaded_factory -type f -name "*.json" -exec cp {} web/dist/factory/ \;
+          find web/dist/downloaded_factory -type f -name "*.bin" -exec cp {} web/dist/factory/ \;
+          rm -rf web/dist/downloaded_factory
+          ls -la web/dist/factory/
 
       - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3

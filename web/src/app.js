@@ -777,14 +777,14 @@ async function checkCloudFw() {
     currentOtaUrl = null;
     try {
         const type = otaDeviceSelect.value;
-        const targetUrl = `http://ul.epaperframe.de/espfota_${type}.json`;
+        const targetUrl = `./factory/espfota_${type}_dev.json`;
         const res = await fetchWithProxy(targetUrl);
         if (!res.ok) throw new Error("JSON konnte nicht geladen werden.");
         const data = await res.json();
-        if (!data.url) throw new Error("Keine Firmware URL gefunden.");
         
         otaVersion.innerText = data.version || data.date || "Verfügbar";
-        currentOtaUrl = data.url;
+        // Override the S3 URL from the JSON with our local bundled file
+        currentOtaUrl = `./factory/firmware_${type}_dev.bin`;
         btnConfirmOta.disabled = false;
     } catch (e) {
         otaVersion.innerText = "Fehler (" + e.message + ")";
