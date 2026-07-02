@@ -18,32 +18,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  build_firmware:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - epd_type: 13INCH
+            display_val: 1
+            suffix: epd13
+          - epd_type: 7INCH
+            display_val: 0
+            suffix: epd7
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Cache Node Modules
-        uses: actions/cache@v4
-        with:
-          path: web/node_modules
-          key: ${{ runner.os }}-node-${{ hashFiles('web/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-
-
-      - name: Install Node Dependencies
-        working-directory: web
-        run: npm ci || npm install
-
-      - name: Build Web UI
-        working-directory: web
-        run: npm run build
 
       - name: Setup Python for PlatformIO
         uses: actions/setup-python@v5
@@ -73,6 +61,11 @@ jobs:
       - name: Install PlatformIO Packages
         run: pio pkg install -e ESP32-C6-DevKitM-1
 
+      - name: Set Display Type
+        run: |
+          sed -i 's/#define SET_DISPLAY 0/#define SET_DISPLAY ${{ matrix.display_val }}/g' src/main.cpp
+          sed -i 's/#define SET_DISPLAY 1/#define SET_DISPLAY ${{ matrix.display_val }}/g' src/main.cpp
+
       - name: Build Firmware
         id: pio_build
         continue-on-error: true
@@ -87,9 +80,50 @@ jobs:
           pio pkg install -e ESP32-C6-DevKitM-1
           pio run -e ESP32-C6-DevKitM-1
 
-      - name: Copy Firmware to Web Dist
+      - name: Upload Firmware Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline_firmware_${{ matrix.suffix }}
+          path: .pio/build/ESP32-C6-DevKitM-1/firmware.bin
+
+  build_web:
+    runs-on: ubuntu-latest
+    needs: build_firmware
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache Node Modules
+        uses: actions/cache@v4
+        with:
+          path: web/node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('web/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Install Node Dependencies
+        working-directory: web
+        run: npm ci || npm install
+
+      - name: Build Web UI
+        working-directory: web
+        run: npm run build
+
+      - name: Download Offline Firmwares
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded_offline
+
+      - name: Move Offline Firmwares to Dist
         run: |
-          cp .pio/build/ESP32-C6-DevKitM-1/firmware.bin web/dist/firmware.bin
+          mv downloaded_offline/offline_firmware_epd13/firmware.bin web/dist/firmware_offline_epd13.bin
+          mv downloaded_offline/offline_firmware_epd7/firmware.bin web/dist/firmware_offline_epd7.bin
+          rm -rf downloaded_offline
 
       - name: Download Original Firmware (EPD13 & EPD7)
         uses: dawidd6/action-download-artifact@v3
@@ -98,6 +132,7 @@ jobs:
           github_token: ${{secrets.GITHUB_TOKEN}}
           repo: paperlesspaper/paperlesspaper-firmware
           workflow: dev.yml
+          #branch: main
           name: ^epaper_fw_.*_dev_.*$
           name_is_regexp: true
           path: web/dist/downloaded_factory
@@ -122,7 +157,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
-    needs: build
+    needs: build_web
     steps:
       - name: Deploy to GitHub Pages
         id: deployment

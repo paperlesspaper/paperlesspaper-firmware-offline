@@ -66,12 +66,16 @@ const progressContainer = document.getElementById("progressContainer");
 const progressBar = document.getElementById("progressBar");
 
 const btnFetchOriginalFw = document.getElementById("btnFetchOriginalFw");
-const btnFetchGitHubFw = document.getElementById("btnFetchGitHubFw");
+const btnUpdateOfflineFw = document.getElementById("btnUpdateOfflineFw");
 const otaDialog = document.getElementById("otaDialog");
 const otaDeviceSelect = document.getElementById("otaDeviceSelect");
 const otaVersion = document.getElementById("otaVersion");
 const btnCancelOta = document.getElementById("btnCancelOta");
 const btnConfirmOta = document.getElementById("btnConfirmOta");
+const otaOfflineDialog = document.getElementById("otaOfflineDialog");
+const offlineOtaDeviceSelect = document.getElementById("offlineOtaDeviceSelect");
+const btnCancelOfflineOta = document.getElementById("btnCancelOfflineOta");
+const btnConfirmOfflineOta = document.getElementById("btnConfirmOfflineOta");
 const fwInput = document.getElementById("fwInput");
 const btnSelectFw = document.getElementById("btnSelectFw");
 const fwProgressContainer = document.getElementById("fwProgressContainer");
@@ -831,6 +835,52 @@ btnConfirmOta.addEventListener("click", async () => {
         setStatus("Fehler beim Download der Cloud-Firmware: " + err.message, "text-red-500");
     }
 });
+
+if (btnUpdateOfflineFw) {
+    btnUpdateOfflineFw.addEventListener("click", () => {
+        if (!bleInterface || !bleInterface.settingsService) {
+            setStatus("Bitte zuerst mit dem E-Paper verbinden.", "text-red-500");
+            return;
+        }
+        
+        if (bleInterface.bleDevice && bleInterface.bleDevice.name && bleInterface.bleDevice.name.startsWith("epd13-")) {
+            offlineOtaDeviceSelect.value = "epd13";
+        } else {
+            offlineOtaDeviceSelect.value = "epd7";
+        }
+        
+        otaOfflineDialog.showModal();
+    });
+}
+
+if (btnCancelOfflineOta) {
+    btnCancelOfflineOta.addEventListener("click", () => {
+        otaOfflineDialog.close();
+    });
+}
+
+if (btnConfirmOfflineOta) {
+    btnConfirmOfflineOta.addEventListener("click", async () => {
+        otaOfflineDialog.close();
+        
+        try {
+            const type = offlineOtaDeviceSelect.value;
+            const targetUrl = `./firmware_offline_${type}.bin`;
+            
+            setStatus("Lade Offline-Firmware herunter...", "text-blue-500");
+            const res = await fetch(targetUrl);
+            if (!res.ok) throw new Error(`HTTP Error ${res.status} beim Download von ${targetUrl}`);
+            
+            const arrayBuffer = await res.arrayBuffer();
+            const buffer = new Uint8Array(arrayBuffer);
+            
+            await uploadFirmwareBle(buffer);
+        } catch (err) {
+            console.error(err);
+            setStatus("Fehler beim Download der Offline-Firmware: " + err.message, "text-red-500");
+        }
+    });
+}
 
 if (btnSelectFw) {
   btnSelectFw.addEventListener("click", () => {

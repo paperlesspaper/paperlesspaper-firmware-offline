@@ -204,12 +204,13 @@
                 <div class="bg-indigo-50/50 p-5 rounded-xl border border-indigo-100">
                     <h2 class="text-xl font-bold mb-4 text-gray-700">Firmware Update (OTA)</h2>
                     <div class="space-y-3">
-                        <button id="btnFetchGitHubFw" class="w-full bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-2 rounded-lg transition-colors shadow mb-2">Offline Firmware</button>
-                        <button id="btnFetchOriginalFw" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 rounded-lg transition-colors shadow">Original Firmware (Cloud)</button>
-                        <div class="text-center text-sm text-gray-500 my-2">oder</div>
-
+                        <div class="p-4 bg-blue-50 text-blue-800 rounded-lg text-sm mb-4">
+                            Hier kannst du die Firmware deines E-Papers aktualisieren.
+                        </div>
+                        <button id="btnFetchOriginalFw" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 rounded-lg transition-colors">Original Firmware flashen (Cloud)</button>
+                        <button id="btnUpdateOfflineFw" class="w-full bg-purple-500 hover:bg-purple-600 text-white font-bold py-2 rounded-lg transition-colors mt-2">Offline Firmware aktualisieren</button>
+                        <button id="btnSelectFw" class="w-full bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 rounded-lg transition-colors mt-2">Lokale .bin Datei flashen</button>
                         <input type="file" id="fwInput" accept=".bin" class="hidden" />
-                        <button id="btnSelectFw" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded-lg shadow transition-colors">Eigene Firmware hochladen (.bin)</button>
 
                         <div id="fwProgressContainer" class="hidden w-full bg-gray-200 rounded-full h-2.5 mt-4">
                             <div id="fwProgressBar" class="bg-blue-600 h-2.5 rounded-full" style="width: 0%"></div>
@@ -338,6 +339,23 @@
     <div id="status" class="fixed bottom-0 left-0 right-0 bg-white shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] py-3 px-4 text-center font-medium text-sm transition-colors text-gray-500 z-50">
         Warte auf Verbindung...
     </div>
+
+    <!-- OTA Offline Dialog -->
+    <dialog id="otaOfflineDialog" class="p-6 rounded-lg shadow-xl bg-white w-full max-w-md backdrop:bg-gray-900/50">
+        <h2 class="text-xl font-bold mb-4 text-gray-800">Offline Firmware aktualisieren</h2>
+        <p class="text-sm text-gray-600 mb-4">Wähle dein Gerät aus, um die neuste lokal verfügbare Offline-Firmware zu flashen.</p>
+        
+        <label class="block text-sm text-gray-600 mb-1">Gerät (Displaygröße)</label>
+        <select id="offlineOtaDeviceSelect" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none transition mb-6">
+            <option value="epd7">7 Zoll (paper 7)</option>
+            <option value="epd13">13 Zoll (paper l)</option>
+        </select>
+
+        <div class="flex space-x-3">
+            <button id="btnCancelOfflineOta" class="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold py-2 rounded-lg transition-colors">Abbrechen</button>
+            <button id="btnConfirmOfflineOta" class="flex-1 bg-purple-500 hover:bg-purple-600 text-white font-bold py-2 rounded-lg transition-colors">Flashen</button>
+        </div>
+    </dialog>
 
     <!-- OTA Confirmation Dialog -->
     <dialog id="otaDialog" class="p-6 rounded-xl shadow-2xl backdrop:bg-black/50 backdrop:backdrop-blur-sm border-0 w-11/12 max-w-md">
