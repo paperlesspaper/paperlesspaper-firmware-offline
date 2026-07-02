@@ -739,7 +739,7 @@ btnUploadImage.addEventListener("click", async () => {
 async function uploadFirmwareBle(buffer) {
   try {
     btnSelectFw.disabled = true;
-    btnFetchGitHubFw.disabled = true;
+    if (btnUpdateOfflineFw) btnUpdateOfflineFw.disabled = true;
     btnFetchOriginalFw.disabled = true;
     fwProgressContainer.classList.remove("hidden");
     fwProgressBar.style.width = "0%";
@@ -747,31 +747,12 @@ async function uploadFirmwareBle(buffer) {
     await bleInterface.uploadFirmware(buffer);
   } finally {
     btnSelectFw.disabled = false;
-    btnFetchGitHubFw.disabled = false;
+    if (btnUpdateOfflineFw) btnUpdateOfflineFw.disabled = false;
     btnFetchOriginalFw.disabled = false;
   }
 }
 
-btnFetchGitHubFw.addEventListener("click", async () => {
-  if (!bleInterface || !bleInterface.settingsService) {
-    setStatus("Bitte zuerst mit dem E-Paper verbinden.", "text-red-500");
-    return;
-  }
 
-  try {
-    setStatus("Lade GitHub-Firmware herunter...", "text-blue-500");
-    const fwRes = await fetch("./firmware.bin");
-    if (!fwRes.ok) throw new Error("Firmware konnte nicht geladen werden.");
-
-    const arrayBuffer = await fwRes.arrayBuffer();
-    const buffer = new Uint8Array(arrayBuffer);
-
-    await uploadFirmwareBle(buffer);
-  } catch (err) {
-    console.error(err);
-    setStatus("Fehler beim Download der GitHub-Firmware: " + err.message, "text-red-500");
-  }
-});
 
 let currentOtaUrl = null;
 
