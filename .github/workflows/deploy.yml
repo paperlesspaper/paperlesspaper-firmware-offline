@@ -132,7 +132,7 @@ jobs:
           github_token: ${{secrets.GITHUB_TOKEN}}
           repo: paperlesspaper/paperlesspaper-firmware
           workflow: dev.yml
-          #branch: main
+          branch: main
           name: ^epaper_fw_.*_dev_.*$
           name_is_regexp: true
           path: web/dist/downloaded_factory
