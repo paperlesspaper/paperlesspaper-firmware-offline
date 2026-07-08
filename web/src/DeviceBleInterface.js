@@ -544,6 +544,22 @@ export class DeviceBleInterface {
       if (isFirmware) {
         this.onStatusChange("Beende Firmware Update & Neustart...", "text-blue-500");
         await cmdChar.writeValue(this.encodeText("END_FW"));
+        
+        // Wait briefly and verify if firmware reported an error
+        await new Promise((r) => setTimeout(r, 100));
+        try {
+          const statusView = await cmdChar.readValue();
+          const statusVal = statusView.getUint16(0, true);
+          if (statusVal === 0xFFFF) {
+            throw new Error("Firmware-Integritätsprüfung auf dem Gerät fehlgeschlagen. Versuche es noch einmal.");
+          }
+        } catch (e) {
+          // If connection was disconnected by the fast reboot, ignore the GATT read error (indicates success)
+          if (!e.message.includes("GATT") && !e.message.includes("disconnect")) {
+            throw e;
+          }
+        }
+
         setTimeout(() => {
           if (this.bleDevice && this.bleDevice.gatt.connected) {
             this.bleDevice.gatt.disconnect();

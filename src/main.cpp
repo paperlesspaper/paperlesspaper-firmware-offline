@@ -28,7 +28,7 @@
 #include <rom/rtc.h>
 
 #define DEBUG 1
-#define SET_DISPLAY 0 // 0 = 7-inch display, 1 = 13-inch display
+#define SET_DISPLAY 1 // 0 = 7-inch display, 1 = 13-inch display
 
 #if DEBUG
 #define PRINTS(s)         \
@@ -187,7 +187,7 @@ struct displaySettings
    uint8_t displayType;
 } displaySettings = {
     .rotationText = 3,
-    .rotationPicture = 2,
+    .rotationPicture = 0,
     .quickRefresh = true,
     .displayQuickRefreshTime = 960,
     .displayType = 0};
@@ -306,7 +306,7 @@ uint8_t *strip_buffer = nullptr;
 int16_t err_curr[MAX_EPD_WIDTH * 3];
 int16_t err_next[MAX_EPD_WIDTH * 3];
 char CLIENT_ID[20];
-uint8_t bleWriteBuffer[BLE_BUFFER_SIZE];
+uint8_t *bleWriteBuffer = nullptr;
 
 void ledBlink(int timeout, bool on, int dimValue = 100);
 void debugFS(void);
@@ -315,7 +315,7 @@ void writeIntToFlash(int value, int startAddr);
 int storeSleepTimeMem(int updateTime = 0);
 void gotToDeepSleep(int seconds, bool showScreen = true, bool motionWake = true);
 void displayOverlays(DisplayType &display, displayInfo displayData, bool invertColors, bool fullcolor = false);
-int setImageFromFS(String fileName);
+int setImageFromFS(String fileName, bool doRefresh = true);
 void displayWipe(bool quick);
 void displaySetText(String info, bool blackBoard, bool quickRefresh = true);
 bool waitDisplayComplete(bool quick);
@@ -1037,6 +1037,11 @@ class ServerCallbacks : public NimBLEServerCallbacks
       Serial.printf("\n[BLE] Client disconnected");
       isBleClientConnected = false;
       lastDisconnectTime = millis();
+      if (bleWriteBuffer != nullptr) {
+         free(bleWriteBuffer);
+         bleWriteBuffer = nullptr;
+      }
+      fwUpdateInProgress = false;
       if (wifiSettings.bleInitOk) {
          Serial.printf("\n[BLE] restart advertising...\n[");
          NimBLEDevice::startAdvertising();
@@ -1082,6 +1087,9 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
          settings.downloadUrl = pCharacteristic->getValue();
          settings.lastModified = ""; // Reset lastModified um Download zu erzwingen
          Serial.printf("[BLE] Set URL: %s\n", settings.downloadUrl.c_str());
+         if (settings.downloadUrl.length() > 0) {
+            settings.imageMode = 1;
+         }
       }
       else if (uuidStr == "10000007-0000-0000-0000-000000000001") {
          settings.httpAuthUser = pCharacteristic->getValue();
@@ -1145,6 +1153,13 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
             forceExitSetup = true;
          }
          else if (cmd == "START") {
+            if (bleWriteBuffer == nullptr) {
+               bleWriteBuffer = (uint8_t *)malloc(BLE_BUFFER_SIZE);
+            }
+            if (bleWriteBuffer == nullptr) {
+               Serial.println("[BLE] ERROR: Failed to allocate memory for image buffer!");
+               return;
+            }
             if (SerialFlash.exists("tmp.bmp")) {
                SerialFlashFile f = SerialFlash.open("tmp.bmp");
                f.erase();
@@ -1183,6 +1198,10 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
                }
                bleFile.close();
             }
+            if (bleWriteBuffer != nullptr) {
+               free(bleWriteBuffer);
+               bleWriteBuffer = nullptr;
+            }
             Serial.printf("[BLE] Upload ENDED. Bytes: %d\n", bleBytesReceived);
             if (bleBytesReceived != (EPD_WIDTH * EPD_HEIGHT / 2)) {
                Serial.printf("[BLE] WARNING: Payload size mismatch! Expected %d, got %d. Image will be corrupted!\n", (EPD_WIDTH * EPD_HEIGHT / 2), bleBytesReceived);
@@ -1202,6 +1221,13 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
             ESP.restart();
          }
          else if (cmd == "START_FW") {
+            if (bleWriteBuffer == nullptr) {
+               bleWriteBuffer = (uint8_t *)malloc(BLE_BUFFER_SIZE);
+            }
+            if (bleWriteBuffer == nullptr) {
+               Serial.println("[BLE] ERROR: Failed to allocate memory for firmware buffer!");
+               return;
+            }
             fwUpdateInProgress = true;
             bleWriteBufferPos = 0;
             tickerFailsave.detach();
@@ -1218,6 +1244,10 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
                bleWriteBufferPos = 0;
             }
             fwUpdateInProgress = false;
+            if (bleWriteBuffer != nullptr) {
+               free(bleWriteBuffer);
+               bleWriteBuffer = nullptr;
+            }
             if (Update.end(true)) {
                Serial.println("[BLE] Firmware Update SUCCESS. Rebooting...");
                delay(500);
@@ -1227,12 +1257,13 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
             else {
                Update.printError(Serial);
                Serial.println("[BLE] Firmware Update FAILED.");
+               bleWriteBufferPos = 0xFFFF;
             }
          }
       }
       else if (uuidStr == "10000003-0000-0000-0000-000000000001") {
          const uint8_t *pData = pCharacteristic->getValue().data();
-         if ((bleFile || fwUpdateInProgress) && pData && dataLen > 4) {
+         if ((bleFile || fwUpdateInProgress) && pData && dataLen > 4 && bleWriteBuffer != nullptr) {
             uint32_t packetCrc = pData[0] | (pData[1] << 8) | (pData[2] << 16) | (pData[3] << 24);
             size_t actualDataLen = dataLen - 4;
             uint32_t calculatedCrc = calcCRC32(pData + 4, actualDataLen);
@@ -1473,35 +1504,79 @@ int downloadAndSaveFile(String fileName, String url) {
 
          SerialFlash.createErasable(fileName.c_str(), httpFileSize);
          saveFile = SerialFlash.open(fileName.c_str());
-
          Serial.print("[DL] Download Size: ");
          Serial.println(len);
-         int buff_size = 8128;
+         int buff_size = 2048;
          unsigned char *buff = (unsigned char *)malloc(buff_size);
+         if (buff == nullptr) {
+            Serial.println("[DL] WARNING: Failed to allocate 2048 bytes, trying 512 bytes...");
+            buff_size = 512;
+            buff = (unsigned char *)malloc(buff_size);
+         }
+         if (buff == nullptr) {
+            Serial.println("[DL] ERROR: Failed to allocate memory for download buffer!");
+            saveFile.close();
+            http.end();
+            return -1;
+         }
 
          WiFiClient *stream = http.getStreamPtr();
-         size_t downloaded_data_size = 0;
-         while (http.connected() && (len > 0 || len == -1)) {
-            // Available limited to 16328 bytes. Might be TLS segementation.
-            size_t size = stream->available();
-            if (size) {
-               int c = stream->read(buff, ((size > buff_size) ? buff_size : size));
-               saveFile.write(buff, c);
-               if (len > 0) {
-                  len -= c;
+         int write_buffer_pos = 0;
+         unsigned long lastDataTime = millis();
+         bool dlFailed = false;
+
+         while ((http.connected() || stream->available() > 0) && (len > 0 || len == -1)) {
+            int available_bytes = stream->available();
+            if (available_bytes > 0) {
+               int space_left = buff_size - write_buffer_pos;
+               int to_read = (available_bytes > space_left) ? space_left : available_bytes;
+               int c = stream->read(buff + write_buffer_pos, to_read);
+               if (c > 0) {
+                  lastDataTime = millis();
+                  write_buffer_pos += c;
+                  if (len > 0) {
+                     len -= c;
+                  }
+                  if (write_buffer_pos >= buff_size) {
+                     saveFile.write(buff, buff_size);
+                     write_buffer_pos = 0;
+                  }
                }
-               downloaded_data_size += size;
+               else if (c < 0) {
+                  Serial.println("[DL] Stream read error");
+                  dlFailed = true;
+                  break;
+               }
             }
             else {
+               // No data available currently
+               if (millis() - lastDataTime > 15000) {
+                  Serial.println("[DL] Stream read timeout");
+                  dlFailed = true;
+                  break;
+               }
                delay(1);
             }
+
             if (WiFi.status() != WL_CONNECTED) {
-               http.end();
-               saveFile.close();
-               free(buff);
-               return -4;
+               Serial.println("[DL] WiFi disconnected during download");
+               dlFailed = true;
+               break;
             }
          }
+
+         // Flush any remaining data to flash
+         if (!dlFailed && write_buffer_pos > 0) {
+            saveFile.write(buff, write_buffer_pos);
+         }
+         free(buff);
+
+         if (dlFailed || WiFi.status() != WL_CONNECTED) {
+            http.end();
+            saveFile.close();
+            return -4;
+         }
+
          systemFileSize = saveFile.size();
          Serial.print("[FLASH] File size: ");
          Serial.println(systemFileSize);
@@ -1514,7 +1589,6 @@ int downloadAndSaveFile(String fileName, String url) {
          }
          Serial.print("[DL] MAX Diff: ");
          Serial.println(maxDif);
-         free(buff);
          if (dif < maxDif) {
             success = -8;
          }
@@ -1863,7 +1937,8 @@ int loadImageFromWeb(String url, String fileName) {
 
 int setImageFromFS_7inch(String fileName) {
    if (powerSupplyDisplay(true))
-      epaperIsUpdating = true;
+      delay(100);
+   epaperIsUpdating = true;
    saveFile = SerialFlash.open(fileName.c_str());
    if (!saveFile) {
       Serial.println("[BMP] File missing");
@@ -1929,8 +2004,7 @@ int setImageFromFS_7inch(String fileName) {
    epaperIsUpdating = false;
    return 0;
 }
-
-int setImageFromFS_13inch(String fileName) {
+int setImageFromFS_13inch(String fileName, bool doRefresh) {
    epaperIsUpdating = true;
    powerSupplyDisplay(true);
    saveFile = SerialFlash.open(fileName.c_str());
@@ -1956,7 +2030,7 @@ int setImageFromFS_13inch(String fileName) {
          Serial.printf("[BMP] Detected Windows BMP. Pixel Data starts at offset: %d\n", offsetData);
       }
       else {
-         Serial.println("[BMP] Detected RAW payload (no BM magic). Reading from byte 0.");
+         Serial.println("[BMP] Detected RAW payload (no BM magic). Reading from byte 4.");
          offsetData = 0;
       }
    }
@@ -2015,27 +2089,32 @@ int setImageFromFS_13inch(String fileName) {
          uint16_t VRST = yImageStart / 2;
          uint16_t VRED = (yImageStart + linesPerChunk) / 2 - 1;
 
+         bool rotate180 = (displaySettings.rotationPicture > 0);
+
          for (int i = 0; i < linesPerChunk; i++) {
-            int lineInImage = yImageStart + i;
-            int byteOffsetInImage = (lineInImage * 600) + (half * 300);
+            int lineOnDisplay = yImageStart + i;
+            int lineInImage = rotate180 ? (physHeight - 1 - lineOnDisplay) : lineOnDisplay;
+            int srcHalf = rotate180 ? (1 - half) : half;
+
+            int byteOffsetInImage = (lineInImage * 600) + (srcHalf * 300);
             saveFile.seek(offsetData + byteOffsetInImage);
-            saveFile.read(chunkBuffer + i * bytesPerHalfLine, bytesPerHalfLine);
+
+            if (rotate180) {
+               uint8_t tempLine[300];
+               saveFile.read(tempLine, bytesPerHalfLine);
+               for (int b = 0; b < bytesPerHalfLine; b++) {
+                  uint8_t origByte = tempLine[bytesPerHalfLine - 1 - b];
+                  // swap nibbles: left pixel becomes right pixel, right pixel becomes left pixel
+                  chunkBuffer[i * bytesPerHalfLine + b] = ((origByte & 0x0F) << 4) | (origByte >> 4);
+               }
+            }
+            else {
+               saveFile.read(chunkBuffer + i * bytesPerHalfLine, bytesPerHalfLine);
+            }
          }
          SPI.endTransaction();
          SPI.beginTransaction(SPISettings(DISPLAY_SPI_SPEED, MSBFIRST, SPI_MODE0));
 
-         /*
-         //TODO: Not sure if this block is needed
-         digitalWrite(csPin, LOW);
-         SPI.transfer(0xF0);
-         SPI.transfer(0x49);
-         SPI.transfer(0x55);
-         SPI.transfer(0x13);
-         SPI.transfer(0x5D);
-         SPI.transfer(0x05);
-         SPI.transfer(0x10);
-         digitalWrite(csPin, HIGH);
-*/
          // PTLW (Partial Window) Command Setting 0x83
          digitalWrite(csPin, LOW);
          SPI.transfer(0x83);
@@ -2091,20 +2170,21 @@ int setImageFromFS_13inch(String fileName) {
       SPI.transfer(0x00);
    digitalWrite(EPD_CS_S, HIGH);
 
-   display.refresh();
+   if (doRefresh) {
+      display.refresh();
+   }
 
    saveFile.close();
 
-   epaperIsUpdating = false;
    return 0;
 }
 
-int setImageFromFS(String fileName) {
+int setImageFromFS(String fileName, bool doRefresh) {
 
 #if SET_DISPLAY == 0
    return setImageFromFS_7inch(fileName);
 #else
-   return setImageFromFS_13inch(fileName);
+   return setImageFromFS_13inch(fileName, doRefresh);
 #endif
 }
 
@@ -2954,7 +3034,6 @@ int processHttpDownload(String fileName) {
             dlSuccess = -1;
          }
       }
-      Serial.println("[DL] Done");
       WiFi.setSleep(true);
    }
    else {
@@ -3108,7 +3187,10 @@ void test() {
    Serial.println("[DEBUG] Test Function");
    //  displaySettings.displayQuickRefreshTime = 2900;//works cold
    ledBlink(200, false);
-   setImageFromFS("tmp.bmp");
+
+   setImageFromFS("tmp_raw.bin");
+   while (true) {
+   }
    // displayWipe(false);
 
    // displaySetText("Connect via Bluetooth", false, true);
@@ -3259,10 +3341,18 @@ void setup() {
 void loop() {
 
    if (downloadStart) {
+      BleInit(CLIENT_ID, false);
       downloadStart = false;
       delay(200);
       String fileName = "tmp.bmp";
       int dlSuccess = 0;
+
+      // Fallback: If in BLE mode but the file is missing and we have a download URL configured, switch to URL mode
+      if (settings.imageMode == 0 && !SerialFlash.exists(fileName.c_str()) && settings.downloadUrl.length() > 0) {
+         Serial.println("[IMAGE] BLE mode active but tmp.bmp is missing. Fallback to URL mode.");
+         settings.imageMode = 1;
+         saveSettingsToFlash(EEPROM_SETTINGS_ADR);
+      }
 
       // Ensure WiFi if we need it for Settings OR Image
       if (settings.settingsUrl.length() > 0 || settings.imageMode == 1) {
@@ -3297,6 +3387,7 @@ void loop() {
             setSuccess = 0;
          }
          else if (dlSuccess == 0 || settings.imageMode == 0) {
+            WiFi.disconnect(true);
             setSuccess = setImageFromFS(fileName);
          }
          else {

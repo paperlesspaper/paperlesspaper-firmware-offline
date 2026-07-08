@@ -188,6 +188,11 @@ function setStatus(text, colorClass = "text-gray-500") {
     statusText.className = `mt-3 text-sm font-semibold ${colorClass}`;
     statusText.innerText = text;
   }
+  const statusFooter = document.getElementById("status");
+  if (statusFooter) {
+    statusFooter.className = `fixed bottom-0 left-0 right-0 bg-white shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] py-3 px-4 text-center font-medium text-sm transition-colors z-50 ${colorClass}`;
+    statusFooter.innerText = text;
+  }
 }
 
 function updateWifiStatusUI(isConnected) {

@@ -16,7 +16,7 @@
 
 <body class="bg-gray-50 text-gray-800 font-sans p-4 sm:p-6 lg:p-8 flex flex-col items-center min-h-screen">
     <div class="max-w-xl w-full bg-white p-6 sm:p-8 rounded-2xl shadow-xl">
-        <h1 class="text-3xl font-bold mb-6 text-center text-blue-600">E-Paper Setup</h1>
+        <h1 class="text-3xl font-bold mb-6 text-center text-blue-600">Paperlesspaper Offline</h1>
 
         <div class="flex flex-col items-center mb-6">
             <div class="flex space-x-4 w-full sm:w-auto">
@@ -56,7 +56,8 @@
         <div class="flex border-b border-gray-200 mb-6">
             <button id="tabEditor" class="flex-1 py-2 text-center font-bold text-blue-600 border-b-2 border-blue-600 outline-none transition-colors">Bild-Editor</button>
             <button id="tabConnect" class="flex-1 py-2 text-center font-bold text-gray-400 border-b-2 border-transparent hover:text-blue-500 outline-none transition-colors">Einstellungen</button>
-            <button id="tabOta" class="flex-1 py-2 text-center font-bold text-gray-400 border-b-2 border-transparent hover:text-blue-500 outline-none transition-colors">Firmware (OTA)</button>
+            <button id="tabOta" class="flex-1 py-2 text-center font-bold text-gray-400 border-b-2 border-transparent hover:text-blue-500 outline-none transition-colors">Firmware Update</button>
+            <button id="tabHelp" class="flex-1 py-2 text-center font-bold text-gray-400 border-b-2 border-transparent hover:text-blue-500 outline-none transition-colors">Hilfe</button>
         </div>
 
         <div id="viewConnect" class="hidden space-y-6">
@@ -202,14 +203,14 @@
         <div id="viewOta" class="hidden space-y-6">
             <div id="controlsOta" class="hidden space-y-6 opacity-0 transition-opacity duration-500">
                 <div class="bg-indigo-50/50 p-5 rounded-xl border border-indigo-100">
-                    <h2 class="text-xl font-bold mb-4 text-gray-700">Firmware Update (OTA)</h2>
+                    <h2 class="text-xl font-bold mb-4 text-gray-700">Firmware Update</h2>
                     <div class="space-y-3">
                         <div class="p-4 bg-blue-50 text-blue-800 rounded-lg text-sm mb-4">
-                            Hier kannst du die Firmware deines E-Papers aktualisieren.
+                            Hier kannst du die Firmware deines E-Papers aktualisieren oder ändern.
                         </div>
-                        <button id="btnFetchOriginalFw" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 rounded-lg transition-colors">Original Firmware flashen (Cloud)</button>
-                        <button id="btnUpdateOfflineFw" class="w-full bg-purple-500 hover:bg-purple-600 text-white font-bold py-2 rounded-lg transition-colors mt-2">Offline Firmware aktualisieren</button>
-                        <button id="btnSelectFw" class="w-full bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 rounded-lg transition-colors mt-2">Lokale .bin Datei flashen</button>
+                        <button id="btnFetchOriginalFw" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 rounded-lg transition-colors">Original Cloud Firmware übertragen</button>
+                        <button id="btnUpdateOfflineFw" class="w-full bg-purple-500 hover:bg-purple-600 text-white font-bold py-2 rounded-lg transition-colors mt-2">Offline Firmware übertragen</button>
+                        <button id="btnSelectFw" class="w-full bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 rounded-lg transition-colors mt-2">Eigene .bin Datei übertragen</button>
                         <input type="file" id="fwInput" accept=".bin" class="hidden" />
 
                         <div id="fwProgressContainer" class="hidden w-full bg-gray-200 rounded-full h-2.5 mt-4">
@@ -313,6 +314,96 @@
             </div>
         </div>
 
+        <div id="viewHelp" class="hidden space-y-6">
+            <div class="bg-indigo-50/50 p-5 rounded-xl border border-indigo-100 space-y-5">
+                <h2 class="text-xl font-bold text-gray-700 flex items-center">
+                    <span class="mr-2">ℹ️</span> Hilfe & FAQ
+                </h2>
+
+                <div class="space-y-3">
+                    <details class="bg-white border border-gray-200 rounded-lg" open>
+                        <summary class="cursor-pointer font-bold text-gray-700 bg-gray-50 px-4 py-3 rounded-t-lg hover:bg-gray-100 transition-colors flex justify-between items-center select-none">
+                            <span>🔌 Verbinden</span>
+                            <svg class="w-4 h-4 text-gray-500 transform transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                            </svg>
+                        </summary>
+                        <div class="p-4 text-sm text-gray-600 space-y-2 border-t border-gray-200">
+                            <p>Um Einstellungen zu ändern oder Bilder zu übertragen, aktiviere Bluetooth auf dem E-Paper. Wenn du die Cloud Firmware hast, musst du das Gerät zurücksetzen und dann wieder wecken.</p>
+                            <ol class="list-decimal list-inside space-y-1.5 pl-1">
+                                <li>Drücke die <strong>Reset-Taste (großer Knopf)</strong> auf der Rückseite des Geräts einmal.</li>
+                                <li>Wenn du die Original firmware hast, warte bis der Wifi Verbindungsscreen geladen hat. </li>
+                                <li>Das Gerät erwacht mit Bluetooth; Es bleibt für <strong>30 Sekunden</strong> aktiv.</li>
+                                <li>Klicke in dieser Zeit oben auf <strong>"Mit E-Paper verbinden"</strong> und wähle dein Display aus (z.B. <code class="bg-gray-100 text-purple-700 px-1 py-0.5 rounded font-mono">epd7-...</code> oder <code class="bg-gray-100 text-purple-700 px-1 py-0.5 rounded font-mono">epd13-...</code>).</li>
+                            </ol>
+                            <p class="text-xs text-gray-400 italic">Hinweis (Offline Firmware): Wird innerhalb der 30 Sekunden keine Verbindung aufgebaut, geht das E-Paper wieder in den Deep Sleep (Stromsparmodus) oder wechselt in den normalen Betrieb.</p>
+                        </div>
+                    </details>
+
+                    <details class="bg-white border border-gray-200 rounded-lg">
+                        <summary class="cursor-pointer font-bold text-gray-700 bg-gray-50 px-4 py-3 rounded-t-lg hover:bg-gray-100 transition-colors flex justify-between items-center select-none">
+                            <span>🎨 Der Bild-Editor & Bild-Upload</span>
+                            <svg class="w-4 h-4 text-gray-500 transform transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                            </svg>
+                        </summary>
+                        <div class="p-4 text-sm text-gray-600 space-y-2 border-t border-gray-200">
+                            <p>Im <strong>Bild-Editor</strong> kannst du ein Bild von deinem PC/Smartphone auswählen:</p>
+                            <ul class="list-disc list-inside space-y-1.5 pl-1">
+                                <li><strong>Dithering-Vorschau:</strong> Bilder werden automatisch in das 6-Farb-Spektrum des E-Paper Displays umgerechnet. Du kannst Dithering-Algorithmen (Floyd-Steinberg, Atkinson, etc.) und Farbprofile anpassen.</li>
+                                <li><strong>Auto-Optimieren:</strong> Findet selbstständig die besten Kontrast- und Dithering-Einstellungen für dein Bild.</li>
+                                <li><strong>Hochladen:</strong> Überträgt das optimierte Bild via Bluetooth direkt an das Gerät. Das Gerät muss Verbunden sein!</li>
+                                <li><strong>Download:</strong> Lädt die fertig geditherte <code class="bg-gray-100 text-purple-700 px-1 py-0.5 rounded font-mono">.bmp</code>-Datei für den Serverbetrieb herunter.</li>
+                            </ul>
+                        </div>
+                    </details>
+
+                    <details class="bg-white border border-gray-200 rounded-lg">
+                        <summary class="cursor-pointer font-bold text-gray-700 bg-gray-50 px-4 py-3 rounded-t-lg hover:bg-gray-100 transition-colors flex justify-between items-center select-none">
+                            <span>⚙️ WLAN & automatischer Download (URL Mode)</span>
+                            <svg class="w-4 h-4 text-gray-500 transform transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                            </svg>
+                        </summary>
+                        <div class="p-4 text-sm text-gray-600 space-y-2 border-t border-gray-200">
+                            <p>Konfiguriere das Gerät so, dass es selbstständig Bilder von einem lokalen oder entfernten Webserver lädt.</p>
+                            <ul class="list-disc list-inside space-y-1.5 pl-1">
+                                <li><strong>WLAN Zugangsdaten:</strong> Trage dein lokales WLAN ein. Das Gerät scannt Netze und meldet den Verbindungsstatus.</li>
+                                <li><strong>Download URL:</strong> HTTP-Link zu einem Bild (z.B. <code class="bg-gray-100 text-purple-700 px-1 py-0.5 rounded font-mono">http://nas.local/info.jpg</code>). <strong>JPEGs und 24-bit BMPs werden direkt auf dem ESP32 dithered! Wir empfehlen aber fertig geditherte 8-bit BMP</strong></li>
+                                <li><strong>Settings JSON URL:</strong> Du kannst die Konfiguration (Sleep-Intervall, Lade-Modus) per JSON-Datei auf deinem Server dynamisch verwalten. Dadurch hast du die Möglichkeit Einstellungen des Displays zu beeinflussen, ohne es erneut per Bluetooth zu verbinden.</li>
+                            </ul>
+                        </div>
+                    </details>
+
+                    <details class="bg-white border border-gray-200 rounded-lg">
+                        <summary class="cursor-pointer font-bold text-gray-700 bg-gray-50 px-4 py-3 rounded-t-lg hover:bg-gray-100 transition-colors flex justify-between items-center select-none">
+                            <span>💾 Die verschiedenen Firmware-Versionen</span>
+                            <svg class="w-4 h-4 text-gray-500 transform transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                            </svg>
+                        </summary>
+                        <div class="p-4 text-sm text-gray-600 space-y-2 border-t border-gray-200">
+                            <p>Es stehen zwei Haupt-Firmwares zur Verfügung, die du im Reiter <strong>Firmware Update</strong> flashen kannst:</p>
+                            <div class="space-y-3 mt-2">
+                                <div class="bg-blue-50 p-3 rounded border border-blue-100">
+                                    <strong class="text-blue-700 block text-xs">Original Cloud Firmware (Auslieferung)</strong>
+                                    <span class="text-xs text-gray-600">Verbindet sich mit der Cloud und bezieht Bilder durch unsere App <a href="https://paperlesspaper.de" target="_blank" class="text-blue-600 hover:underline">Paperlesspaper Website</a>.</span>
+                                </div>
+                                <div class="bg-purple-50 p-3 rounded border border-purple-100">
+                                    <strong class="text-purple-700 block text-xs">Offline Firmware (Optional)</strong>
+                                    <span class="text-xs text-gray-600">Für maximale Unabhängigkeit und Smart-Home-Integration. Unterstützt lokalen Bild-Download über WLAN, JSON-Einstellungen und Bluetooth-Direktübertragung.</span>
+                                </div>
+                            </div>
+                        </div>
+                    </details>
+                </div>
+
+                <div class="pt-2 text-xs text-gray-500 border-t border-indigo-100">
+                    Weitere technische Details zur offline Firmware findest du in der lokalen <a href="https://github.com/paperlesspaper/paperlesspaper-firmware-offline" target="_blank" class="text-indigo-600 hover:underline font-bold">README.md</a>.
+                </div>
+            </div>
+        </div>
+
         <!-- JSON Preview Modal -->
         <div id="jsonPreviewModal" class="hidden fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div class="bg-white rounded-xl shadow-xl w-full max-w-lg overflow-hidden transform transition-all">
@@ -344,7 +435,7 @@
     <dialog id="otaOfflineDialog" class="p-6 rounded-lg shadow-xl bg-white w-full max-w-md backdrop:bg-gray-900/50">
         <h2 class="text-xl font-bold mb-4 text-gray-800">Offline Firmware aktualisieren</h2>
         <p class="text-sm text-gray-600 mb-4">Wähle dein Gerät aus, um die neuste lokal verfügbare Offline-Firmware zu flashen.</p>
-        
+
         <label class="block text-sm text-gray-600 mb-1">Gerät (Displaygröße)</label>
         <select id="offlineOtaDeviceSelect" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none transition mb-6">
             <option value="epd7">7 Zoll (paper 7)</option>
@@ -381,9 +472,11 @@
         const tabConnect = document.getElementById('tabConnect');
         const tabOta = document.getElementById('tabOta');
         const tabEditor = document.getElementById('tabEditor');
+        const tabHelp = document.getElementById('tabHelp');
         const viewConnect = document.getElementById('viewConnect');
         const viewOta = document.getElementById('viewOta');
         const viewEditor = document.getElementById('viewEditor');
+        const viewHelp = document.getElementById('viewHelp');
         const sharedImageContainer = document.getElementById('sharedImageContainer');
         const bleUploadContainerSlot = document.getElementById('bleUploadContainerSlot');
         const editorContainerSlot = document.getElementById('editorContainerSlot');
@@ -401,10 +494,13 @@
             tabOta.classList.replace('border-blue-600', 'border-transparent');
             tabEditor.classList.replace('text-blue-600', 'text-gray-400');
             tabEditor.classList.replace('border-blue-600', 'border-transparent');
+            tabHelp.classList.replace('text-blue-600', 'text-gray-400');
+            tabHelp.classList.replace('border-blue-600', 'border-transparent');
 
             viewConnect.classList.remove('hidden');
             viewOta.classList.add('hidden');
             viewEditor.classList.add('hidden');
+            viewHelp.classList.add('hidden');
         }
 
         function activateOtaTab() {
@@ -414,10 +510,13 @@
             tabConnect.classList.replace('border-blue-600', 'border-transparent');
             tabEditor.classList.replace('text-blue-600', 'text-gray-400');
             tabEditor.classList.replace('border-blue-600', 'border-transparent');
+            tabHelp.classList.replace('text-blue-600', 'text-gray-400');
+            tabHelp.classList.replace('border-blue-600', 'border-transparent');
 
             viewOta.classList.remove('hidden');
             viewConnect.classList.add('hidden');
             viewEditor.classList.add('hidden');
+            viewHelp.classList.add('hidden');
         }
 
         function activateEditorTab() {
@@ -427,15 +526,35 @@
             tabConnect.classList.replace('border-blue-600', 'border-transparent');
             tabOta.classList.replace('text-blue-600', 'text-gray-400');
             tabOta.classList.replace('border-blue-600', 'border-transparent');
+            tabHelp.classList.replace('text-blue-600', 'text-gray-400');
+            tabHelp.classList.replace('border-blue-600', 'border-transparent');
 
             viewEditor.classList.remove('hidden');
             viewConnect.classList.add('hidden');
             viewOta.classList.add('hidden');
+            viewHelp.classList.add('hidden');
+        }
+
+        function activateHelpTab() {
+            tabHelp.classList.replace('text-gray-400', 'text-blue-600');
+            tabHelp.classList.replace('border-transparent', 'border-blue-600');
+            tabConnect.classList.replace('text-blue-600', 'text-gray-400');
+            tabConnect.classList.replace('border-blue-600', 'border-transparent');
+            tabOta.classList.replace('text-blue-600', 'text-gray-400');
+            tabOta.classList.replace('border-blue-600', 'border-transparent');
+            tabEditor.classList.replace('text-blue-600', 'text-gray-400');
+            tabEditor.classList.replace('border-blue-600', 'border-transparent');
+
+            viewHelp.classList.remove('hidden');
+            viewConnect.classList.add('hidden');
+            viewOta.classList.add('hidden');
+            viewEditor.classList.add('hidden');
         }
 
         tabConnect.addEventListener('click', activateConnectTab);
         tabOta.addEventListener('click', activateOtaTab);
         tabEditor.addEventListener('click', activateEditorTab);
+        tabHelp.addEventListener('click', activateHelpTab);
 
         activateConnectTab();
     </script>
