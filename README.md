@@ -2,7 +2,21 @@
 
 Offline first Firmware for an ESP32-C6 based E-Paper display device, featuring Web-BLE configuration, direct image upload via Bluetooth, WiFi HTTP image download, and OTA updates.
 
-> ⚠️ **WARNING:** Once this offline firmware is installed, there is currently no way to revert back to the original cloud firmware. A tool to enable this reversion will be released in the future.
+> ⚠️ **WARNING:** If you delete the spiffs partition on your device, the certificates for cloud connection are gone. The device can´t connect to our servers anymore.
+
+
+## Comparison: Cloud Firmware vs. Offline Firmware
+
+| Feature / Attribute | [Cloud Firmware](https://github.com/paperlesspaper/paperlesspaper-firmware) (Default) | [Offline Firmware](https://github.com/paperlesspaper/paperlesspaper-firmware-offline/) (Alternative) |
+| :--- | :--- | :--- |
+| **Primary Purpose** | Convenient out-of-the-box usage via official infrastructure. Ideal for users who do not want to maintain their own server setup. | Maximum independence, privacy, and long-term sustainability ("Offline-First"). Makes the frame completely independent of company servers. |
+| **Server Dependency** | Requires an active internet connection and access to official [paperlesspaper.de](https://paperlesspaper.de/) servers. | **100% local and standalone.** Operates entirely within your local network without any internet requirement (HTTP or BLE). |
+| **Image Source & Fetching** | Images are fetched centrally from the cloud via the official [API](https://docs.paperlesspaper.de/api-guide). | Flexible sources: Direct local upload via Bluetooth or automated HTTP download from any local URL (e.g., Home Assistant, Synology, Raspberry Pi). |
+| **Image Processing (Dithering)** | **Server-side:** Optimal color dithering is pre-calculated in the cloud. The display receives raw, ready-to-render data. | **On-Device or Local Dithering:** The ESP32-C6 dynamically scales and dithers standard JPEGs and 24-bit BMPs (Floyd-Steinberg) directly on-chip to match the display palette or uses pre dithered BMP. |
+| **Configuration** | Managed via the official paperlesspaper web dashboard and onboarding portal. | Configured via Bluetooth using the hosted [Web-UI & Flasher](https://paperlesspaper.github.io/paperlesspaper-firmware-offline/) or automated via a local `settings.json` file. |
+| **Firmware Updates (OTA)** | Fully automatic Over-the-Air (OTA) updates managed directly via cloud infrastructure. | Manual OTA updates conducted wirelessly over Bluetooth (Web-BLE) directly in the browser. |
+| **Support & Assistance** | **Official Vendor Support:** Direct support for setup, hardware issues, and cloud services provided via official paperlesspaper channels. | **Community & Self-Service:** Issue tracking, feature requests, and technical discussions managed independently via GitHub repository issues. |
+| **Switching & Reverting** | Cloud Firmware can be replaced via Offline Firmware Web Tool | Can be returned to Cloud Firmware via Web Tool ⚠️ **Important Note:** If you delete the spiffs partition on your device, the certificates for cloud connection are gone. The device can´t connect to our servers anymore. |
 
 ## Hardware Requirements
 
@@ -59,7 +73,7 @@ Offline first Firmware for an ESP32-C6 based E-Paper display device, featuring W
 - `0-39`: WiFi Name
 - `40-105`: WiFi Password
 - `210`: Sleep Time
-- `220`: Dispay Orientation Store
+- `220`: Display Orientation Store
 - `499`: Magic Flag (First Boot Indicator)
 - `500+`: Settings Store
 
@@ -122,7 +136,7 @@ Verwaltet alle Einstellungen und kümmert sich um den Upload von Bildern und Fir
 
 | UUID | Name | Properties | Beschreibung |
 |------|------|------------|--------------|
-| `10000001-...` | **Download URL** | Read, Write | HTTP URL für den Bild-Download. |
+| `10000001-...` | **Download URL** | Read, Write | HTTP URL für den Bild-Download. Bei Eingabe einer URL wechselt das Gerät automatisch in den URL-Modus (Image Mode = 1). |
 | `10000002-...` | **Image Mode** | Read, Write | Modus: `0` = Lokales Bild (BLE), `1` = Web URL. |
 | `10000003-...` | **Upload Data** | Write | Stream für Binärdaten (Bilder / Firmware). Das 1. Byte ist der CRC8 des restlichen Payloads. |
 | `10000004-...` | **Upload CMD** | Read, Write | Befehlskanal (siehe "Befehle" unten). Bei "Read" liefert er die aktuell im RAM befindlichen Bytes (für den Bild-Upload Checkpoint-Mechanismus). |
