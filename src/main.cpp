@@ -282,6 +282,7 @@ const uint8_t QR_VERSION = 3;    // QR Code Version
 const uint8_t QR_QUIET_ZONE = 4; // quiet zone all around
 int periodicLedTimeout = 0;
 int httpFileSize = 0;
+String tempLastModified = "";
 int StartCounter = 0;
 int strip_y_start = 0;
 int strip_height = 0;
@@ -1456,6 +1457,7 @@ bool BleInit(String deviceId, bool enable) {
 int downloadAndSaveFile(String fileName, String url) {
    bool success = 0;
    int systemFileSize = 0;
+   tempLastModified = "";
    WiFi.setSleep(false);
    WiFiClientSecure secureClient;
    secureClient.setInsecure();
@@ -1594,8 +1596,7 @@ int downloadAndSaveFile(String fileName, String url) {
          }
          else {
             if (lastMod.length() > 0) {
-               settings.lastModified = lastMod;
-               saveSettingsToFlash(EEPROM_SETTINGS_ADR);
+               tempLastModified = lastMod;
             }
          }
          saveFile.close();
@@ -1922,7 +1923,7 @@ int loadImageFromWeb(String url, String fileName) {
       debugFS();
       downloadOk = downloadAndSaveFile(fileName, newUrl);
       if (downloadOk == 0 || downloadOk == 1) {
-         return 0;
+         return downloadOk;
       }
       else {
          if (WiFi.status() != WL_CONNECTED) {
@@ -3284,6 +3285,7 @@ void setup() {
       Serial.println("[MEM] SPIFFS initialisation failed!");
    }
    WiFi.onEvent(WiFiEvent);
+   WiFi.mode(WIFI_STA);
 
    SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN); // SCK(), MISO(),MOSI(), SS()
    SPI.setFrequency(DISPLAY_SPI_SPEED);
@@ -3334,7 +3336,6 @@ void setup() {
       Serial.println("[MEM] SPIFFS seems to full ...");
    }
 
-   esp_bt_controller_mem_release(ESP_BT_MODE_BTDM);
    delay(10);
 }
 
@@ -3385,10 +3386,22 @@ void loop() {
          if (dlSuccess == 0 && bleImageApplied) {
             Serial.println("[IMAGE] Image was already applied during setup mode, skipping refresh.");
             setSuccess = 0;
+            if (tempLastModified.length() > 0) {
+               settings.lastModified = tempLastModified;
+               saveSettingsToFlash(EEPROM_SETTINGS_ADR);
+               tempLastModified = "";
+            }
          }
          else if (dlSuccess == 0 || settings.imageMode == 0) {
             WiFi.disconnect(true);
             setSuccess = setImageFromFS(fileName);
+            if (setSuccess == 0 && dlSuccess == 0) {
+               if (tempLastModified.length() > 0) {
+                  settings.lastModified = tempLastModified;
+                  saveSettingsToFlash(EEPROM_SETTINGS_ADR);
+                  tempLastModified = "";
+               }
+            }
          }
          else {
             Serial.println("[IMAGE] Not rendering, image not modified");
