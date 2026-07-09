@@ -59,6 +59,9 @@ Offline first Firmware for an ESP32-C6 based E-Paper display device, featuring W
 - **Setup Mode (BLE Activation)**: Press the **reset button once** (the big button) to wake the device and activate Bluetooth (BLE). 
   - Once active, you can connect to the device via the Web-UI to configure settings or upload an image.
   - If you do not connect via BLE, the device will automatically fall back to normal operation after 30 seconds: it will try to connect to the configured WiFi to download a new image, or, if WiFi is unavailable/not configured, it will simply load the last stored image before going back to deep sleep.
+- **Force Download / Skip Setup**: Press the **reset button twice** (or more) in quick succession to boot the device:
+  - This skips the BLE Setup Mode entirely to speed up the process.
+  - It also forces a fresh image download from the configured URL, bypassing HTTP cache/modification checks (`forceDownload`), so the display is guaranteed to refresh.
 - **BLE Upload**: Easily load and dither an image in the Web-UI and transmit it to the display entirely offline via Bluetooth. (BLE expects pre-dithered raw payloads for maximum transmission efficiency). The Web-UI automatically detects your display size via BLE (7" vs 13") and adjusts the layout. For the 13" display, the live-preview is rendered at 1/4 resolution for smooth slider performance, while the final image is automatically processed in full 1200x1600 resolution upon upload.
 - **WiFi Download**: Configure a Download URL (e.g., `http://local-server/image.jpg` or `.bmp`), and the ESP32 will fetch the display contents via WiFi upon waking up. 
   - **On-Device Dithering**: The firmware automatically detects whether the downloaded file is a pre-dithered 4-bit BMP, a standard 24-bit BMP, or a JPEG image. 

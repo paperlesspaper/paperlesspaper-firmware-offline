@@ -133,7 +133,9 @@ Settings settings = {
     .chargerMode = false,
     .settingsUrl = "",
     .settingsLastModified = "",
-    .autoRotation = true};
+    .autoRotation = true,
+    .forceDownload = false,
+    .skipSetupMode = false};
 
 SystemData systemData = {
     .wakeupCause = SYSTEM_RESET,
@@ -1647,6 +1649,8 @@ int loadImageFromWeb(String url, String fileName) {
       debugFS();
       downloadOk = downloadAndSaveFile(fileName, newUrl);
       if (downloadOk == 0 || downloadOk == 1) {
+         if (settings.forceDownload)
+            downloadOk = 0;
          return downloadOk;
       }
       else {
@@ -2546,6 +2550,10 @@ void setup() {
    if (!SPIFFS.begin(true)) {
       Serial.println("[MEM] SPIFFS initialisation failed!");
    }
+   if (StartCounter >= 2) {
+      settings.forceDownload = true;
+      settings.skipSetupMode = true;
+   }
    WiFi.onEvent(WiFiEvent);
    WiFi.mode(WIFI_STA);
 
@@ -2572,7 +2580,7 @@ void setup() {
    // test(); //-----------------test---------please remove
 #endif
 
-   if (buttonWake) {
+   if (buttonWake && !settings.skipSetupMode) {
       tickerFailsave.detach();
       BleInit(CLIENT_ID, true);
       // updateDisplayAsync("connect_bt");
@@ -2584,6 +2592,9 @@ void setup() {
       downloadStart = true;
       delay(200);
       tickerFailsave.once_ms(FAILSAVE_TIMER * 1000, timeoutFailsafe, 0);
+   }
+   else {
+      Serial.println("[MAIN] skip setup Mode");
    }
 
    ledBlink(500, true);
@@ -2603,6 +2614,7 @@ void loop() {
 
    if (downloadStart) {
       BleInit(CLIENT_ID, false);
+      powerSupplyDisplay(true);
       downloadStart = false;
       if (settings.autoRotation) {
          accUpdateOrient();
@@ -2659,7 +2671,6 @@ void loop() {
          }
          else if (dlSuccess == 0 || settings.imageMode == 0) {
             WiFi.disconnect(true);
-            powerSupplyDisplay(true);
             setSuccess = setImageFromFS(fileName);
             if (setSuccess == 0 && dlSuccess == 0) {
                if (tempLastModified.length() > 0) {
@@ -2675,7 +2686,6 @@ void loop() {
          }
       }
       else {
-         powerSupplyDisplay(true);
          displaySetText("Error: Picture download failed, please try again", false);
          setSuccess = -1;
       }

@@ -15,14 +15,16 @@
 #define QR_VERSION 3
 #define QR_QUIET_ZONE 4
 
-typedef enum {
+typedef enum
+{
    SYSTEM_RESET = 0,
    BUTTON = 1,
    MOTION = 2,
    TIMER = 3,
 } wakeup_reason_t;
 
-enum DisplayInfoKey {
+enum DisplayInfoKey
+{
    VERSION,
    BATTERY_INFO,
    BATTERY_LOW_BIG,
@@ -31,7 +33,8 @@ enum DisplayInfoKey {
    WIFI_OFFLINE_BIG
 };
 
-struct WifiSettings {
+struct WifiSettings
+{
    String bleSSID;
    String blePASS;
    String ssid;
@@ -46,7 +49,8 @@ struct WifiSettings {
    String clientId;
 };
 
-struct DisplayInfo {
+struct DisplayInfo
+{
    bool version;
    bool batteryInfo;
    bool batteryLowBig;
@@ -55,7 +59,8 @@ struct DisplayInfo {
    bool wifiOfflineBig;
 };
 
-struct DisplaySettings {
+struct DisplaySettings
+{
    uint8_t rotationText;
    uint8_t rotationPicture;
    bool quickRefresh;
@@ -68,7 +73,8 @@ struct DisplaySettings {
    uint8_t displayType;
 };
 
-struct Settings {
+struct Settings
+{
    int timeout;
    String lut;
    bool clearscreen;
@@ -85,9 +91,12 @@ struct Settings {
    String settingsUrl;
    String settingsLastModified;
    bool autoRotation;
+   bool forceDownload;
+   bool skipSetupMode;
 };
 
-struct SystemData {
+struct SystemData
+{
    wakeup_reason_t wakeupCause;
    int vddValue;
    u_int8_t ledDimValue;
@@ -100,7 +109,8 @@ struct SystemData {
    bool sdReady;
 };
 
-struct DataLayout {
+struct DataLayout
+{
    int integer;
    char byte[4];
 };
