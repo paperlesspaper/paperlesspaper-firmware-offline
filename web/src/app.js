@@ -884,13 +884,13 @@ async function checkCloudFw() {
     currentOtaUrl = null;
     try {
         const type = otaDeviceSelect.value;
-        const targetUrl = `./factory/espfota_${type}.json`;
+        const targetUrl = `./factory/espfota_${type}_pre.json`;
         let res = await fetchWithProxy(targetUrl);
         
         // If local fetch returns HTML (Vite SPA fallback on local dev server)
         if (res.ok && res.headers.get("content-type")?.includes("text/html")) {
             console.log("Local fetch returned HTML fallback. Trying remote fallback...");
-            const fallbackUrl = `http://ul.epaperframe.de/espfota_${type}.json`;
+            const fallbackUrl = `http://ul.epaperframe.de/espfota_${type}_pre.json`;
             res = await fetchWithProxy(fallbackUrl);
         }
 
@@ -901,9 +901,9 @@ async function checkCloudFw() {
         
         // If we fell back to the remote server, use the remote binary URL
         if (res.url && res.url.includes("ul.epaperframe.de")) {
-            currentOtaUrl = data.url || `http://ul.epaperframe.de/firmware_${type}.bin`;
+            currentOtaUrl = data.url || `http://ul.epaperframe.de/firmware_${type}_pre.bin`;
         } else {
-            currentOtaUrl = `./factory/firmware_${type}.bin`;
+            currentOtaUrl = `./factory/firmware_${type}_pre.bin`;
         }
         btnConfirmOta.disabled = false;
     } catch (e) {
