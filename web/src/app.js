@@ -885,13 +885,16 @@ async function checkCloudFw() {
     try {
         const type = otaDeviceSelect.value;
         const targetUrl = `./factory/espfota_${type}_pre.json`;
+        let isFallback = false;
         let res = await fetchWithProxy(targetUrl);
         
-        // If local fetch returns HTML (Vite SPA fallback on local dev server)
-        if (res.ok && res.headers.get("content-type")?.includes("text/html")) {
-            console.log("Local fetch returned HTML fallback. Trying remote fallback...");
+        // If local fetch fails (e.g. 404 on deployed page) or returns HTML (Vite SPA fallback on local dev server)
+        const isHtml = res.ok && res.headers.get("content-type")?.includes("text/html");
+        if (!res.ok || isHtml) {
+            console.log("Local fetch failed or returned HTML. Trying remote fallback...");
             const fallbackUrl = `http://ul.epaperframe.de/espfota_${type}_pre.json`;
             res = await fetchWithProxy(fallbackUrl);
+            isFallback = true;
         }
 
         if (!res.ok) throw new Error("JSON konnte nicht geladen werden.");
@@ -900,7 +903,7 @@ async function checkCloudFw() {
         otaVersion.innerText = data.version || data.date || "Verfügbar";
         
         // If we fell back to the remote server, use the remote binary URL
-        if (res.url && res.url.includes("ul.epaperframe.de")) {
+        if (isFallback) {
             currentOtaUrl = data.url || `http://ul.epaperframe.de/firmware_${type}_pre.bin`;
         } else {
             currentOtaUrl = `./factory/firmware_${type}_pre.bin`;
@@ -998,9 +1001,10 @@ if (btnConfirmOfflineOta) {
             setStatus("Lade Offline-Firmware herunter...", "text-blue-500");
             let res = await fetch(targetUrl);
             
-            // If local fetch returns HTML (Vite SPA fallback)
-            if (res.ok && res.headers.get("content-type")?.includes("text/html")) {
-                console.log("Local offline firmware fetch returned HTML fallback. Trying remote fallback...");
+            // If local fetch fails or returns HTML (Vite SPA fallback)
+            const isHtml = res.ok && res.headers.get("content-type")?.includes("text/html");
+            if (!res.ok || isHtml) {
+                console.log("Local offline firmware fetch failed or returned HTML. Trying remote fallback...");
                 const fallbackUrl = `https://paperlesspaper.github.io/paperlesspaper-firmware-offline/firmware_offline_${type}.bin`;
                 res = await fetchWithProxy(fallbackUrl);
             }
