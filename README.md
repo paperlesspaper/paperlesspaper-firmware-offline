@@ -14,7 +14,7 @@ Offline first Firmware for an ESP32-C6 based E-Paper display device, featuring W
 | **Image Source & Fetching** | Images are fetched centrally from the cloud via the official [API](https://docs.paperlesspaper.de/api-guide). | Flexible sources: Direct local upload via Bluetooth or automated HTTP download from any local URL (e.g., Home Assistant, Synology, Raspberry Pi). |
 | **Image Processing (Dithering)** | **Server-side:** Optimal color dithering is pre-calculated in the cloud. The display receives raw, ready-to-render data. | **On-Device or Local Dithering:** The ESP32-C6 dynamically scales and dithers standard JPEGs and 24-bit BMPs (Floyd-Steinberg) directly on-chip to match the display palette or uses pre dithered BMP. |
 | **Configuration** | Managed via the official paperlesspaper web dashboard and onboarding portal. | Configured via Bluetooth using the hosted [Web-UI & Flasher](https://paperlesspaper.github.io/paperlesspaper-firmware-offline/) or automated via a local `settings.json` file. |
-| **Firmware Updates (OTA)** | Fully automatic Over-the-Air (OTA) updates managed directly via cloud infrastructure. | Manual OTA updates conducted wirelessly over Bluetooth (Web-BLE) directly in the browser. |
+| **Firmware Updates (OTA)** | Fully automatic Over-the-Air (OTA) updates managed directly via cloud infrastructure. | Manual updates conducted wirelessly over Bluetooth (Web-BLE) or directly over USB cable (Web Serial) in the browser. |
 | **Support & Assistance** | **Official Vendor Support:** Direct support for setup, hardware issues, and cloud services provided via official paperlesspaper channels. | **Community & Self-Service:** Issue tracking, feature requests, and technical discussions managed independently via GitHub repository issues. |
 | **Switching & Reverting** | Cloud Firmware can be replaced via Offline Firmware Web Tool | Can be returned to Cloud Firmware via Web Tool ⚠️ **Important Note:** If you delete the spiffs partition on your device, the certificates for cloud connection are gone. The device can´t connect to our servers anymore. |
 
@@ -40,9 +40,11 @@ Offline first Firmware for an ESP32-C6 based E-Paper display device, featuring W
     cd <repository-name>
     ```
 
-2.  **Web-UI (BLE Setup & Image Upload)**
-    You can use the **hosted version** of the Web-UI directly from your browser (requires a Web Bluetooth compatible browser like Chrome or Edge):
+2.  **Web-UI (Setup & Flasher)**
+    You can use the **hosted version** of the Web-UI directly from your browser (requires a Web Bluetooth / Web Serial compatible browser like Chrome or Edge):
     👉 **[Launch Web-UI & Flasher](https://paperlesspaper.github.io/paperlesspaper-firmware-offline/)**
+    *   **Wireless Flashing**: Update settings and upload images/firmware wirelessly via Bluetooth (Web-BLE).
+    *   **USB Flashing**: Flash the firmware binary directly over a USB-C cable (Web Serial) using the built-in esptool.
 
     *Alternatively, to run the web frontend locally:*
     - Navigate to the `web/` folder.
@@ -174,6 +176,13 @@ Die Firmware wird direkt in die OTA-Partition geflasht. Es gibt keinen Checkpoin
 1. `START_FW`: Initialisiert den OTA-Prozess (`Update.begin()`).
 2. Senden der Daten (über `Upload Data`): In Chunks. Jeder Chunk wird vom ESP per CRC geprüft und direkt mit `Update.write()` geschrieben.
 3. `END_FW`: Schließt den OTA-Prozess ab (`Update.end()`) und startet das Gerät automatisch in der neuen Firmware neu.
+
+#### Ablauf: Firmware Upload (via USB / Web Serial)
+Falls Bluetooth nicht verfügbar ist oder du das Gerät lieber direkt per Kabel flashen möchtest, unterstützt die Web-UI das Flashen über die Web Serial API (mittels `esptool-js`):
+1. **Verbindung herstellen**: Verbinde das E-Paper-Display per USB-C-Kabel mit deinem PC.
+2. **Bootloader-Modus aktivieren**: Halte den kleinen Knopf auf der Rückseite gedrückt, drücke kurz den Reset-Knopf (großer Knopf) und lass den kleinen Knopf dann los.
+3. **Flashen**: Wähle in der Web-UI den Reiter "USB-Kabel (COM-Port)", klicke auf den Flash-Button, wähle den passenden COM-Port im Browser-Dialog aus und der Flasher überträgt die App-Partition (Baudrate: `921600`, Offset: `0x10000`) automatisch auf das Gerät.
+
 
 ## Roadmap (not ordered)
 
