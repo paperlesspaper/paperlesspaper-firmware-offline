@@ -201,10 +201,20 @@
         </div>
 
         <div id="viewOta" class="hidden space-y-6">
-            <div id="controlsOta" class="hidden space-y-6 opacity-0 transition-opacity duration-500">
+            <div id="controlsOta" class="space-y-6">
                 <div class="bg-indigo-50/50 p-5 rounded-xl border border-indigo-100">
                     <h2 class="text-xl font-bold mb-4 text-gray-700">Firmware Update</h2>
                     <div class="space-y-3">
+                        <div class="mb-4 flex space-x-2 bg-gray-200 p-1 rounded-xl text-sm">
+                            <button type="button" id="btnOtaBle" class="flex-1 py-1.5 rounded-lg font-semibold bg-white text-gray-700 shadow-sm focus:outline-none transition-all">Bluetooth (BLE)</button>
+                            <button type="button" id="btnOtaSerial" class="flex-1 py-1.5 rounded-lg font-semibold text-gray-500 hover:text-gray-700 focus:outline-none transition-all">USB-Kabel (COM-Port)</button>
+                        </div>
+                        <div id="serialModeNotice" class="hidden p-3 bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-lg text-xs mb-4">
+                            <strong>🔌 Anleitung für USB-COM:</strong> Verbinde das E-Paper per USB-Kabel mit dem PC. Halte den kleinen Knopf gedrückt, drücke kurz den Reset-Knopf und lass den kleinen Knopf los (Bootloader-Modus). Wähle nach dem Klicken des Flash-Buttons den passenden COM-Port aus.
+                        </div>
+                        <div id="serialUnsupportedNotice" class="hidden p-3 bg-red-50 border border-red-200 text-red-800 rounded-lg text-xs mb-4">
+                            ⚠️ <strong>Nicht unterstützt:</strong> Dein Webbrowser unterstützt keine serielle Verbindung (Web Serial API). Nutze Chrome, Edge oder Opera für USB-Flashing.
+                        </div>
                         <div class="p-4 bg-blue-50 text-blue-800 rounded-lg text-sm mb-4">
                             Hier kannst du die Firmware deines E-Papers aktualisieren oder ändern.
                         </div>

@@ -1,5 +1,6 @@
 import { GeneratePicture } from "./GeneratePicture.js";
 import { DeviceBleInterface } from "./DeviceBleInterface.js";
+import { ESPLoader, Transport } from "esptool-js";
 
 const generatePicture = new GeneratePicture();
 const bleInterface = new DeviceBleInterface();
@@ -234,10 +235,7 @@ bleInterface.onConnected = (isPaperL) => {
   btnConnect.classList.add("hidden");
   btnDisconnect.classList.remove("hidden");
 
-  if (controlsOta) {
-    controlsOta.classList.remove("hidden");
-    setTimeout(() => controlsOta.classList.remove("opacity-0"), 100);
-  }
+  // controlsOta is always visible in viewOta
 
   if (btnUploadImage) {
     btnUploadImage.disabled = false;
@@ -250,7 +248,7 @@ bleInterface.onConnected = (isPaperL) => {
 
 bleInterface.onDisconnected = () => {
   controls.classList.add("hidden", "opacity-0");
-  if (controlsOta) controlsOta.classList.add("hidden", "opacity-0");
+  // controlsOta is always visible in viewOta
 
   const statusBar = document.getElementById("systemStatusBar");
   if (statusBar) {
@@ -741,6 +739,125 @@ btnUploadImage.addEventListener("click", async () => {
   }
 });
 
+const btnOtaBle = document.getElementById("btnOtaBle");
+const btnOtaSerial = document.getElementById("btnOtaSerial");
+const serialModeNotice = document.getElementById("serialModeNotice");
+const serialUnsupportedNotice = document.getElementById("serialUnsupportedNotice");
+
+let otaMethod = "ble";
+
+if (btnOtaBle && btnOtaSerial) {
+  btnOtaBle.addEventListener("click", () => {
+    otaMethod = "ble";
+    btnOtaBle.className = "flex-1 py-1.5 rounded-lg font-semibold bg-white text-gray-700 shadow-sm focus:outline-none transition-all";
+    btnOtaSerial.className = "flex-1 py-1.5 rounded-lg font-semibold text-gray-500 hover:text-gray-700 focus:outline-none transition-all";
+    if (serialModeNotice) serialModeNotice.classList.add("hidden");
+    if (serialUnsupportedNotice) serialUnsupportedNotice.classList.add("hidden");
+  });
+
+  btnOtaSerial.addEventListener("click", () => {
+    otaMethod = "serial";
+    btnOtaBle.className = "flex-1 py-1.5 rounded-lg font-semibold text-gray-500 hover:text-gray-700 focus:outline-none transition-all";
+    btnOtaSerial.className = "flex-1 py-1.5 rounded-lg font-semibold bg-white text-gray-700 shadow-sm focus:outline-none transition-all";
+    
+    if (!("serial" in navigator)) {
+      if (serialUnsupportedNotice) serialUnsupportedNotice.classList.remove("hidden");
+      if (serialModeNotice) serialModeNotice.classList.add("hidden");
+    } else {
+      if (serialModeNotice) serialModeNotice.classList.remove("hidden");
+      if (serialUnsupportedNotice) serialUnsupportedNotice.classList.add("hidden");
+    }
+  });
+}
+
+async function uploadFirmwareSerial(buffer) {
+  let transport = null;
+  try {
+    btnSelectFw.disabled = true;
+    if (btnUpdateOfflineFw) btnUpdateOfflineFw.disabled = true;
+    btnFetchOriginalFw.disabled = true;
+    fwProgressContainer.classList.remove("hidden");
+    fwProgressBar.style.width = "0%";
+
+    setStatus("Verbindung mit USB-Gerät wird hergestellt...", "text-blue-500");
+    
+    const filters = [
+      { usbVendorId: 0x10c4, usbProductId: 0xea60 }, // Silicon Labs CP210x USB to UART Bridge (CP2102N etc.)
+      { usbVendorId: 0x1a86, usbProductId: 0x7523 }, // CH340 USB to UART Bridge
+      { usbVendorId: 0x1a86, usbProductId: 0x55d4 }, // CH343 USB to UART Bridge
+      { usbVendorId: 0x303a, usbProductId: 0x1001 }, // Espressif USB JTAG/serial
+      { usbVendorId: 0x303a, usbProductId: 0x1002 }  // Espressif USB CDC
+    ];
+    
+    const port = await navigator.serial.requestPort({ filters });
+    transport = new Transport(port, true);
+
+    const loaderTerminal = {
+      clean: () => {},
+      writeLine: (data) => {
+        console.log(data);
+        setStatus(data, "text-gray-500");
+      },
+      write: (data) => {
+        console.log(data);
+        setStatus(data, "text-gray-500");
+      },
+    };
+
+    const esploader = new ESPLoader({
+      transport: transport,
+      baudrate: 921600,
+      terminal: loaderTerminal
+    });
+
+    setStatus("Lade Bootloader...", "text-blue-500");
+    await esploader.main();
+
+    setStatus("Flashe Firmware...", "text-blue-500");
+    const fileArray = [
+      {
+        data: buffer,
+        address: 0x10000 // ESP32-C6 app offset is 0x10000
+      }
+    ];
+
+    await esploader.writeFlash({
+      fileArray: fileArray,
+      flashMode: "keep",
+      flashFreq: "keep",
+      flashSize: "keep",
+      eraseAll: false,
+      compress: true,
+      reportProgress: (fileIndex, written, total) => {
+        const percent = Math.round((written / total) * 100);
+        fwProgressBar.style.width = percent + "%";
+        setStatus(`Flashe per USB: ${percent}%...`, "text-blue-500");
+      }
+    });
+
+    setStatus("Firmware erfolgreich geflasht! Starte Gerät neu...", "text-green-500");
+    await esploader.after("hard_reset");
+  } catch (err) {
+    console.error(err);
+    if (err.name === "InvalidStateError" || err.message.includes("already open")) {
+      setStatus("Fehler: Der COM-Port ist blockiert! Eventuell ist der PlatformIO Serial Monitor oder ein anderes Programm (z.B. ein anderer Browsertab) noch geöffnet. Bitte schließe diese Verbindungen und versuche es erneut.", "text-red-500");
+    } else {
+      setStatus("Fehler beim USB-Flash: " + err.message, "text-red-500");
+    }
+  } finally {
+    if (transport) {
+      try {
+        await transport.disconnect();
+      } catch (e) {
+        console.warn("Disconnection failed:", e);
+      }
+    }
+    btnSelectFw.disabled = false;
+    if (btnUpdateOfflineFw) btnUpdateOfflineFw.disabled = false;
+    btnFetchOriginalFw.disabled = false;
+  }
+}
+
 async function uploadFirmwareBle(buffer) {
   try {
     btnSelectFw.disabled = true;
@@ -767,14 +884,27 @@ async function checkCloudFw() {
     currentOtaUrl = null;
     try {
         const type = otaDeviceSelect.value;
-        const targetUrl = `./factory/espfota_${type}_dev.json`;
-        const res = await fetchWithProxy(targetUrl);
+        const targetUrl = `./factory/espfota_${type}.json`;
+        let res = await fetchWithProxy(targetUrl);
+        
+        // If local fetch returns HTML (Vite SPA fallback on local dev server)
+        if (res.ok && res.headers.get("content-type")?.includes("text/html")) {
+            console.log("Local fetch returned HTML fallback. Trying remote fallback...");
+            const fallbackUrl = `http://ul.epaperframe.de/espfota_${type}.json`;
+            res = await fetchWithProxy(fallbackUrl);
+        }
+
         if (!res.ok) throw new Error("JSON konnte nicht geladen werden.");
         const data = await res.json();
         
         otaVersion.innerText = data.version || data.date || "Verfügbar";
-        // Override the S3 URL from the JSON with our local bundled file
-        currentOtaUrl = `./factory/firmware_${type}_dev.bin`;
+        
+        // If we fell back to the remote server, use the remote binary URL
+        if (res.url && res.url.includes("ul.epaperframe.de")) {
+            currentOtaUrl = data.url || `http://ul.epaperframe.de/firmware_${type}.bin`;
+        } else {
+            currentOtaUrl = `./factory/firmware_${type}.bin`;
+        }
         btnConfirmOta.disabled = false;
     } catch (e) {
         otaVersion.innerText = "Fehler (" + e.message + ")";
@@ -782,15 +912,19 @@ async function checkCloudFw() {
 }
 
 btnFetchOriginalFw.addEventListener("click", () => {
-    if (!bleInterface || !bleInterface.settingsService) {
-        setStatus("Bitte zuerst mit dem E-Paper verbinden.", "text-red-500");
-        return;
-    }
-    
-    if (bleInterface.bleDevice && bleInterface.bleDevice.name && bleInterface.bleDevice.name.startsWith("epd13-")) {
-        otaDeviceSelect.value = "epd13";
+    if (otaMethod === "ble") {
+        if (!bleInterface || !bleInterface.settingsService) {
+            setStatus("Bitte zuerst mit dem E-Paper verbinden.", "text-red-500");
+            return;
+        }
+        
+        if (bleInterface.bleDevice && bleInterface.bleDevice.name && bleInterface.bleDevice.name.startsWith("epd13-")) {
+            otaDeviceSelect.value = "epd13";
+        } else {
+            otaDeviceSelect.value = "epd7";
+        }
     } else {
-        otaDeviceSelect.value = "epd7";
+        otaDeviceSelect.value = "epd7"; // Default in serial mode
     }
     
     otaDialog.showModal();
@@ -815,7 +949,11 @@ btnConfirmOta.addEventListener("click", async () => {
         const arrayBuffer = await res.arrayBuffer();
         const buffer = new Uint8Array(arrayBuffer);
         
-        await uploadFirmwareBle(buffer);
+        if (otaMethod === "ble") {
+            await uploadFirmwareBle(buffer);
+        } else {
+            await uploadFirmwareSerial(buffer);
+        }
     } catch (err) {
         console.error(err);
         setStatus("Fehler beim Download der Cloud-Firmware: " + err.message, "text-red-500");
@@ -824,15 +962,19 @@ btnConfirmOta.addEventListener("click", async () => {
 
 if (btnUpdateOfflineFw) {
     btnUpdateOfflineFw.addEventListener("click", () => {
-        if (!bleInterface || !bleInterface.settingsService) {
-            setStatus("Bitte zuerst mit dem E-Paper verbinden.", "text-red-500");
-            return;
-        }
-        
-        if (bleInterface.bleDevice && bleInterface.bleDevice.name && bleInterface.bleDevice.name.startsWith("epd13-")) {
-            offlineOtaDeviceSelect.value = "epd13";
+        if (otaMethod === "ble") {
+            if (!bleInterface || !bleInterface.settingsService) {
+                setStatus("Bitte zuerst mit dem E-Paper verbinden.", "text-red-500");
+                return;
+            }
+            
+            if (bleInterface.bleDevice && bleInterface.bleDevice.name && bleInterface.bleDevice.name.startsWith("epd13-")) {
+                offlineOtaDeviceSelect.value = "epd13";
+            } else {
+                offlineOtaDeviceSelect.value = "epd7";
+            }
         } else {
-            offlineOtaDeviceSelect.value = "epd7";
+            offlineOtaDeviceSelect.value = "epd7"; // Default in serial mode
         }
         
         otaOfflineDialog.showModal();
@@ -854,13 +996,25 @@ if (btnConfirmOfflineOta) {
             const targetUrl = `./firmware_offline_${type}.bin`;
             
             setStatus("Lade Offline-Firmware herunter...", "text-blue-500");
-            const res = await fetch(targetUrl);
-            if (!res.ok) throw new Error(`HTTP Error ${res.status} beim Download von ${targetUrl}`);
+            let res = await fetch(targetUrl);
+            
+            // If local fetch returns HTML (Vite SPA fallback)
+            if (res.ok && res.headers.get("content-type")?.includes("text/html")) {
+                console.log("Local offline firmware fetch returned HTML fallback. Trying remote fallback...");
+                const fallbackUrl = `https://paperlesspaper.github.io/paperlesspaper-firmware-offline/firmware_offline_${type}.bin`;
+                res = await fetchWithProxy(fallbackUrl);
+            }
+
+            if (!res.ok) throw new Error(`HTTP Error ${res.status} beim Download`);
             
             const arrayBuffer = await res.arrayBuffer();
             const buffer = new Uint8Array(arrayBuffer);
             
-            await uploadFirmwareBle(buffer);
+            if (otaMethod === "ble") {
+                await uploadFirmwareBle(buffer);
+            } else {
+                await uploadFirmwareSerial(buffer);
+            }
         } catch (err) {
             console.error(err);
             setStatus("Fehler beim Download der Offline-Firmware: " + err.message, "text-red-500");
@@ -870,9 +1024,11 @@ if (btnConfirmOfflineOta) {
 
 if (btnSelectFw) {
   btnSelectFw.addEventListener("click", () => {
-    if (!bleInterface || !bleInterface.settingsService) {
-      setStatus("Bitte zuerst mit dem E-Paper verbinden.", "text-red-500");
-      return;
+    if (otaMethod === "ble") {
+      if (!bleInterface || !bleInterface.settingsService) {
+        setStatus("Bitte zuerst mit dem E-Paper verbinden.", "text-red-500");
+        return;
+      }
     }
     fwInput.click();
   });
@@ -885,7 +1041,11 @@ fwInput.addEventListener("change", (e) => {
   const reader = new FileReader();
   reader.onload = async (e) => {
     const buffer = new Uint8Array(e.target.result);
-    await uploadFirmwareBle(buffer);
+    if (otaMethod === "ble") {
+      await uploadFirmwareBle(buffer);
+    } else {
+      await uploadFirmwareSerial(buffer);
+    }
     fwInput.value = "";
   };
   reader.readAsArrayBuffer(file);
