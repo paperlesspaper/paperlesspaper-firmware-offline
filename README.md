@@ -70,7 +70,28 @@ Offline first Firmware for an ESP32-C6 based E-Paper display device, featuring W
     - Build or run via Vite: `npm run dev` or `npm run build`
     - You can set WiFi credentials, a local HTTP download URL, the sleep timeout, or upload an image directly via Web-BLE.
 
-3.  **Build and Upload Firmware**
+3.  **Self-host with Docker**
+    - Build and run:
+      ```bash
+      docker compose up --build
+      ```
+    - Open the Web-UI at `http://localhost:8080` (or your configured `HOST_PORT`).
+    - The container serves:
+      - the built Web-UI (`web/dist`)
+      - offline firmware files (`/firmware_offline_epd7.bin`, `/firmware_offline_epd13.bin`)
+      - factory OTA files (`/factory/*`)
+    - Runtime environment variables (optional, defaults are built in):
+      - `APP_PROXY_1_BASE` (default: `https://corsproxy.io/?`)
+      - `APP_PROXY_2_BASE` (default: `https://api.allorigins.win/raw?url=`)
+      - `APP_FACTORY_PRE_JSON_BASE_URL` (default: `http://ul.epaperframe.de`)
+      - `APP_FACTORY_PRE_BIN_BASE_URL` (default: `http://ul.epaperframe.de`)
+      - `APP_OFFLINE_FIRMWARE_BASE_URL` (default: `https://paperlesspaper.github.io/paperlesspaper-firmware-offline`)
+    - Build-time firmware source overrides (optional):
+      - `OFFLINE_FIRMWARE_EPD7_URL`, `OFFLINE_FIRMWARE_EPD13_URL`
+      - `FACTORY_JSON_EPD7_PRE_URL`, `FACTORY_JSON_EPD13_PRE_URL`
+      - `FACTORY_FIRMWARE_EPD7_PRE_URL`, `FACTORY_FIRMWARE_EPD13_PRE_URL`
+
+4.  **Build and Upload Firmware**
     - Select your display size in `src/main.cpp` via the macro `#define SET_DISPLAY` (`0` for 7-inch, `1` for 13-inch).
     - Start your Devices **Boot Mode** (see "Hardware Settings" below for instructions)
     - Run the PlatformIO task: `General` -> `Upload`.
