@@ -2,6 +2,19 @@ import { GeneratePicture } from "./GeneratePicture.js";
 import { DeviceBleInterface } from "./DeviceBleInterface.js";
 import { ESPLoader, Transport } from "esptool-js";
 
+const appConfig = window.__APP_CONFIG__ || {};
+const runtimeConfig = {
+  proxy1Base: appConfig.proxy1Base || "https://corsproxy.io/?",
+  proxy2Base: appConfig.proxy2Base || "https://api.allorigins.win/raw?url=",
+  factoryPreJsonBaseUrl: appConfig.factoryPreJsonBaseUrl || window.location.origin,
+  factoryPreBinBaseUrl: appConfig.factoryPreBinBaseUrl || window.location.origin,
+  offlineFirmwareBaseUrl: appConfig.offlineFirmwareBaseUrl || window.location.origin,
+};
+
+function joinUrl(base, path) {
+  return `${String(base || "").replace(/\/+$/, "")}/${String(path || "").replace(/^\/+/, "")}`;
+}
+
 const generatePicture = new GeneratePicture();
 const bleInterface = new DeviceBleInterface();
 
@@ -14,14 +27,14 @@ async function fetchWithProxy(url, options = {}) {
   }
 
   try {
-    const res = await fetch("https://corsproxy.io/?" + encodeURIComponent(url), options);
+    const res = await fetch(runtimeConfig.proxy1Base + encodeURIComponent(url), options);
     if (res.ok) return res;
     console.warn(`Proxy 1 returned ${res.status}. Trying Proxy 2 (allorigins)...`);
   } catch (err2) {
     console.warn("Proxy 1 fetch failed. Trying Proxy 2 (allorigins)...", err2);
   }
 
-  return await fetch("https://api.allorigins.win/raw?url=" + encodeURIComponent(url), options);
+  return await fetch(runtimeConfig.proxy2Base + encodeURIComponent(url), options);
 }
 
 let EPD_WIDTH = 800;
@@ -892,7 +905,7 @@ async function checkCloudFw() {
         const isHtml = res.ok && res.headers.get("content-type")?.includes("text/html");
         if (!res.ok || isHtml) {
             console.log("Local fetch failed or returned HTML. Trying remote fallback...");
-            const fallbackUrl = `http://ul.epaperframe.de/espfota_${type}_pre.json`;
+            const fallbackUrl = joinUrl(runtimeConfig.factoryPreJsonBaseUrl, `espfota_${type}_pre.json`);
             res = await fetchWithProxy(fallbackUrl);
             isFallback = true;
         }
@@ -904,7 +917,7 @@ async function checkCloudFw() {
         
         // If we fell back to the remote server, use the remote binary URL
         if (isFallback) {
-            currentOtaUrl = data.url || `http://ul.epaperframe.de/firmware_${type}_pre.bin`;
+            currentOtaUrl = data.url || joinUrl(runtimeConfig.factoryPreBinBaseUrl, `firmware_${type}_pre.bin`);
         } else {
             currentOtaUrl = `./factory/firmware_${type}_pre.bin`;
         }
@@ -1005,7 +1018,7 @@ if (btnConfirmOfflineOta) {
             const isHtml = res.ok && res.headers.get("content-type")?.includes("text/html");
             if (!res.ok || isHtml) {
                 console.log("Local offline firmware fetch failed or returned HTML. Trying remote fallback...");
-                const fallbackUrl = `https://paperlesspaper.github.io/paperlesspaper-firmware-offline/firmware_offline_${type}.bin`;
+                const fallbackUrl = joinUrl(runtimeConfig.offlineFirmwareBaseUrl, `firmware_offline_${type}.bin`);
                 res = await fetchWithProxy(fallbackUrl);
             }
 
