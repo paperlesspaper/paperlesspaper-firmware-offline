@@ -3,9 +3,9 @@ set -eu
 
 : "${APP_PROXY_1_BASE:=https://corsproxy.io/?}"
 : "${APP_PROXY_2_BASE:=https://api.allorigins.win/raw?url=}"
-: "${APP_FACTORY_PRE_JSON_BASE_URL:=http://ul.epaperframe.de}"
-: "${APP_FACTORY_PRE_BIN_BASE_URL:=http://ul.epaperframe.de}"
-: "${APP_OFFLINE_FIRMWARE_BASE_URL:=https://paperlesspaper.github.io/paperlesspaper-firmware-offline}"
+: "${APP_FACTORY_PRE_JSON_BASE_URL:=}"
+: "${APP_FACTORY_PRE_BIN_BASE_URL:=}"
+: "${APP_OFFLINE_FIRMWARE_BASE_URL:=}"
 
 cat > /usr/share/nginx/html/runtime-config.js <<EOF
 window.__APP_CONFIG__ = {

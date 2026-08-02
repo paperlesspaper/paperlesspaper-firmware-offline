@@ -4,6 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
+        FIRMWARE_SOURCE: ${FIRMWARE_SOURCE:-local}
         OFFLINE_FIRMWARE_EPD7_URL: ${OFFLINE_FIRMWARE_EPD7_URL:-https://paperlesspaper.github.io/paperlesspaper-firmware-offline/firmware_offline_epd7.bin}
         OFFLINE_FIRMWARE_EPD13_URL: ${OFFLINE_FIRMWARE_EPD13_URL:-https://paperlesspaper.github.io/paperlesspaper-firmware-offline/firmware_offline_epd13.bin}
         FACTORY_JSON_EPD7_PRE_URL: ${FACTORY_JSON_EPD7_PRE_URL:-http://ul.epaperframe.de/espfota_epd7_pre.json}
@@ -16,7 +17,7 @@ services:
       APP_PORT: 8080
       APP_PROXY_1_BASE: ${APP_PROXY_1_BASE:-https://corsproxy.io/?}
       APP_PROXY_2_BASE: ${APP_PROXY_2_BASE:-https://api.allorigins.win/raw?url=}
-      APP_FACTORY_PRE_JSON_BASE_URL: ${APP_FACTORY_PRE_JSON_BASE_URL:-http://ul.epaperframe.de}
-      APP_FACTORY_PRE_BIN_BASE_URL: ${APP_FACTORY_PRE_BIN_BASE_URL:-http://ul.epaperframe.de}
-      APP_OFFLINE_FIRMWARE_BASE_URL: ${APP_OFFLINE_FIRMWARE_BASE_URL:-https://paperlesspaper.github.io/paperlesspaper-firmware-offline}
+      APP_FACTORY_PRE_JSON_BASE_URL: ${APP_FACTORY_PRE_JSON_BASE_URL:-}
+      APP_FACTORY_PRE_BIN_BASE_URL: ${APP_FACTORY_PRE_BIN_BASE_URL:-}
+      APP_OFFLINE_FIRMWARE_BASE_URL: ${APP_OFFLINE_FIRMWARE_BASE_URL:-}
     restart: unless-stopped

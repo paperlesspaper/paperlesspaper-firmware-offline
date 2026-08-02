@@ -63,8 +63,17 @@ jobs:
 
       - name: Set Display Type
         run: |
-          sed -i 's/#define SET_DISPLAY 0/#define SET_DISPLAY ${{ matrix.display_val }}/g' src/main.cpp
-          sed -i 's/#define SET_DISPLAY 1/#define SET_DISPLAY ${{ matrix.display_val }}/g' src/main.cpp
+          if [ "${{ matrix.display_val }}" = "1" ]; then
+            sed -i 's/^#define EPD_TYPE_13INCH/#define EPD_TYPE_13INCH/' src/types.h
+            sed -i 's|^// #define EPD_TYPE_13INCH|#define EPD_TYPE_13INCH|' src/types.h
+            sed -i 's|^#define EPD_TYPE_7INCH|// #define EPD_TYPE_7INCH|' src/types.h
+            sed -i 's|^// #define EPD_TYPE_7INCH|// #define EPD_TYPE_7INCH|' src/types.h
+          else
+            sed -i 's|^#define EPD_TYPE_13INCH|// #define EPD_TYPE_13INCH|' src/types.h
+            sed -i 's|^// #define EPD_TYPE_13INCH|// #define EPD_TYPE_13INCH|' src/types.h
+            sed -i 's|^#define EPD_TYPE_7INCH|#define EPD_TYPE_7INCH|' src/types.h
+            sed -i 's|^// #define EPD_TYPE_7INCH|#define EPD_TYPE_7INCH|' src/types.h
+          fi
 
       - name: Build Firmware
         id: pio_build
@@ -125,19 +134,30 @@ jobs:
           mv downloaded_offline/offline_firmware_epd7/firmware.bin web/dist/firmware_offline_epd7.bin
           rm -rf downloaded_offline
 
-      - name: Download Original Firmware from S3
+      - name: Assemble Factory OTA Assets from Local Firmware
         run: |
           mkdir -p web/dist/factory
-          # Pre-release versions (main branch, deploy_pre)
-          curl -L -o web/dist/factory/espfota_epd7_pre.json http://ul.epaperframe.de/espfota_epd7_pre.json
-          curl -L -o web/dist/factory/firmware_epd7_pre.bin http://ul.epaperframe.de/firmware_epd7_pre.bin
-          curl -L -o web/dist/factory/espfota_epd13_pre.json http://ul.epaperframe.de/espfota_epd13_pre.json
-          curl -L -o web/dist/factory/firmware_epd13_pre.bin http://ul.epaperframe.de/firmware_epd13_pre.bin
-          # Release versions (main branch, approved)
-          curl -L -o web/dist/factory/espfota_epd7.json http://ul.epaperframe.de/espfota_epd7.json
-          curl -L -o web/dist/factory/firmware_epd7.bin http://ul.epaperframe.de/firmware_epd7.bin
-          curl -L -o web/dist/factory/espfota_epd13.json http://ul.epaperframe.de/espfota_epd13.json
-          curl -L -o web/dist/factory/firmware_epd13.bin http://ul.epaperframe.de/firmware_epd13.bin
+          cp web/dist/firmware_offline_epd7.bin web/dist/factory/firmware_epd7_pre.bin
+          cp web/dist/firmware_offline_epd13.bin web/dist/factory/firmware_epd13_pre.bin
+          cp web/dist/firmware_offline_epd7.bin web/dist/factory/firmware_epd7.bin
+          cp web/dist/firmware_offline_epd13.bin web/dist/factory/firmware_epd13.bin
+
+          FW_VERSION="${GITHUB_SHA::7}"
+          FW_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          cat > web/dist/factory/espfota_epd7_pre.json <<EOF
+          {"version":"${FW_VERSION}","date":"${FW_DATE}","url":"./factory/firmware_epd7_pre.bin"}
+          EOF
+          cat > web/dist/factory/espfota_epd13_pre.json <<EOF
+          {"version":"${FW_VERSION}","date":"${FW_DATE}","url":"./factory/firmware_epd13_pre.bin"}
+          EOF
+          cat > web/dist/factory/espfota_epd7.json <<EOF
+          {"version":"${FW_VERSION}","date":"${FW_DATE}","url":"./factory/firmware_epd7.bin"}
+          EOF
+          cat > web/dist/factory/espfota_epd13.json <<EOF
+          {"version":"${FW_VERSION}","date":"${FW_DATE}","url":"./factory/firmware_epd13.bin"}
+          EOF
+
           ls -la web/dist/factory/
 
       - name: Upload Pages Artifact
