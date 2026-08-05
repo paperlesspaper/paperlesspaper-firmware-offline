@@ -79,6 +79,8 @@ const btnCancelOfflineOta = document.getElementById("btnCancelOfflineOta");
 const btnConfirmOfflineOta = document.getElementById("btnConfirmOfflineOta");
 const fwInput = document.getElementById("fwInput");
 const btnSelectFw = document.getElementById("btnSelectFw");
+const btnSelectSpiffs = document.getElementById("btnSelectSpiffs");
+const spiffsInput = document.getElementById("spiffsInput");
 const fwProgressContainer = document.getElementById("fwProgressContainer");
 const fwProgressBar = document.getElementById("fwProgressBar");
 
@@ -753,12 +755,14 @@ if (btnOtaBle && btnOtaSerial) {
     btnOtaSerial.className = "flex-1 py-1.5 rounded-lg font-semibold text-gray-500 hover:text-gray-700 focus:outline-none transition-all";
     if (serialModeNotice) serialModeNotice.classList.add("hidden");
     if (serialUnsupportedNotice) serialUnsupportedNotice.classList.add("hidden");
+    if (btnSelectSpiffs) btnSelectSpiffs.classList.add("hidden");
   });
 
   btnOtaSerial.addEventListener("click", () => {
     otaMethod = "serial";
     btnOtaBle.className = "flex-1 py-1.5 rounded-lg font-semibold text-gray-500 hover:text-gray-700 focus:outline-none transition-all";
     btnOtaSerial.className = "flex-1 py-1.5 rounded-lg font-semibold bg-white text-gray-700 shadow-sm focus:outline-none transition-all";
+    if (btnSelectSpiffs) btnSelectSpiffs.classList.remove("hidden");
     
     if (!("serial" in navigator)) {
       if (serialUnsupportedNotice) serialUnsupportedNotice.classList.remove("hidden");
@@ -770,12 +774,13 @@ if (btnOtaBle && btnOtaSerial) {
   });
 }
 
-async function uploadFirmwareSerial(buffer) {
+async function uploadFirmwareSerial(buffer, address = 0x10000, label = "Firmware") {
   let transport = null;
   try {
     btnSelectFw.disabled = true;
     if (btnUpdateOfflineFw) btnUpdateOfflineFw.disabled = true;
     btnFetchOriginalFw.disabled = true;
+    if (btnSelectSpiffs) btnSelectSpiffs.disabled = true;
     fwProgressContainer.classList.remove("hidden");
     fwProgressBar.style.width = "0%";
 
@@ -813,11 +818,11 @@ async function uploadFirmwareSerial(buffer) {
     setStatus("Lade Bootloader...", "text-blue-500");
     await esploader.main();
 
-    setStatus("Flashe Firmware...", "text-blue-500");
+    setStatus(`Flashe ${label}...`, "text-blue-500");
     const fileArray = [
       {
         data: buffer,
-        address: 0x10000 // ESP32-C6 app offset is 0x10000
+        address: address
       }
     ];
 
@@ -831,11 +836,11 @@ async function uploadFirmwareSerial(buffer) {
       reportProgress: (fileIndex, written, total) => {
         const percent = Math.round((written / total) * 100);
         fwProgressBar.style.width = percent + "%";
-        setStatus(`Flashe per USB: ${percent}%...`, "text-blue-500");
+        setStatus(`Flashe ${label} per USB: ${percent}%...`, "text-blue-500");
       }
     });
 
-    setStatus("Firmware erfolgreich geflasht! Starte Gerät neu...", "text-green-500");
+    setStatus(`${label} erfolgreich geflasht! Starte Gerät neu...`, "text-green-500");
     await esploader.after("hard_reset");
   } catch (err) {
     console.error(err);
@@ -855,6 +860,7 @@ async function uploadFirmwareSerial(buffer) {
     btnSelectFw.disabled = false;
     if (btnUpdateOfflineFw) btnUpdateOfflineFw.disabled = false;
     btnFetchOriginalFw.disabled = false;
+    if (btnSelectSpiffs) btnSelectSpiffs.disabled = false;
   }
 }
 
@@ -863,6 +869,7 @@ async function uploadFirmwareBle(buffer) {
     btnSelectFw.disabled = true;
     if (btnUpdateOfflineFw) btnUpdateOfflineFw.disabled = true;
     btnFetchOriginalFw.disabled = true;
+    if (btnSelectSpiffs) btnSelectSpiffs.disabled = true;
     fwProgressContainer.classList.remove("hidden");
     fwProgressBar.style.width = "0%";
 
@@ -871,6 +878,7 @@ async function uploadFirmwareBle(buffer) {
     btnSelectFw.disabled = false;
     if (btnUpdateOfflineFw) btnUpdateOfflineFw.disabled = false;
     btnFetchOriginalFw.disabled = false;
+    if (btnSelectSpiffs) btnSelectSpiffs.disabled = false;
   }
 }
 
@@ -1054,6 +1062,32 @@ fwInput.addEventListener("change", (e) => {
   };
   reader.readAsArrayBuffer(file);
 });
+
+if (btnSelectSpiffs) {
+  btnSelectSpiffs.addEventListener("click", () => {
+    if (!("serial" in navigator)) {
+      setStatus("⚠️ USB-Flashing wird von deinem Browser nicht unterstützt. Nutze Chrome, Edge oder Opera.", "text-red-500");
+      alert("Dein Browser unterstützt keine serielle Verbindung (Web Serial API). Bitte nutze Chrome, Edge oder Opera für USB-Flashing.");
+      return;
+    }
+    spiffsInput.click();
+  });
+}
+
+if (spiffsInput) {
+  spiffsInput.addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      const buffer = new Uint8Array(evt.target.result);
+      await uploadFirmwareSerial(buffer, 0x3B0000, "SPIFFS (Zertifikat)");
+      spiffsInput.value = "";
+    };
+    reader.readAsArrayBuffer(file);
+  });
+}
 
 paletteSelect.addEventListener("change", () => {
   generatePicture.setCustomPalette(null);

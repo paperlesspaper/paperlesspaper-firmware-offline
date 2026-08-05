@@ -4,6 +4,20 @@ Offline first Firmware for an ESP32-C6 based E-Paper display device, featuring W
 
 > ⚠️ **WARNING:** If you delete the spiffs partition on your device, the certificates for cloud connection are gone. The device can´t connect to our servers anymore.
 
+---
+
+## 🌐 Web-UI & Online Flasher
+
+**Configure your device, flash firmware, or upload images directly from your browser — no local setup required!**
+
+# 🚀 [**LAUNCH WEB-UI & FLASHER**](https://paperlesspaper.github.io/paperlesspaper-firmware-offline/) 👈
+
+* **Wireless Management (Web-BLE)**: Configure WiFi credentials, sleep timers, download URLs, and transfer images wirelessly over Bluetooth.
+* **USB Flashing (Web Serial)**: Flash firmware binaries directly over a USB-C cable using your browser.
+* *Supported Browsers: Chrome, Edge, Opera, or Brave (requires Web Bluetooth / Web Serial).*
+
+---
+
 
 ## Comparison: Cloud Firmware vs. Offline Firmware
 
@@ -40,9 +54,11 @@ Offline first Firmware for an ESP32-C6 based E-Paper display device, featuring W
     cd <repository-name>
     ```
 
-2.  **Web-UI (Setup & Flasher)**
-    You can use the **hosted version** of the Web-UI directly from your browser (requires a Web Bluetooth / Web Serial compatible browser like Chrome or Edge):
-    👉 **[Launch Web-UI & Flasher](https://paperlesspaper.github.io/paperlesspaper-firmware-offline/)**
+2.  **Web-UI & Flasher (Recommended)**
+    Use the **hosted Web-UI** directly in your web browser:
+    
+    ### 🔗 [**Launch Web-UI & Flasher**](https://paperlesspaper.github.io/paperlesspaper-firmware-offline/)
+    
     *   **Wireless Flashing**: Update settings and upload images/firmware wirelessly via Bluetooth (Web-BLE).
     *   **USB Flashing**: Flash the firmware binary directly over a USB-C cable (Web Serial) using the built-in esptool.
 
@@ -196,4 +212,4 @@ Falls Bluetooth nicht verfügbar ist oder du das Gerät lieber direkt per Kabel 
 - (done) host the tool on our infrastructure (select latest firmware build too)
 - store multiple images
 - https://immich.app/ integration into firmware and config via ble
-- bluetooth broadcast mode
+- (skipped) bluetooth broadcast mode
