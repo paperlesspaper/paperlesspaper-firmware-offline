@@ -400,8 +400,8 @@ export class GeneratePicture {
         return {
             ...baseOptions,
             ditheringType: "errorDiffusion",
-            errorDiffusionMatrix: baseOptions.errorDiffusionMatrix ?? matrix,
-            serpentine: baseOptions.serpentine ?? isSerpentine,
+            errorDiffusionMatrix: matrix || baseOptions.errorDiffusionMatrix,
+            serpentine: isSerpentine ?? baseOptions.serpentine,
             colorMatching: baseOptions.colorMatching ?? colorMode,
             toneMapping: baseOptions.toneMapping || {
                 mode: toneMappingMode,

@@ -220,10 +220,21 @@
                         </div>
                         <button id="btnFetchOriginalFw" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 rounded-lg transition-colors">Original Cloud Firmware übertragen</button>
                         <button id="btnUpdateOfflineFw" class="w-full bg-purple-500 hover:bg-purple-600 text-white font-bold py-2 rounded-lg transition-colors mt-2">Offline Firmware übertragen</button>
-                        <button id="btnSelectFw" class="w-full bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 rounded-lg transition-colors mt-2">Eigene .bin Datei übertragen</button>
-                        <button id="btnSelectSpiffs" class="hidden w-full bg-teal-600 hover:bg-teal-700 text-white font-bold py-2 rounded-lg transition-colors mt-2">SPIFFS / Zertifikat per USB übertragen (.bin)</button>
+                        <button id="btnSelectFw" class="w-full bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 rounded-lg transition-colors mt-2">Eigene Firmware Datei übertragen (.bin)</button>
+                        <button id="btnSelectSpiffs" class="hidden w-full bg-teal-600 hover:bg-teal-700 text-white font-bold py-2 rounded-lg transition-colors mt-2">Zertifikat Datei übertragen (.bin)</button>
                         <input type="file" id="fwInput" accept=".bin" class="hidden" />
                         <input type="file" id="spiffsInput" accept=".bin" class="hidden" />
+
+                        <div id="serialMonitorContainer" class="hidden mt-6 pt-4 border-t border-gray-200">
+                            <h3 class="text-sm font-bold text-gray-700 mb-2 flex items-center justify-between">
+                                <span>Serial Debug</span>
+                                <button type="button" id="btnClearSerialLog" class="text-xs text-gray-500 hover:text-gray-700 bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded transition">🗑️ Log leeren</button>
+                            </h3>
+                            <button type="button" id="btnToggleSerialMonitor" class="w-full bg-slate-700 hover:bg-slate-800 text-white font-bold py-2 rounded-lg transition-colors text-sm mb-3">Seriellen Debug Monitor verbinden</button>
+                            <div id="serialLogBox" class="hidden">
+                                <pre id="serialLogOutput" class="bg-gray-900 text-green-400 p-3 rounded-lg text-xs font-mono h-48 overflow-y-auto whitespace-pre-wrap break-all select-text"></pre>
+                            </div>
+                        </div>
 
                         <div id="fwProgressContainer" class="hidden w-full bg-gray-200 rounded-full h-2.5 mt-4">
                             <div id="fwProgressBar" class="bg-blue-600 h-2.5 rounded-full" style="width: 0%"></div>
@@ -316,7 +327,7 @@
                     </div>
                 </div>
 
-                <button id="btnUploadImage" disabled class="w-full bg-gray-500 hover:bg-grey-600 disabled:bg-gray-400 disabled:cursor-not-allowed text-white font-bold py-3 rounded-lg shadow transition-colors mb-2">SEND</button>
+                <button id="btnUploadImage" disabled class="w-full bg-gray-500 hover:bg-gray-600 disabled:bg-gray-400 disabled:cursor-not-allowed text-white font-bold py-3 rounded-lg shadow transition-colors mb-2">SENDEN</button>
 
                 <button id="btnDownloadBin" disabled class="w-full bg-indigo-500 hover:bg-indigo-600 disabled:bg-gray-400 disabled:cursor-not-allowed text-white font-bold py-3 rounded-lg shadow transition-colors block">Download</button>
 
@@ -414,34 +425,51 @@
                             </div>
                         </div>
                     </details>
-                </div>
 
-                <div class="pt-2 text-xs text-gray-500 border-t border-indigo-100">
-                    Weitere technische Details zur offline Firmware findest du in der lokalen <a href="https://github.com/paperlesspaper/paperlesspaper-firmware-offline" target="_blank" class="text-indigo-600 hover:underline font-bold">README.md</a>.
+                    <details class="bg-white border border-gray-200 rounded-lg">
+                        <summary class="cursor-pointer font-bold text-gray-700 bg-gray-50 px-4 py-3 rounded-t-lg hover:bg-gray-100 transition-colors flex justify-between items-center select-none">
+                            <span>🔐 Zertifikate & SPIFFS (Cloud-Zugriff)</span>
+                            <svg class="w-4 h-4 text-gray-500 transform transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                            </svg>
+                        </summary>
+                        <div class="p-4 text-sm text-gray-600 space-y-2 border-t border-gray-200">
+                            <p>Für die verschlüsselte Verbindung zur Cloud (Original Cloud Firmware) benötigt das E-Paper gerätespezifische AWS IoT Zertifikate auf dem SPIFFS-Speicher.</p>
+                            <div class="p-3 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg text-xs font-medium">
+                                ℹ️ <strong>Wichtiger Hinweis:</strong> Die gerätespezifischen Zertifikate sind nicht öffentlich im Repository enthalten. Sie sind <strong>ausschließlich direkt über unseren Support</strong> erhältlich.
+                            </div>
+                            <p class="text-xs text-gray-500">Wenn du dein Zertifikat als <code class="bg-gray-100 text-purple-700 px-1 py-0.5 rounded font-mono">.bin</code>-Datei vom Support erhalten hast, kannst du es im Reiter <strong>Firmware Update</strong> unter <strong>USB-Kabel (COM-Port)</strong> mit dem Button <strong>"Zertifikat Datei übertragen (.bin)"</strong> direkt per USB-Kabel flashen.</p>
+                        </div>
+                    </details>
                 </div>
             </div>
-        </div>
 
-        <!-- JSON Preview Modal -->
-        <div id="jsonPreviewModal" class="hidden fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div class="bg-white rounded-xl shadow-xl w-full max-w-lg overflow-hidden transform transition-all">
-                <div class="p-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
-                    <h3 class="text-lg font-bold text-gray-700">JSON Settings Vorschau</h3>
-                    <button id="btnCloseJsonPreview" class="text-gray-400 hover:text-gray-600">
-                        <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                    </button>
-                </div>
-                <div class="p-4 max-h-[60vh] overflow-y-auto">
-                    <pre id="jsonPreviewContent" class="text-sm bg-gray-900 text-green-400 p-4 rounded-lg overflow-x-auto"></pre>
-                </div>
-                <div class="p-4 border-t border-gray-200 bg-gray-50 flex justify-end space-x-3">
-                    <button id="btnCancelJson" class="px-4 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Abbrechen</button>
-                    <button id="btnApplyJson" class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 shadow">Übernehmen & Speichern</button>
-                </div>
+            <div class="pt-2 text-xs text-gray-500 border-t border-indigo-100">
+                Weitere technische Details zur offline Firmware findest du in der lokalen <a href="https://github.com/paperlesspaper/paperlesspaper-firmware-offline" target="_blank" class="text-indigo-600 hover:underline font-bold">README.md</a>.
             </div>
         </div>
+    </div>
+
+    <!-- JSON Preview Modal -->
+    <div id="jsonPreviewModal" class="hidden fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div class="bg-white rounded-xl shadow-xl w-full max-w-lg overflow-hidden transform transition-all">
+            <div class="p-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
+                <h3 class="text-lg font-bold text-gray-700">JSON Settings Vorschau</h3>
+                <button id="btnCloseJsonPreview" class="text-gray-400 hover:text-gray-600">
+                    <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+            <div class="p-4 max-h-[60vh] overflow-y-auto">
+                <pre id="jsonPreviewContent" class="text-sm bg-gray-900 text-green-400 p-4 rounded-lg overflow-x-auto"></pre>
+            </div>
+            <div class="p-4 border-t border-gray-200 bg-gray-50 flex justify-end space-x-3">
+                <button id="btnCancelJson" class="px-4 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Abbrechen</button>
+                <button id="btnApplyJson" class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 shadow">Übernehmen & Speichern</button>
+            </div>
+        </div>
+    </div>
     </div>
 
     <!-- Status Bar -->

@@ -82,15 +82,16 @@
 
 #ifdef EPD_TYPE_13INCH
 #define EPD_TYPE_IDENTIFIER "epd13-" // Type of device (screen type)
+#define VDD_CORRECTION_FACTOR 6.68
 #else
 #define EPD_TYPE_IDENTIFIER "epd7-" // Type of device (screen type)
+#define VDD_CORRECTION_FACTOR 2.28
 #endif
 
-#define uS_TO_S_FACTOR 1000000ULL  /* Conversion factor for micro seconds to seconds */
-#define LENGTH(x) (strlen(x) + 1)  // length of char string
-#define EEPROM_SIZE 2048           // EEPROM size
-#define EEPROM_SETTINGS_ADR 500    // start address to store settings
-#define VDD_CORRECTION_FACTOR 2.30 // factor to get real VDD voltage from measured value
+#define uS_TO_S_FACTOR 1000000ULL /* Conversion factor for micro seconds to seconds */
+#define LENGTH(x) (strlen(x) + 1) // length of char string
+#define EEPROM_SIZE 2048          // EEPROM size
+#define EEPROM_SETTINGS_ADR 500   // start address to store settings
 #define BLE_BUFFER_SIZE 19200
 
 #define DEFAULT_SLEEP 3600 // Default time how long to sleep after update
@@ -759,8 +760,11 @@ void ledBlink(int timeout, bool on, int dimValue) {
 
 int readVDD(bool singleReading) {
    pinMode(BAT_VOLT_EN_PIN, OUTPUT);
-   pinMode(BAT_VOLT_SENSE_PIN, INPUT);
+#ifdef EPD_TYPE_13INCH
+   digitalWrite(BAT_VOLT_EN_PIN, HIGH);
+#else
    digitalWrite(BAT_VOLT_EN_PIN, LOW);
+#endif
    delay(3);
    int retries = 1;
    if (!singleReading) {
@@ -778,7 +782,9 @@ int readVDD(bool singleReading) {
       rawValue = rawValue / count;
    }
    pinMode(BAT_VOLT_EN_PIN, INPUT);
-   return int(round(rawValue * VDD_CORRECTION_FACTOR));
+   int vdd = int(round(rawValue * VDD_CORRECTION_FACTOR));
+   Serial.printf("[BAT] ADC Raw: %.1f -> VDD: %d mV\n", rawValue, vdd);
+   return vdd;
 }
 
 bool EepromInit(int size) {
@@ -2491,7 +2497,11 @@ void setup() {
    chargeMode(false); // enable charge mode
    powerSupplyDisplay(false);
    pinMode(BAT_VOLT_EN_PIN, OUTPUT);
+#ifdef EPD_TYPE_13INCH
+   digitalWrite(BAT_VOLT_EN_PIN, HIGH);
+#else
    digitalWrite(BAT_VOLT_EN_PIN, LOW);
+#endif
    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
    pinMode(LED_PIN, OUTPUT);
    digitalWrite(LED_PIN, LOW);

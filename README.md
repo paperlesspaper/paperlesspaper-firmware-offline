@@ -13,8 +13,10 @@ Offline first Firmware for an ESP32-C6 based E-Paper display device, featuring W
 # 🚀 [**LAUNCH WEB-UI & FLASHER**](https://paperlesspaper.github.io/paperlesspaper-firmware-offline/) 👈
 
 * **Wireless Management (Web-BLE)**: Configure WiFi credentials, sleep timers, download URLs, and transfer images wirelessly over Bluetooth.
-* **USB Flashing (Web Serial)**: Flash firmware binaries directly over a USB-C cable using your browser.
-* *Supported Browsers: Chrome, Edge, Opera, or Brave (requires Web Bluetooth / Web Serial).*
+* **USB Flashing (Web Serial)**: Flash firmware binaries directly over a USB-C cable or upload SPIFFS certificate images (.bin) using your browser.
+* **Web Serial Debug Monitor**: Monitor UART serial logs in real-time (115200 baud) directly inside the Web UI without external software.
+* **Certificates**: Cloud certificates for returning to Cloud Firmware are not included in the repository and are available exclusively via Customer Support.
+* *Supported Browsers: Chrome (requires Web Bluetooth / Web Serial).*
 
 ---
 

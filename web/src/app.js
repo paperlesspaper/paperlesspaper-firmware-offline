@@ -241,7 +241,9 @@ bleInterface.onConnected = (isPaperL) => {
 
   if (btnUploadImage) {
     btnUploadImage.disabled = false;
-    btnUploadImage.classList.replace("bg-gray-400", "bg-green-500");
+    btnUploadImage.classList.remove("bg-gray-500", "hover:bg-gray-600", "bg-gray-400");
+    btnUploadImage.classList.add("bg-green-600", "hover:bg-green-700");
+    btnUploadImage.innerText = "SENDEN";
   }
 
   controls.classList.remove("hidden");
@@ -260,8 +262,9 @@ bleInterface.onDisconnected = () => {
 
   if (btnUploadImage) {
     btnUploadImage.disabled = true;
-    btnUploadImage.classList.replace("bg-green-500", "bg-gray-400");
-    btnUploadImage.innerText = "Bild auf Display senden (BLE - nicht verbunden)";
+    btnUploadImage.classList.remove("bg-green-600", "hover:bg-green-700", "bg-green-500");
+    btnUploadImage.classList.add("bg-gray-500", "hover:bg-gray-600");
+    btnUploadImage.innerText = "SENDEN";
   }
 
   wifiList.innerHTML = "";
@@ -321,11 +324,27 @@ bleInterface.onSystemStatusChange = (info) => {
   statusBar.classList.remove("hidden");
   setTimeout(() => statusBar.classList.remove("scale-95", "opacity-0"), 50);
 
-  if (info.voltage > 4000) {
-    const v = (info.voltage / 1000).toFixed(2);
-    voltageEl.innerText = `${v} V`;
-    batteryIconBg.setAttribute("class", "bg-green-100 p-2 rounded-full");
-    batteryIcon.setAttribute("class", "w-5 h-5 text-green-600");
+  const hasVoltage = typeof info.voltage === "number" && info.voltage > 500;
+  const v = hasVoltage ? (info.voltage / 1000).toFixed(2) : null;
+
+  if (hasVoltage) {
+    if (info.charging) {
+      voltageEl.innerText = `${v} V (Lädt)`;
+      batteryIconBg.setAttribute("class", "bg-green-100 p-2 rounded-full");
+      batteryIcon.setAttribute("class", "w-5 h-5 text-green-600");
+    } else if (info.voltage > 3300) {
+      voltageEl.innerText = `${v} V`;
+      batteryIconBg.setAttribute("class", "bg-green-100 p-2 rounded-full");
+      batteryIcon.setAttribute("class", "w-5 h-5 text-green-600");
+    } else if (info.voltage > 2800) {
+      voltageEl.innerText = `${v} V`;
+      batteryIconBg.setAttribute("class", "bg-yellow-100 p-2 rounded-full");
+      batteryIcon.setAttribute("class", "w-5 h-5 text-yellow-600");
+    } else {
+      voltageEl.innerText = `${v} V (Schwach)`;
+      batteryIconBg.setAttribute("class", "bg-red-100 p-2 rounded-full");
+      batteryIcon.setAttribute("class", "w-5 h-5 text-red-600");
+    }
   } else {
     voltageEl.innerText = "Keine Batterie";
     batteryIconBg.setAttribute("class", "bg-red-100 p-2 rounded-full");
@@ -334,7 +353,7 @@ bleInterface.onSystemStatusChange = (info) => {
 
   if (info.usb) {
     if (info.charging) {
-      chargerEl.innerText = "Verbunden (Lädt)";
+      chargerEl.innerText = hasVoltage ? `Verbunden (Lädt - ${v} V)` : "Verbunden (Lädt)";
       chargerEl.className = "text-sm font-bold text-green-600";
       chargerIconBg.setAttribute("class", "bg-green-100 p-2 rounded-full transition-colors");
       chargerIcon.setAttribute("class", "w-5 h-5 text-green-600 transition-colors");
@@ -541,8 +560,14 @@ settingAutoRotation.addEventListener("change", async (e) => {
   settingAutoRotation.disabled = false;
 });
 
-async function updatePreview(options = {}) {
+let activeAutoOptions = null;
+
+async function updatePreview(options = null) {
   if (!generatePicture.getOriginalImage()) return;
+
+  if (options && Object.keys(options).length > 0) {
+    activeAutoOptions = options;
+  }
 
   const matrix = errorDiffusionMatrix.value;
   const isSerpentine = serpentine.checked;
@@ -550,13 +575,17 @@ async function updatePreview(options = {}) {
   const contrastInt = parseInt(processingContrast.value, 10) || 0;
   const saturationInt = parseInt(processingSaturation.value, 10) || 0;
 
+  const currentOptions = activeAutoOptions ? { ...activeAutoOptions } : {};
+  currentOptions.errorDiffusionMatrix = matrix;
+  currentOptions.serpentine = isSerpentine;
+
   const hoverCanvas = document.getElementById("previewHoverCanvas");
 
   setStatus("Erzeuge Dithering Vorschau...", "text-yellow-600");
 
   try {
     generatePicture.setEpdDimensions(EPD_WIDTH, EPD_HEIGHT);
-    await generatePicture.processPreview(canvas, hoverCanvas, paletteSelect ? paletteSelect.value : "spectra6Custom", matrix, isSerpentine, brightnessInt, contrastInt, saturationInt, options);
+    await generatePicture.processPreview(canvas, hoverCanvas, paletteSelect ? paletteSelect.value : "spectra6Custom", matrix, isSerpentine, brightnessInt, contrastInt, saturationInt, currentOptions);
 
     btnUploadImage.disabled = false;
     btnDownloadBin.disabled = false;
@@ -567,7 +596,7 @@ async function updatePreview(options = {}) {
   }
 }
 
-async function generateFullBuffer(options = {}) {
+async function generateFullBuffer(options = null) {
   if (!generatePicture.getOriginalImage()) return;
 
   const matrix = errorDiffusionMatrix.value;
@@ -576,13 +605,19 @@ async function generateFullBuffer(options = {}) {
   const contrastInt = parseInt(processingContrast.value, 10) || 0;
   const saturationInt = parseInt(processingSaturation.value, 10) || 0;
 
+  const currentOptions = options && Object.keys(options).length > 0 ? options : (activeAutoOptions ? { ...activeAutoOptions } : {});
+  currentOptions.errorDiffusionMatrix = matrix;
+  currentOptions.serpentine = isSerpentine;
+
   generatePicture.setEpdDimensions(EPD_WIDTH, EPD_HEIGHT);
-  await generatePicture.generateFullBuffer(paletteSelect ? paletteSelect.value : "spectra6Custom", matrix, isSerpentine, brightnessInt, contrastInt, saturationInt, options);
+  await generatePicture.generateFullBuffer(paletteSelect ? paletteSelect.value : "spectra6Custom", matrix, isSerpentine, brightnessInt, contrastInt, saturationInt, currentOptions);
 }
 
 fileInput.addEventListener("change", (e) => {
   const file = e.target.files[0];
   if (!file) return;
+
+  activeAutoOptions = null;
 
   const img = new Image();
   img.onload = () => {
@@ -616,7 +651,7 @@ btnAutoDither.addEventListener("click", () => {
     const resolvedOptions = result.resolvedOptions || result;
     const suggestion = result.suggestion;
 
-    errorDiffusionMatrix.value = resolvedOptions.errorDiffusionMatrix || "floydSteinberg";
+    resolvedOptions.errorDiffusionMatrix = errorDiffusionMatrix.value;
     serpentine.checked = resolvedOptions.serpentine ?? true;
 
     if (resolvedOptions.toneMapping) {
@@ -629,13 +664,15 @@ btnAutoDither.addEventListener("click", () => {
       processingSaturation.value = 0;
     }
 
+    activeAutoOptions = resolvedOptions;
+
     if (paletteSelect && paletteSelect.value === "new") {
       setStatus("Automatisches Setting gefunden: Custom Color Profile", "text-blue-500");
     } else {
       setStatus(`Automatisches Setting gefunden: ${suggestion.classification.style}, Typ: ${suggestion.imageKind}`, "text-blue-500");
     }
 
-    updatePreview(resolvedOptions);
+    updatePreview(activeAutoOptions);
   }
 });
 
@@ -746,6 +783,12 @@ const btnOtaSerial = document.getElementById("btnOtaSerial");
 const serialModeNotice = document.getElementById("serialModeNotice");
 const serialUnsupportedNotice = document.getElementById("serialUnsupportedNotice");
 
+const serialMonitorContainer = document.getElementById("serialMonitorContainer");
+const btnToggleSerialMonitor = document.getElementById("btnToggleSerialMonitor");
+const btnClearSerialLog = document.getElementById("btnClearSerialLog");
+const serialLogBox = document.getElementById("serialLogBox");
+const serialLogOutput = document.getElementById("serialLogOutput");
+
 let otaMethod = "ble";
 
 if (btnOtaBle && btnOtaSerial) {
@@ -756,6 +799,7 @@ if (btnOtaBle && btnOtaSerial) {
     if (serialModeNotice) serialModeNotice.classList.add("hidden");
     if (serialUnsupportedNotice) serialUnsupportedNotice.classList.add("hidden");
     if (btnSelectSpiffs) btnSelectSpiffs.classList.add("hidden");
+    if (serialMonitorContainer) serialMonitorContainer.classList.add("hidden");
   });
 
   btnOtaSerial.addEventListener("click", () => {
@@ -763,6 +807,7 @@ if (btnOtaBle && btnOtaSerial) {
     btnOtaBle.className = "flex-1 py-1.5 rounded-lg font-semibold text-gray-500 hover:text-gray-700 focus:outline-none transition-all";
     btnOtaSerial.className = "flex-1 py-1.5 rounded-lg font-semibold bg-white text-gray-700 shadow-sm focus:outline-none transition-all";
     if (btnSelectSpiffs) btnSelectSpiffs.classList.remove("hidden");
+    if (serialMonitorContainer) serialMonitorContainer.classList.remove("hidden");
     
     if (!("serial" in navigator)) {
       if (serialUnsupportedNotice) serialUnsupportedNotice.classList.remove("hidden");
@@ -771,6 +816,91 @@ if (btnOtaBle && btnOtaSerial) {
       if (serialModeNotice) serialModeNotice.classList.remove("hidden");
       if (serialUnsupportedNotice) serialUnsupportedNotice.classList.add("hidden");
     }
+  });
+}
+
+let serialMonitorPort = null;
+let serialMonitorReader = null;
+let serialMonitorKeepReading = false;
+
+async function disconnectSerialMonitor() {
+  serialMonitorKeepReading = false;
+  if (serialMonitorReader) {
+    try {
+      await serialMonitorReader.cancel();
+    } catch (e) {
+      console.warn("Reader cancel error:", e);
+    }
+    serialMonitorReader = null;
+  }
+  if (serialMonitorPort) {
+    try {
+      await serialMonitorPort.close();
+    } catch (e) {
+      console.warn("Serial port close error:", e);
+    }
+    serialMonitorPort = null;
+  }
+  if (btnToggleSerialMonitor) {
+    btnToggleSerialMonitor.innerText = "Seriellen Debug Monitor verbinden";
+    btnToggleSerialMonitor.className = "w-full bg-slate-700 hover:bg-slate-800 text-white font-bold py-2 rounded-lg transition-colors text-sm mb-3";
+  }
+}
+
+async function connectSerialMonitor() {
+  if (!("serial" in navigator)) {
+    alert("Dein Browser unterstützt keine Web Serial API. Bitte verwende Chrome, Edge oder Opera.");
+    return;
+  }
+
+  try {
+    serialMonitorPort = await requestSerialPort();
+    await serialMonitorPort.open({ baudRate: 115200 });
+
+    serialMonitorKeepReading = true;
+    if (serialLogBox) serialLogBox.classList.remove("hidden");
+    if (btnToggleSerialMonitor) {
+      btnToggleSerialMonitor.innerText = "🔌 Seriellen Debug Monitor trennen";
+      btnToggleSerialMonitor.className = "w-full bg-red-600 hover:bg-red-700 text-white font-bold py-2 rounded-lg transition-colors text-sm mb-3";
+    }
+
+    const textDecoder = new TextDecoderStream();
+    const readableStreamClosed = serialMonitorPort.readable.pipeTo(textDecoder.writable);
+    const reader = textDecoder.readable.getReader();
+    serialMonitorReader = reader;
+
+    while (serialMonitorKeepReading) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      if (value && serialLogOutput) {
+        serialLogOutput.innerText += value;
+        serialLogOutput.scrollTop = serialLogOutput.scrollHeight;
+      }
+    }
+  } catch (err) {
+    console.error("Serial Monitor Error:", err);
+    await disconnectSerialMonitor();
+    if (err.name !== "NotFoundError" && err.name !== "AbortError") {
+      setStatus("Serial Monitor Fehler: " + err.message, "text-red-500");
+    }
+  }
+}
+
+if (btnToggleSerialMonitor) {
+  btnToggleSerialMonitor.addEventListener("click", async () => {
+    if (serialMonitorPort) {
+      await disconnectSerialMonitor();
+    } else {
+      await connectSerialMonitor();
+    }
+  });
+}
+
+if (btnClearSerialLog) {
+  btnClearSerialLog.addEventListener("click", () => {
+    if (serialLogOutput) serialLogOutput.innerText = "";
   });
 }
 
@@ -849,6 +979,7 @@ function openUsbFlashDialog(buffer, filename, fileSizeStr, addressHex, label) {
 async function uploadFirmwareSerial(buffer, address = 0x10000, label = "Firmware", port = null) {
   let transport = null;
   try {
+    await disconnectSerialMonitor();
     btnSelectFw.disabled = true;
     if (btnUpdateOfflineFw) btnUpdateOfflineFw.disabled = true;
     btnFetchOriginalFw.disabled = true;
