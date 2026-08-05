@@ -774,7 +774,79 @@ if (btnOtaBle && btnOtaSerial) {
   });
 }
 
-async function uploadFirmwareSerial(buffer, address = 0x10000, label = "Firmware") {
+const SERIAL_FILTERS = [
+  { usbVendorId: 0x10c4, usbProductId: 0xea60 }, // Silicon Labs CP210x USB to UART Bridge (CP2102N etc.)
+  { usbVendorId: 0x1a86, usbProductId: 0x7523 }, // CH340 USB to UART Bridge
+  { usbVendorId: 0x1a86, usbProductId: 0x55d4 }, // CH343 USB to UART Bridge
+  { usbVendorId: 0x303a, usbProductId: 0x1001 }, // Espressif USB JTAG/serial
+  { usbVendorId: 0x303a, usbProductId: 0x1002 }  // Espressif USB CDC
+];
+
+async function requestSerialPort() {
+  if (!("serial" in navigator)) {
+    throw new Error("Dein Webbrowser unterstützt keine serielle Verbindung (Web Serial API). Nutze Chrome, Edge oder Opera.");
+  }
+  return await navigator.serial.requestPort({ filters: SERIAL_FILTERS });
+}
+
+const usbFlashDialog = document.getElementById("usbFlashDialog");
+const usbFlashTitle = document.getElementById("usbFlashTitle");
+const usbFlashDescription = document.getElementById("usbFlashDescription");
+const usbFlashFileName = document.getElementById("usbFlashFileName");
+const usbFlashFileSize = document.getElementById("usbFlashFileSize");
+const usbFlashTargetAddress = document.getElementById("usbFlashTargetAddress");
+const btnCancelUsbFlash = document.getElementById("btnCancelUsbFlash");
+const btnConfirmUsbFlash = document.getElementById("btnConfirmUsbFlash");
+
+let pendingUsbFileBuffer = null;
+let pendingUsbAddress = 0x10000;
+let pendingUsbLabel = "Firmware";
+
+if (btnCancelUsbFlash) {
+  btnCancelUsbFlash.addEventListener("click", () => {
+    if (usbFlashDialog) usbFlashDialog.close();
+    pendingUsbFileBuffer = null;
+  });
+}
+
+if (btnConfirmUsbFlash) {
+  btnConfirmUsbFlash.addEventListener("click", async () => {
+    let port = null;
+    try {
+      port = await requestSerialPort();
+    } catch (e) {
+      setStatus("USB Flashing abgebrochen: " + e.message, "text-orange-500");
+      if (usbFlashDialog) usbFlashDialog.close();
+      return;
+    }
+
+    if (usbFlashDialog) usbFlashDialog.close();
+
+    if (pendingUsbFileBuffer) {
+      const buffer = pendingUsbFileBuffer;
+      const addr = pendingUsbAddress;
+      const label = pendingUsbLabel;
+      pendingUsbFileBuffer = null;
+      await uploadFirmwareSerial(buffer, addr, label, port);
+    }
+  });
+}
+
+function openUsbFlashDialog(buffer, filename, fileSizeStr, addressHex, label) {
+  pendingUsbFileBuffer = buffer;
+  pendingUsbAddress = addressHex === "0x3B0000" ? 0x3B0000 : 0x10000;
+  pendingUsbLabel = label;
+
+  if (usbFlashTitle) usbFlashTitle.innerText = `USB Flashing: ${label}`;
+  if (usbFlashDescription) usbFlashDescription.innerText = `Bereit zum Flashen an Adresse ${addressHex}`;
+  if (usbFlashFileName) usbFlashFileName.innerText = filename;
+  if (usbFlashFileSize) usbFlashFileSize.innerText = fileSizeStr;
+  if (usbFlashTargetAddress) usbFlashTargetAddress.innerText = addressHex;
+
+  if (usbFlashDialog) usbFlashDialog.showModal();
+}
+
+async function uploadFirmwareSerial(buffer, address = 0x10000, label = "Firmware", port = null) {
   let transport = null;
   try {
     btnSelectFw.disabled = true;
@@ -786,26 +858,18 @@ async function uploadFirmwareSerial(buffer, address = 0x10000, label = "Firmware
 
     setStatus("Verbindung mit USB-Gerät wird hergestellt...", "text-blue-500");
     
-    const filters = [
-      { usbVendorId: 0x10c4, usbProductId: 0xea60 }, // Silicon Labs CP210x USB to UART Bridge (CP2102N etc.)
-      { usbVendorId: 0x1a86, usbProductId: 0x7523 }, // CH340 USB to UART Bridge
-      { usbVendorId: 0x1a86, usbProductId: 0x55d4 }, // CH343 USB to UART Bridge
-      { usbVendorId: 0x303a, usbProductId: 0x1001 }, // Espressif USB JTAG/serial
-      { usbVendorId: 0x303a, usbProductId: 0x1002 }  // Espressif USB CDC
-    ];
-    
-    const port = await navigator.serial.requestPort({ filters });
+    if (!port) {
+      port = await requestSerialPort();
+    }
     transport = new Transport(port, true);
 
     const loaderTerminal = {
       clean: () => {},
       writeLine: (data) => {
         console.log(data);
-        setStatus(data, "text-gray-500");
       },
       write: (data) => {
         console.log(data);
-        setStatus(data, "text-gray-500");
       },
     };
 
@@ -840,8 +904,14 @@ async function uploadFirmwareSerial(buffer, address = 0x10000, label = "Firmware
       }
     });
 
-    setStatus(`${label} erfolgreich geflasht! Starte Gerät neu...`, "text-green-500");
-    await esploader.after("hard_reset");
+    try {
+      await esploader.after("hard_reset");
+    } catch (resetErr) {
+      console.warn("Hard reset attempt:", resetErr);
+    }
+
+    fwProgressBar.style.width = "100%";
+    setStatus(`✅ ${label} erfolgreich geflasht! Drücke jetzt den Reset-Knopf am E-Paper, um zu starten.`, "text-green-600");
   } catch (err) {
     console.error(err);
     if (err.name === "InvalidStateError" || err.message.includes("already open")) {
@@ -949,6 +1019,16 @@ btnCancelOta.addEventListener("click", () => {
 });
 
 btnConfirmOta.addEventListener("click", async () => {
+    let port = null;
+    if (otaMethod === "serial") {
+        try {
+            port = await requestSerialPort();
+        } catch (e) {
+            setStatus("USB Flashing abgebrochen: " + e.message, "text-orange-500");
+            otaDialog.close();
+            return;
+        }
+    }
     otaDialog.close();
     if (!currentOtaUrl) return;
     
@@ -963,7 +1043,7 @@ btnConfirmOta.addEventListener("click", async () => {
         if (otaMethod === "ble") {
             await uploadFirmwareBle(buffer);
         } else {
-            await uploadFirmwareSerial(buffer);
+            await uploadFirmwareSerial(buffer, 0x10000, "Original Cloud Firmware", port);
         }
     } catch (err) {
         console.error(err);
@@ -1000,6 +1080,16 @@ if (btnCancelOfflineOta) {
 
 if (btnConfirmOfflineOta) {
     btnConfirmOfflineOta.addEventListener("click", async () => {
+        let port = null;
+        if (otaMethod === "serial") {
+            try {
+                port = await requestSerialPort();
+            } catch (e) {
+                setStatus("USB Flashing abgebrochen: " + e.message, "text-orange-500");
+                otaOfflineDialog.close();
+                return;
+            }
+        }
         otaOfflineDialog.close();
         
         try {
@@ -1009,7 +1099,6 @@ if (btnConfirmOfflineOta) {
             setStatus("Lade Offline-Firmware herunter...", "text-blue-500");
             let res = await fetch(targetUrl);
             
-            // If local fetch fails or returns HTML (Vite SPA fallback)
             const isHtml = res.ok && res.headers.get("content-type")?.includes("text/html");
             if (!res.ok || isHtml) {
                 console.log("Local offline firmware fetch failed or returned HTML. Trying remote fallback...");
@@ -1025,7 +1114,7 @@ if (btnConfirmOfflineOta) {
             if (otaMethod === "ble") {
                 await uploadFirmwareBle(buffer);
             } else {
-                await uploadFirmwareSerial(buffer);
+                await uploadFirmwareSerial(buffer, 0x10000, "Offline Firmware", port);
             }
         } catch (err) {
             console.error(err);
@@ -1051,12 +1140,13 @@ fwInput.addEventListener("change", (e) => {
   if (!file) return;
 
   const reader = new FileReader();
-  reader.onload = async (e) => {
-    const buffer = new Uint8Array(e.target.result);
+  reader.onload = async (evt) => {
+    const buffer = new Uint8Array(evt.target.result);
     if (otaMethod === "ble") {
       await uploadFirmwareBle(buffer);
     } else {
-      await uploadFirmwareSerial(buffer);
+      const sizeKb = (file.size / 1024).toFixed(1) + " KB";
+      openUsbFlashDialog(buffer, file.name, sizeKb, "0x10000", "Firmware");
     }
     fwInput.value = "";
   };
@@ -1082,7 +1172,8 @@ if (spiffsInput) {
     const reader = new FileReader();
     reader.onload = async (evt) => {
       const buffer = new Uint8Array(evt.target.result);
-      await uploadFirmwareSerial(buffer, 0x3B0000, "SPIFFS (Zertifikat)");
+      const sizeKb = (file.size / 1024).toFixed(1) + " KB";
+      openUsbFlashDialog(buffer, file.name, sizeKb, "0x3B0000", "SPIFFS (Zertifikat)");
       spiffsInput.value = "";
     };
     reader.readAsArrayBuffer(file);

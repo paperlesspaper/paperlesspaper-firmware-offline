@@ -485,6 +485,27 @@
         </div>
     </dialog>
 
+    <!-- USB Flash Confirmation Dialog -->
+    <dialog id="usbFlashDialog" class="p-6 rounded-xl shadow-2xl backdrop:bg-black/50 backdrop:backdrop-blur-sm border-0 w-11/12 max-w-md">
+        <h3 class="text-xl font-bold mb-2 text-gray-800" id="usbFlashTitle">USB Flashing vorbereitet</h3>
+        <p class="text-sm text-gray-600 mb-4" id="usbFlashDescription">Datei bereit zum Flashen über USB.</p>
+
+        <div class="bg-gray-50 p-3 rounded-lg border border-gray-200 mb-4 text-xs space-y-1 font-mono">
+            <div><strong>Datei:</strong> <span id="usbFlashFileName">-</span></div>
+            <div><strong>Größe:</strong> <span id="usbFlashFileSize">-</span></div>
+            <div><strong>Ziel-Adresse:</strong> <span id="usbFlashTargetAddress">-</span></div>
+        </div>
+
+        <div class="p-3 bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-lg text-xs mb-4">
+            <strong>🔌 Bitte beachten:</strong> Verbinde das E-Paper per USB-Kabel. Halte den Boot-Knopf gedrückt, drücke kurz Reset und lass den Boot-Knopf los.
+        </div>
+
+        <div class="flex justify-end gap-3 mt-6">
+            <button id="btnCancelUsbFlash" class="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">Abbrechen</button>
+            <button id="btnConfirmUsbFlash" class="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white font-bold rounded-lg transition-colors">COM-Port wählen & Flashen</button>
+        </div>
+    </dialog>
+
     <script type="module" src="app.js"></script>
     <script>
         const tabConnect = document.getElementById('tabConnect');
