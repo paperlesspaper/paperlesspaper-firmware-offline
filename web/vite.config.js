@@ -98,6 +98,7 @@ function ditherTestImagesPlugin() {
 export default defineConfig({
   root: "src",
   base: "./",
+  publicDir: "../public",
   plugins: [colorProfilesPlugin(), ditherTestImagesPlugin(), viteSingleFile()],
   build: {
     outDir: "../dist",

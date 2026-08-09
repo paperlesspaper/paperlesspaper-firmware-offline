@@ -1,0 +1,16 @@
+server {
+    listen       ${APP_PORT};
+    listen  [::]:${APP_PORT};
+    server_name  _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location = /runtime-config.js {
+        add_header Cache-Control "no-store";
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

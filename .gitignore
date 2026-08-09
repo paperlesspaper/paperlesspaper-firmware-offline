@@ -21,3 +21,8 @@ secrets.h
 /web_new
 main_13.cpp.disabled
 *.code-workspace
+/build-artifacts/firmware/*
+!/build-artifacts/firmware/.gitkeep
+!/build-artifacts/firmware/factory/
+/build-artifacts/firmware/factory/*
+!/build-artifacts/firmware/factory/.gitkeep
