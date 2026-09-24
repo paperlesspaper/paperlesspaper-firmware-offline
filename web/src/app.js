@@ -80,7 +80,16 @@ const btnConfirmOfflineOta = document.getElementById("btnConfirmOfflineOta");
 const fwInput = document.getElementById("fwInput");
 const btnSelectFw = document.getElementById("btnSelectFw");
 const btnSelectSpiffs = document.getElementById("btnSelectSpiffs");
+const btnBackupSpiffs = document.getElementById("btnBackupSpiffs");
 const spiffsInput = document.getElementById("spiffsInput");
+const spiffsBleNotice = document.getElementById("spiffsBleNotice");
+const spiffsUsbTools = document.getElementById("spiffsUsbTools");
+const btnSwitchToUsb = document.getElementById("btnSwitchToUsb");
+const activeOtaModeBadge = document.getElementById("activeOtaModeBadge");
+const bleModeNotice = document.getElementById("bleModeNotice");
+const usbBackupDialog = document.getElementById("usbBackupDialog");
+const btnCancelUsbBackup = document.getElementById("btnCancelUsbBackup");
+const btnConfirmUsbBackup = document.getElementById("btnConfirmUsbBackup");
 const fwProgressContainer = document.getElementById("fwProgressContainer");
 const fwProgressBar = document.getElementById("fwProgressBar");
 
@@ -791,24 +800,45 @@ const serialLogOutput = document.getElementById("serialLogOutput");
 
 let otaMethod = "ble";
 
-if (btnOtaBle && btnOtaSerial) {
-  btnOtaBle.addEventListener("click", () => {
-    otaMethod = "ble";
-    btnOtaBle.className = "flex-1 py-1.5 rounded-lg font-semibold bg-white text-gray-700 shadow-sm focus:outline-none transition-all";
-    btnOtaSerial.className = "flex-1 py-1.5 rounded-lg font-semibold text-gray-500 hover:text-gray-700 focus:outline-none transition-all";
+function setOtaMode(mode) {
+  otaMethod = mode;
+  const otaModeLabels = document.querySelectorAll(".otaModeLabel");
+  if (mode === "ble") {
+    if (btnOtaBle) {
+      btnOtaBle.className = "flex-1 py-2 rounded-lg font-semibold bg-white text-gray-800 shadow-sm focus:outline-none transition-all flex items-center justify-center gap-1.5";
+    }
+    if (btnOtaSerial) {
+      btnOtaSerial.className = "flex-1 py-2 rounded-lg font-semibold text-gray-500 hover:text-gray-800 focus:outline-none transition-all flex items-center justify-center gap-1.5";
+    }
+    if (activeOtaModeBadge) {
+      activeOtaModeBadge.innerText = "Modus: Bluetooth (BLE)";
+      activeOtaModeBadge.className = "text-xs font-semibold px-2.5 py-1 rounded-full bg-blue-100 text-blue-700";
+    }
+    if (bleModeNotice) bleModeNotice.classList.remove("hidden");
     if (serialModeNotice) serialModeNotice.classList.add("hidden");
     if (serialUnsupportedNotice) serialUnsupportedNotice.classList.add("hidden");
-    if (btnSelectSpiffs) btnSelectSpiffs.classList.add("hidden");
+    if (spiffsBleNotice) spiffsBleNotice.classList.remove("hidden");
+    if (spiffsUsbTools) spiffsUsbTools.classList.add("hidden");
     if (serialMonitorContainer) serialMonitorContainer.classList.add("hidden");
-  });
-
-  btnOtaSerial.addEventListener("click", () => {
-    otaMethod = "serial";
-    btnOtaBle.className = "flex-1 py-1.5 rounded-lg font-semibold text-gray-500 hover:text-gray-700 focus:outline-none transition-all";
-    btnOtaSerial.className = "flex-1 py-1.5 rounded-lg font-semibold bg-white text-gray-700 shadow-sm focus:outline-none transition-all";
-    if (btnSelectSpiffs) btnSelectSpiffs.classList.remove("hidden");
+    otaModeLabels.forEach((el) => {
+      el.textContent = "(BLE)";
+    });
+  } else {
+    if (btnOtaBle) {
+      btnOtaBle.className = "flex-1 py-2 rounded-lg font-semibold text-gray-500 hover:text-gray-800 focus:outline-none transition-all flex items-center justify-center gap-1.5";
+    }
+    if (btnOtaSerial) {
+      btnOtaSerial.className = "flex-1 py-2 rounded-lg font-semibold bg-white text-gray-800 shadow-sm focus:outline-none transition-all flex items-center justify-center gap-1.5";
+    }
+    if (activeOtaModeBadge) {
+      activeOtaModeBadge.innerText = "Modus: USB-Kabel (COM-Port)";
+      activeOtaModeBadge.className = "text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800";
+    }
+    if (bleModeNotice) bleModeNotice.classList.add("hidden");
+    if (spiffsBleNotice) spiffsBleNotice.classList.add("hidden");
+    if (spiffsUsbTools) spiffsUsbTools.classList.remove("hidden");
     if (serialMonitorContainer) serialMonitorContainer.classList.remove("hidden");
-    
+
     if (!("serial" in navigator)) {
       if (serialUnsupportedNotice) serialUnsupportedNotice.classList.remove("hidden");
       if (serialModeNotice) serialModeNotice.classList.add("hidden");
@@ -816,7 +846,20 @@ if (btnOtaBle && btnOtaSerial) {
       if (serialModeNotice) serialModeNotice.classList.remove("hidden");
       if (serialUnsupportedNotice) serialUnsupportedNotice.classList.add("hidden");
     }
-  });
+    otaModeLabels.forEach((el) => {
+      el.textContent = "(USB)";
+    });
+  }
+}
+
+if (btnOtaBle) {
+  btnOtaBle.addEventListener("click", () => setOtaMode("ble"));
+}
+if (btnOtaSerial) {
+  btnOtaSerial.addEventListener("click", () => setOtaMode("serial"));
+}
+if (btnSwitchToUsb) {
+  btnSwitchToUsb.addEventListener("click", () => setOtaMode("serial"));
 }
 
 let serialMonitorPort = null;
@@ -984,6 +1027,7 @@ async function uploadFirmwareSerial(buffer, address = 0x10000, label = "Firmware
     if (btnUpdateOfflineFw) btnUpdateOfflineFw.disabled = true;
     btnFetchOriginalFw.disabled = true;
     if (btnSelectSpiffs) btnSelectSpiffs.disabled = true;
+    if (btnBackupSpiffs) btnBackupSpiffs.disabled = true;
     fwProgressContainer.classList.remove("hidden");
     fwProgressBar.style.width = "0%";
 
@@ -1062,6 +1106,7 @@ async function uploadFirmwareSerial(buffer, address = 0x10000, label = "Firmware
     if (btnUpdateOfflineFw) btnUpdateOfflineFw.disabled = false;
     btnFetchOriginalFw.disabled = false;
     if (btnSelectSpiffs) btnSelectSpiffs.disabled = false;
+    if (btnBackupSpiffs) btnBackupSpiffs.disabled = false;
   }
 }
 
@@ -1071,6 +1116,7 @@ async function uploadFirmwareBle(buffer) {
     if (btnUpdateOfflineFw) btnUpdateOfflineFw.disabled = true;
     btnFetchOriginalFw.disabled = true;
     if (btnSelectSpiffs) btnSelectSpiffs.disabled = true;
+    if (btnBackupSpiffs) btnBackupSpiffs.disabled = true;
     fwProgressContainer.classList.remove("hidden");
     fwProgressBar.style.width = "0%";
 
@@ -1080,6 +1126,7 @@ async function uploadFirmwareBle(buffer) {
     if (btnUpdateOfflineFw) btnUpdateOfflineFw.disabled = false;
     btnFetchOriginalFw.disabled = false;
     if (btnSelectSpiffs) btnSelectSpiffs.disabled = false;
+    if (btnBackupSpiffs) btnBackupSpiffs.disabled = false;
   }
 }
 
@@ -1308,6 +1355,173 @@ if (spiffsInput) {
       spiffsInput.value = "";
     };
     reader.readAsArrayBuffer(file);
+  });
+}
+
+async function backupSpiffsSerial() {
+  if (!("serial" in navigator)) {
+    setStatus("⚠️ USB-Verbindung wird von deinem Browser nicht unterstützt. Nutze Chrome, Edge oder Opera.", "text-red-500");
+    alert("Dein Browser unterstützt keine serielle Verbindung (Web Serial API). Bitte nutze Chrome, Edge oder Opera.");
+    return;
+  }
+
+  let transport = null;
+  try {
+    await disconnectSerialMonitor();
+    if (btnBackupSpiffs) btnBackupSpiffs.disabled = true;
+    if (btnSelectSpiffs) btnSelectSpiffs.disabled = true;
+    btnSelectFw.disabled = true;
+    if (btnUpdateOfflineFw) btnUpdateOfflineFw.disabled = true;
+    btnFetchOriginalFw.disabled = true;
+    fwProgressContainer.classList.remove("hidden");
+    fwProgressBar.style.width = "0%";
+
+    setStatus("Verbindung mit USB-Gerät wird hergestellt...", "text-blue-500");
+
+    let port = null;
+    try {
+      port = await requestSerialPort();
+    } catch (portErr) {
+      if (portErr.name !== "NotFoundError" && portErr.name !== "AbortError") {
+        setStatus("USB-Verbindung fehlgeschlagen: " + portErr.message, "text-red-500");
+      } else {
+        setStatus("USB-Verbindung abgebrochen.", "text-gray-500");
+      }
+      return;
+    }
+
+    transport = new Transport(port, true);
+
+    const loaderTerminal = {
+      clean: () => {},
+      writeLine: (data) => console.log(data),
+      write: (data) => console.log(data)
+    };
+
+    const esploader = new ESPLoader({
+      transport: transport,
+      baudrate: 921600,
+      terminal: loaderTerminal
+    });
+
+    setStatus("Lade Bootloader...", "text-blue-500");
+    await esploader.main();
+
+    const spiffsAddress = 0x3b0000;
+    const spiffsSize = 0x40000; // 256 KB
+
+    setStatus("Lese SPIFFS Zertifikat-Partition aus...", "text-blue-500");
+    const spiffsData = await esploader.readFlash(spiffsAddress, spiffsSize, (packet, current, total) => {
+      const percent = Math.round((current / total) * 100);
+      fwProgressBar.style.width = percent + "%";
+      setStatus(`Lese SPIFFS Zertifikate: ${percent}% (${Math.round(current / 1024)} KB / ${Math.round(total / 1024)} KB)...`, "text-blue-500");
+    });
+
+    try {
+      await esploader.after("hard_reset");
+    } catch (resetErr) {
+      console.warn("Hard reset attempt:", resetErr);
+    }
+
+    fwProgressBar.style.width = "100%";
+    const dateStr = new Date().toISOString().slice(0, 10);
+
+    // Detect EPD number (e.g. epd7-3485188f1dc8) from SPIFFS partition data or chip MAC
+    let epdNumber = "";
+    try {
+      const spiffsText = new TextDecoder("latin1").decode(spiffsData);
+      const match = spiffsText.match(/epd\d+-[0-9a-fA-F]+/i);
+      if (match) {
+        epdNumber = match[0].toLowerCase();
+      }
+    } catch (scanErr) {
+      console.warn("Failed scanning SPIFFS for EPD identifier:", scanErr);
+    }
+
+    if (!epdNumber) {
+      try {
+        if (esploader.chip && typeof esploader.chip.readMac === "function") {
+          const rawMac = await esploader.chip.readMac(esploader);
+          if (rawMac) {
+            const cleanMac = rawMac.replace(/[^0-9a-fA-F]/g, "").toLowerCase();
+            const prefix = (displaySizeSelect?.value === "13" || offlineOtaDeviceSelect?.value === "epd13") ? "epd13-" : "epd7-";
+            epdNumber = prefix + cleanMac;
+          }
+        }
+      } catch (macErr) {
+        console.warn("Could not read chip MAC:", macErr);
+      }
+    }
+
+    if (!epdNumber && bleInterface?.bleDevice?.name && bleInterface.bleDevice.name.toLowerCase().startsWith("epd")) {
+      epdNumber = bleInterface.bleDevice.name.toLowerCase().trim();
+    }
+
+    const filename = epdNumber
+      ? `spiffs_backup_${epdNumber}_${dateStr}.bin`
+      : `spiffs_certificates_backup_${dateStr}.bin`;
+
+    const blob = new Blob([spiffsData], { type: "application/octet-stream" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    setStatus(`✅ SPIFFS Zertifikate erfolgreich heruntergeladen (${filename}, 256 KB)!`, "text-green-600");
+  } catch (err) {
+    console.error("Backup SPIFFS Error:", err);
+    if (err.name === "NotFoundError" || err.name === "AbortError") {
+      setStatus("USB-Auslesen abgebrochen (Kein Port ausgewählt).", "text-gray-500");
+    } else if (err.name === "InvalidStateError" || err.message?.includes("already open")) {
+      setStatus("Fehler: Der COM-Port ist blockiert! Eventuell ist ein serieller Monitor oder anderes Programm geöffnet. Schließe diese und versuche es erneut.", "text-red-500");
+    } else {
+      setStatus("Fehler beim Sichern der Zertifikate: " + err.message, "text-red-500");
+    }
+  } finally {
+    if (transport) {
+      try {
+        await transport.disconnect();
+      } catch (e) {
+        console.warn("Disconnection failed:", e);
+      }
+    }
+    if (btnBackupSpiffs) btnBackupSpiffs.disabled = false;
+    if (btnSelectSpiffs) btnSelectSpiffs.disabled = false;
+    btnSelectFw.disabled = false;
+    if (btnUpdateOfflineFw) btnUpdateOfflineFw.disabled = false;
+    btnFetchOriginalFw.disabled = false;
+  }
+}
+
+if (btnBackupSpiffs) {
+  btnBackupSpiffs.addEventListener("click", () => {
+    if (!("serial" in navigator)) {
+      setStatus("⚠️ USB-Verbindung wird von deinem Browser nicht unterstützt. Nutze Chrome, Edge oder Opera.", "text-red-500");
+      alert("Dein Browser unterstützt keine serielle Verbindung (Web Serial API). Bitte nutze Chrome, Edge oder Opera.");
+      return;
+    }
+    if (usbBackupDialog) {
+      usbBackupDialog.showModal();
+    } else {
+      backupSpiffsSerial();
+    }
+  });
+}
+
+if (btnCancelUsbBackup) {
+  btnCancelUsbBackup.addEventListener("click", () => {
+    if (usbBackupDialog) usbBackupDialog.close();
+  });
+}
+
+if (btnConfirmUsbBackup) {
+  btnConfirmUsbBackup.addEventListener("click", async () => {
+    if (usbBackupDialog) usbBackupDialog.close();
+    await backupSpiffsSerial();
   });
 }
 

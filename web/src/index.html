@@ -202,42 +202,139 @@
 
         <div id="viewOta" class="hidden space-y-6">
             <div id="controlsOta" class="space-y-6">
-                <div class="bg-indigo-50/50 p-5 rounded-xl border border-indigo-100">
-                    <h2 class="text-xl font-bold mb-4 text-gray-700">Firmware Update</h2>
-                    <div class="space-y-3">
-                        <div class="mb-4 flex space-x-2 bg-gray-200 p-1 rounded-xl text-sm">
-                            <button type="button" id="btnOtaBle" class="flex-1 py-1.5 rounded-lg font-semibold bg-white text-gray-700 shadow-sm focus:outline-none transition-all">Bluetooth (BLE)</button>
-                            <button type="button" id="btnOtaSerial" class="flex-1 py-1.5 rounded-lg font-semibold text-gray-500 hover:text-gray-700 focus:outline-none transition-all">USB-Kabel (COM-Port)</button>
+                <!-- Mode Selector & Notices -->
+                <div class="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-4">
+                    <div class="flex items-center justify-between">
+                        <h2 class="text-xl font-bold text-gray-700">Firmware & Update</h2>
+                        <span id="activeOtaModeBadge" class="text-xs font-semibold px-2.5 py-1 rounded-full bg-blue-100 text-blue-700">Modus: Bluetooth (BLE)</span>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Verbindungsweg wählen</label>
+                        <div class="flex space-x-2 bg-gray-100 p-1.5 rounded-xl text-sm">
+                            <button type="button" id="btnOtaBle" class="flex-1 py-2 rounded-lg font-semibold bg-white text-gray-800 shadow-sm focus:outline-none transition-all flex items-center justify-center gap-1.5">
+                                <span>📶</span> Bluetooth (BLE)
+                            </button>
+                            <button type="button" id="btnOtaSerial" class="flex-1 py-2 rounded-lg font-semibold text-gray-500 hover:text-gray-800 focus:outline-none transition-all flex items-center justify-center gap-1.5">
+                                <span>🔌</span> USB-Kabel (COM-Port)
+                            </button>
                         </div>
-                        <div id="serialModeNotice" class="hidden p-3 bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-lg text-xs mb-4">
-                            <strong>🔌 Anleitung für USB-COM:</strong> Verbinde das E-Paper per USB-Kabel mit dem PC. Halte den kleinen Knopf gedrückt, drücke kurz den Reset-Knopf und lass den kleinen Knopf los (Bootloader-Modus). Wähle nach dem Klicken des Flash-Buttons den passenden COM-Port aus.
+                    </div>
+
+                    <div id="bleModeNotice" class="p-3 bg-blue-50 border border-blue-200 text-blue-800 rounded-lg text-xs leading-relaxed">
+                        <strong>📶 Bluetooth OTA:</strong> Das E-Paper muss eingeschaltet und per Bluetooth verbunden sein (nach Drücken der Reset-Taste ca. 30 Sekunden aktiv).
+                    </div>
+                    <div id="serialModeNotice" class="hidden p-3 bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-lg text-xs leading-relaxed">
+                        <strong>🔌 Anleitung für USB-COM:</strong> Entferne die Holzabdeckung vom Bilderrahmen vorsichtig. Verbinde das E-Paper per USB-Kabel mit dem PC. Halte den kleinen Knopf gedrückt, drücke kurz den Reset-Knopf (große Taste) und lass den kleinen Knopf los (Bootloader-Modus).
+                    </div>
+                    <div id="serialUnsupportedNotice" class="hidden p-3 bg-red-50 border border-red-200 text-red-800 rounded-lg text-xs leading-relaxed">
+                        ⚠️ <strong>Nicht unterstützt:</strong> Dein Webbrowser unterstützt keine serielle Verbindung (Web Serial API). Nutze Chrome, Edge oder Opera für USB-Flashing.
+                    </div>
+
+                    <!-- Global Progress Bar for any flashing / backup activity -->
+                    <div id="fwProgressContainer" class="hidden w-full bg-gray-200 rounded-full h-2.5 mt-2">
+                        <div id="fwProgressBar" class="bg-blue-600 h-2.5 rounded-full transition-all duration-200" style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <!-- SECTION 1: Original Cloud Firmware -->
+                <div class="bg-blue-50/50 p-5 rounded-xl border border-blue-200 space-y-4 shadow-sm">
+                    <div class="flex items-start justify-between">
+                        <div>
+                            <h3 class="text-lg font-bold text-blue-900 flex items-center gap-2">
+                                <span>☁️</span> Original Cloud Firmware
+                            </h3>
+                            <p class="text-xs text-blue-700/80 mt-1">Offizielle Firmware zur Verbindung mit der Paperlesspaper Cloud und Bildanzeige über die App.</p>
                         </div>
-                        <div id="serialUnsupportedNotice" class="hidden p-3 bg-red-50 border border-red-200 text-red-800 rounded-lg text-xs mb-4">
-                            ⚠️ <strong>Nicht unterstützt:</strong> Dein Webbrowser unterstützt keine serielle Verbindung (Web Serial API). Nutze Chrome, Edge oder Opera für USB-Flashing.
+                        <span class="text-xs font-semibold px-2 py-0.5 rounded bg-blue-100 text-blue-800 border border-blue-200">Cloud</span>
+                    </div>
+
+                    <button id="btnFetchOriginalFw" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-4 rounded-lg transition-colors shadow flex items-center justify-center gap-2">
+                        <span>Flash</span>
+                        <span class="otaModeLabel text-xs bg-blue-800/40 px-2 py-0.5 rounded font-normal">(BLE)</span>
+                    </button>
+
+                    <div class="text-[11px] text-gray-500 pt-1 flex items-center justify-between">
+                        <span>Dokumentation & Quellcode auf GitHub:</span>
+                        <a href="https://github.com/paperlesspaper/paperlesspaper-firmware" target="_blank" class="font-bold text-blue-600 hover:underline">Cloud-Firmware Repository ↗</a>
+                    </div>
+
+                    <!-- SPIFFS & Certificate Management Subsection -->
+                    <div class="mt-4 pt-4 border-t border-blue-200/80 space-y-3">
+                        <div class="flex items-center justify-between">
+                            <h4 class="text-sm font-bold text-gray-800 flex items-center gap-1.5">
+                                <span>🔐</span> Zertifikate & SPIFFS Partition
+                            </h4>
+                            <span class="text-[11px] font-semibold text-gray-500 bg-white/80 px-2 py-0.5 rounded border border-gray-200 font-mono">0x3B0000 (256 KB)</span>
                         </div>
-                        <div class="p-4 bg-blue-50 text-blue-800 rounded-lg text-sm mb-4">
-                            Hier kannst du die Firmware deines E-Papers aktualisieren oder ändern.
+                        <p class="text-xs text-gray-600 leading-relaxed">
+                            Die Cloud-Firmware benötigt gerätespezifische AWS IoT Zertifikate auf der SPIFFS-Partition. Sichere diese als Backup, bevor du die Firmware wechselst, oder übertrage neue Zertifikate.
+                        </p>
+
+                        <!-- When in BLE mode, show quick hint -->
+                        <div id="spiffsBleNotice" class="p-3 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg text-xs flex items-center justify-between gap-2">
+                            <span>ℹ️ SPIFFS Zertifikat-Backup & Flashing ist eine Hardware-Funktion und erfordert eine Verbindung per USB-Kabel.</span>
+                            <button type="button" id="btnSwitchToUsb" class="text-xs font-bold text-amber-900 underline hover:text-amber-700 whitespace-nowrap">Zu USB wechseln</button>
                         </div>
-                        <button id="btnFetchOriginalFw" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 rounded-lg transition-colors">Original Cloud Firmware übertragen</button>
-                        <button id="btnUpdateOfflineFw" class="w-full bg-purple-500 hover:bg-purple-600 text-white font-bold py-2 rounded-lg transition-colors mt-2">Offline Firmware übertragen</button>
-                        <button id="btnSelectFw" class="w-full bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 rounded-lg transition-colors mt-2">Eigene Firmware Datei übertragen (.bin)</button>
-                        <button id="btnSelectSpiffs" class="hidden w-full bg-teal-600 hover:bg-teal-700 text-white font-bold py-2 rounded-lg transition-colors mt-2">Zertifikat Datei übertragen (.bin)</button>
+
+                        <!-- USB Certificate actions (shown in USB mode) -->
+                        <div id="spiffsUsbTools" class="hidden space-y-2">
+                            <button id="btnBackupSpiffs" type="button" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 px-4 rounded-lg transition-colors shadow flex items-center justify-center gap-2 text-sm">
+                                <span>📥</span> Download Certificates (Backup)
+                            </button>
+                            <button id="btnSelectSpiffs" type="button" class="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold py-2.5 px-4 rounded-lg transition-colors shadow flex items-center justify-center gap-2 text-sm">
+                                <span>📤</span> Upload Certificates (Restore)
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SECTION 2: Offline Firmware -->
+                <div class="bg-purple-50/50 p-5 rounded-xl border border-purple-200 space-y-4 shadow-sm">
+                    <div class="flex items-start justify-between">
+                        <div>
+                            <h3 class="text-lg font-bold text-purple-900 flex items-center gap-2">
+                                <span>🏠</span> Offline Firmware
+                            </h3>
+                            <p class="text-xs text-purple-700/80 mt-1">Open-Source-Firmware für maximale Unabhängigkeit. Alle Datentransfers laufen Lokal via BLE oder WiFi.</p>
+                        </div>
+                        <span class="text-xs font-semibold px-2 py-0.5 rounded bg-purple-100 text-purple-800 border border-purple-200">Local</span>
+                    </div>
+
+                    <button id="btnUpdateOfflineFw" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-2.5 px-4 rounded-lg transition-colors shadow flex items-center justify-center gap-2">
+                        <span>Flash</span>
+                        <span class="otaModeLabel text-xs bg-purple-800/40 px-2 py-0.5 rounded font-normal">(BLE)</span>
+                    </button>
+
+                    <div class="text-[11px] text-gray-500 pt-1 flex items-center justify-between">
+                        <span>Dokumentation & Quellcode auf GitHub:</span>
+                        <a href="https://github.com/paperlesspaper/paperlesspaper-firmware-offline" target="_blank" class="font-bold text-purple-600 hover:underline">Offline-Firmware Repository ↗</a>
+                    </div>
+                </div>
+
+                <!-- SECTION 3: Eigene Firmware & Tools -->
+                <div class="bg-gray-50 p-5 rounded-xl border border-gray-200 space-y-4 shadow-sm">
+                    <h3 class="text-base font-bold text-gray-700 flex items-center gap-2">
+                        <span>🛠️</span> Eigene Firmware (Custom .bin File flashen)
+                    </h3>
+
+                    <div>
+                        <button id="btnSelectFw" class="w-full bg-slate-600 hover:bg-slate-700 text-white font-bold py-2.5 px-4 rounded-lg transition-colors shadow flex items-center justify-center gap-2 text-sm">
+                            <span>Upload</span>
+                            <span class="otaModeLabel text-xs bg-slate-800/40 px-2 py-0.5 rounded font-normal">(BLE)</span>
+                        </button>
                         <input type="file" id="fwInput" accept=".bin" class="hidden" />
                         <input type="file" id="spiffsInput" accept=".bin" class="hidden" />
+                    </div>
 
-                        <div id="serialMonitorContainer" class="hidden mt-6 pt-4 border-t border-gray-200">
-                            <h3 class="text-sm font-bold text-gray-700 mb-2 flex items-center justify-between">
-                                <span>Serial Debug</span>
-                                <button type="button" id="btnClearSerialLog" class="text-xs text-gray-500 hover:text-gray-700 bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded transition">🗑️ Log leeren</button>
-                            </h3>
-                            <button type="button" id="btnToggleSerialMonitor" class="w-full bg-slate-700 hover:bg-slate-800 text-white font-bold py-2 rounded-lg transition-colors text-sm mb-3">Seriellen Debug Monitor verbinden</button>
-                            <div id="serialLogBox" class="hidden">
-                                <pre id="serialLogOutput" class="bg-gray-900 text-green-400 p-3 rounded-lg text-xs font-mono h-48 overflow-y-auto whitespace-pre-wrap break-all select-text"></pre>
-                            </div>
-                        </div>
-
-                        <div id="fwProgressContainer" class="hidden w-full bg-gray-200 rounded-full h-2.5 mt-4">
-                            <div id="fwProgressBar" class="bg-blue-600 h-2.5 rounded-full" style="width: 0%"></div>
+                    <div id="serialMonitorContainer" class="hidden pt-3 border-t border-gray-200">
+                        <h4 class="text-sm font-bold text-gray-700 mb-2 flex items-center justify-between">
+                            <span>Serieller Debug Monitor (USB)</span>
+                            <button type="button" id="btnClearSerialLog" class="text-xs text-gray-500 hover:text-gray-700 bg-white hover:bg-gray-100 border border-gray-200 px-2 py-1 rounded transition">🗑️ Log leeren</button>
+                        </h4>
+                        <button type="button" id="btnToggleSerialMonitor" class="w-full bg-slate-700 hover:bg-slate-800 text-white font-bold py-2 rounded-lg transition-colors text-sm mb-3">Seriellen Debug Monitor verbinden</button>
+                        <div id="serialLogBox" class="hidden">
+                            <pre id="serialLogOutput" class="bg-gray-900 text-green-400 p-3 rounded-lg text-xs font-mono h-48 overflow-y-auto whitespace-pre-wrap break-all select-text"></pre>
                         </div>
                     </div>
                 </div>
@@ -416,7 +513,7 @@
                             <div class="space-y-3 mt-2">
                                 <div class="bg-blue-50 p-3 rounded border border-blue-100">
                                     <strong class="text-blue-700 block text-xs">Original Cloud Firmware (Auslieferung)</strong>
-                                    <span class="text-xs text-gray-600">Verbindet sich mit der Cloud und bezieht Bilder durch unsere App <a href="https://paperlesspaper.de" target="_blank" class="text-blue-600 hover:underline">Paperlesspaper Website</a>.</span>
+                                    <span class="text-xs text-gray-600">Verbindet sich mit der Cloud und bezieht Bilder durch unsere App <a href="https://paperlesspaper.de" target="_blank" class="text-blue-600 hover:underline">Paperlesspaper Website</a>. Quellcode im <a href="https://github.com/paperlesspaper/paperlesspaper-firmware" target="_blank" class="text-blue-600 hover:underline font-bold">Cloud-Firmware Repository</a>.</span>
                                 </div>
                                 <div class="bg-purple-50 p-3 rounded border border-purple-100">
                                     <strong class="text-purple-700 block text-xs">Offline Firmware (Optional)</strong>
@@ -434,11 +531,16 @@
                             </svg>
                         </summary>
                         <div class="p-4 text-sm text-gray-600 space-y-2 border-t border-gray-200">
-                            <p>Für die verschlüsselte Verbindung zur Cloud (Original Cloud Firmware) benötigt das E-Paper gerätespezifische AWS IoT Zertifikate auf dem SPIFFS-Speicher.</p>
+                            <p>Für die verschlüsselte Verbindung zur Cloud (Original Cloud Firmware) benötigt das E-Paper gerätespezifische AWS IoT Zertifikate auf dem SPIFFS-Speicher (Adresse <code class="bg-gray-100 text-purple-700 px-1 py-0.5 rounded font-mono">0x3B0000</code>).</p>
                             <div class="p-3 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg text-xs font-medium">
                                 ℹ️ <strong>Wichtiger Hinweis:</strong> Die gerätespezifischen Zertifikate sind nicht öffentlich im Repository enthalten. Sie sind <strong>ausschließlich direkt über unseren Support</strong> erhältlich.
                             </div>
-                            <p class="text-xs text-gray-500">Wenn du dein Zertifikat als <code class="bg-gray-100 text-purple-700 px-1 py-0.5 rounded font-mono">.bin</code>-Datei vom Support erhalten hast, kannst du es im Reiter <strong>Firmware Update</strong> unter <strong>USB-Kabel (COM-Port)</strong> mit dem Button <strong>"Zertifikat Datei übertragen (.bin)"</strong> direkt per USB-Kabel flashen.</p>
+                            <p class="text-xs text-gray-500">
+                                <strong>📥 Backup anlegen:</strong> Bevor du auf eine alternative Firmware wechselst, solltest du deine Zertifikate sichern. Wechsle im Reiter <strong>Firmware Update</strong> auf <strong>USB-Kabel (COM-Port)</strong> und klicke auf <strong>"Zertifikate von SPIFFS herunterladen (Backup .bin)"</strong>. Dadurch wird die Partition ausgelesen und als Backup-Datei gespeichert.
+                            </p>
+                            <p class="text-xs text-gray-500">
+                                <strong>📤 Zertifikat wiederherstellen / übertragen:</strong> Wenn du dein Zertifikat als <code class="bg-gray-100 text-purple-700 px-1 py-0.5 rounded font-mono">.bin</code>-Datei vom Support oder aus einem vorherigen Backup vorliegen hast, kannst du es über den Button <strong>"Zertifikat Datei auf SPIFFS übertragen (.bin)"</strong> per USB-Kabel direkt an Adresse 0x3B0000 flashen.
+                            </p>
                         </div>
                     </details>
                 </div>
@@ -531,6 +633,28 @@
         <div class="flex justify-end gap-3 mt-6">
             <button id="btnCancelUsbFlash" class="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">Abbrechen</button>
             <button id="btnConfirmUsbFlash" class="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white font-bold rounded-lg transition-colors">COM-Port wählen & Flashen</button>
+        </div>
+    </dialog>
+
+    <!-- USB SPIFFS Backup Confirmation Dialog -->
+    <dialog id="usbBackupDialog" class="p-6 rounded-xl shadow-2xl backdrop:bg-black/50 backdrop:backdrop-blur-sm border-0 w-11/12 max-w-md">
+        <h3 class="text-xl font-bold mb-2 text-gray-800">SPIFFS Zertifikat-Backup</h3>
+        <p class="text-sm text-gray-600 mb-4">Liest die gerätespezifischen Zertifikate aus der SPIFFS-Partition deines Displays aus und speichert sie als Backup-Datei (.bin) auf deinem PC.</p>
+
+        <div class="bg-gray-50 p-3 rounded-lg border border-gray-200 mb-4 text-xs space-y-1 font-mono">
+            <div><strong>Partition:</strong> SPIFFS</div>
+            <div><strong>Flash-Adresse:</strong> 0x3B0000</div>
+            <div><strong>Partitionsgröße:</strong> 256 KB (0x40000)</div>
+            <div><strong>Zweck:</strong> AWS IoT Cloud-Authentifizierung</div>
+        </div>
+
+        <div class="p-3 bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-lg text-xs mb-4">
+            <strong>🔌 Bitte beachten:</strong> Verbinde das E-Paper per USB-Kabel. Halte den Boot-Knopf gedrückt, drücke kurz Reset und lass den Boot-Knopf los (Bootloader-Modus).
+        </div>
+
+        <div class="flex justify-end gap-3 mt-6">
+            <button id="btnCancelUsbBackup" class="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">Abbrechen</button>
+            <button id="btnConfirmUsbBackup" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg transition-colors">COM-Port wählen & Backup herunterladen</button>
         </div>
     </dialog>
 
