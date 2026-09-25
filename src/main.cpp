@@ -2,6 +2,9 @@
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <cstdint>
+#include <atomic>
+#include "image_storage.h"
+#include "image_format.h"
 #define DEST_FS_USES_SPIFFS
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -25,6 +28,7 @@
 #include <rom/rtc.h>
 
 #include "epaper_display.h"
+#include "device_wake.h"
 #include "types.h"
 
 #if DEBUG
@@ -161,6 +165,51 @@ Ticker perdiodicLedOff;
 Ticker periodicAccCheck;
 Ticker tickerStatupCounter;
 Ticker onceDisplay;
+// Persist a transaction marker in INTERNAL NVS before changing external image files.
+// A power loss must not leave a partial file eligible for display after reboot.
+static std::atomic<bool> httpStorageBusy{false};
+bool imageStorageReady = false;
+static bool downloadedDirectBmp = false;
+static bool conversionWriteOk = true;
+static bool imageTransactionActive = false;
+static int serverSuggestedSleepSeconds = 0;
+static uint32_t serverSleepHeaderAtMs = 0;
+static bool imageTransaction(bool pending) {
+   Preferences metadata;
+   if (!metadata.begin("image-cache", false)) return false;
+   bool ok = metadata.putBool("pending", pending) == 1;
+   metadata.end();
+   if (ok) imageTransactionActive = pending;
+   return ok;
+}
+static bool discardHttpImages() {
+   return ImageStorage::discard(ImageStorage::IMAGE_SLOT);
+}
+static ImageStorage::RecoveryPermission claimImageRecovery() {
+   using ImageStorage::RecoveryPermission;
+   Preferences metadata;
+   if (!metadata.begin("image-cache", false)) return RecoveryPermission::Unavailable;
+   bool used = metadata.getBool("slot-recovery", false);
+   bool ok = !used && metadata.putBool("slot-recovery", true) == 1;
+   metadata.end();
+   // Deliberately persists across retries, deep sleep and reset.
+   return used ? RecoveryPermission::AlreadyUsed
+               : ok ? RecoveryPermission::Granted : RecoveryPermission::Unavailable;
+}
+static bool recoverImageTransaction() {
+   ImageStorage::setRecoveryGate(claimImageRecovery);
+   // The slot trailer is the source of truth. Legacy pending images are invalidated.
+   Preferences metadata;
+   if (!metadata.begin("image-cache", false)) return false;
+   bool pending = metadata.getBool("pending", false);
+   metadata.end();
+   if (!pending) return true;
+   Serial.println("[FLASH] Interrupted transaction: preserve allocation, invalidate content");
+   auto legacy = SerialFlash.open(ImageStorage::IMAGE_SLOT);
+   if (legacy && legacy.size() == ImageStorage::SLOT_BYTES && !discardHttpImages()) return false;
+   return imageTransaction(false);
+}
+
 SerialFlashFile saveFile;
 SerialFlashFile rawOutFile;
 SerialFlashFile jpgInFile;
@@ -198,7 +247,8 @@ bool forceExitSetup = false;
 bool isBleClientConnected = false;
 bool buttonWake = false; // true if wakeup via reset button
 bool fwUpdateInProgress = false;
-bool stopAccRecheck = false;
+std::atomic<bool> stopAccRecheck{false};
+RotationRequests rotationRequests;
 bool isOrientUpdate = false;
 uint8_t *strip_buffer = nullptr;
 int16_t err_curr[MAX_EPD_WIDTH * 3];
@@ -384,7 +434,7 @@ void flushStripBuffer() {
             else
                out_row[out_x / 2] = (out_row[out_x / 2] & 0xF0) | (best & 0x0F);
          }
-         rawOutFile.write(out_row, EPD_WIDTH / 2);
+         conversionWriteOk = ImageStorage::write(rawOutFile, out_row, EPD_WIDTH / 2) && conversionWriteOk;
          memcpy(err_curr, err_next, sizeof(err_curr));
          memset(err_next, 0, sizeof(err_next));
 
@@ -427,6 +477,7 @@ int JPEGDraw(JPEGDRAW *pDraw) {
 }
 
 bool processImageFile(const char *rawFileName, const char *outFileName) {
+   DisplayGuard resourceGuard;
    SerialFlashFile inFile = SerialFlash.open(rawFileName);
    if (!inFile)
       return false;
@@ -437,20 +488,15 @@ bool processImageFile(const char *rawFileName, const char *outFileName) {
 
    if (magic[0] == 0xFF && magic[1] == 0xD8) {
       Serial.println("[IMAGE] JPEG detected. Dithering on-device...");
-      if (SerialFlash.exists(outFileName)) {
-         SerialFlashFile sf = SerialFlash.open(outFileName);
-         sf.erase();
-         sf.close();
-      }
-      SerialFlash.createErasable(outFileName, (EPD_WIDTH * EPD_HEIGHT / 2));
       rawOutFile = SerialFlash.open(outFileName);
+      if (!rawOutFile) return false;
 
       memset(err_curr, 0, sizeof(err_curr));
       memset(err_next, 0, sizeof(err_next));
       strip_y_start = 0;
       strip_height = 0;
 
-      jpeg.open(rawFileName, myOpen, myClose, myRead, mySeek, JPEGDraw);
+      if (!jpeg.open(rawFileName, myOpen, myClose, myRead, mySeek, JPEGDraw)) return false;
       int scale = 0;
       if (jpeg.getWidth() > 3200) {
          scale = JPEG_SCALE_EIGHTH;
@@ -474,21 +520,21 @@ bool processImageFile(const char *rawFileName, const char *outFileName) {
       }
       current_out_y = 0;
 
-      jpeg.decode(0, 0, scale);
+      if (!jpeg.decode(0, 0, scale)) conversionWriteOk = false;
       flushStripBuffer();
       jpeg.close();
 
       while (current_out_y < EPD_HEIGHT) {
          uint8_t whiteLine[MAX_EPD_WIDTH / 2];
          memset(whiteLine, 0x66, EPD_WIDTH / 2);
-         rawOutFile.write(whiteLine, EPD_WIDTH / 2);
+         conversionWriteOk = ImageStorage::write(rawOutFile, whiteLine, EPD_WIDTH / 2) && conversionWriteOk;
          current_out_y++;
       }
 
       free(strip_buffer);
       strip_buffer = nullptr;
       rawOutFile.close();
-      return true;
+      return conversionWriteOk;
    }
    else if (magic[0] == 'B' && magic[1] == 'M') {
       inFile.seek(0x1C);
@@ -497,32 +543,22 @@ bool processImageFile(const char *rawFileName, const char *outFileName) {
       if (bpp == 4) {
          Serial.println("[IMAGE] 4-bit BMP detected. Already dithered.");
 
-         if (SerialFlash.exists(outFileName)) {
-            SerialFlashFile sf = SerialFlash.open(outFileName);
-            sf.erase();
-            sf.close();
-         }
-         SerialFlash.createErasable(outFileName, inFile.size());
          rawOutFile = SerialFlash.open(outFileName);
+         if (!rawOutFile) return false;
          inFile.seek(0);
          uint8_t buf[2048];
          int bytesRead;
          while ((bytesRead = inFile.read(buf, 2048)) > 0) {
-            rawOutFile.write(buf, bytesRead);
+            conversionWriteOk = ImageStorage::write(rawOutFile, buf, bytesRead) && conversionWriteOk;
          }
          rawOutFile.close();
          inFile.close();
-         return true;
+         return conversionWriteOk;
       }
       else {
          Serial.println("[IMAGE] 24-bit BMP detected. Dithering...");
-         if (SerialFlash.exists(outFileName)) {
-            SerialFlashFile sf = SerialFlash.open(outFileName);
-            sf.erase();
-            sf.close();
-         }
-         SerialFlash.createErasable(outFileName, (EPD_WIDTH * EPD_HEIGHT / 2));
          rawOutFile = SerialFlash.open(outFileName);
+         if (!rawOutFile) return false;
 
          inFile.seek(0x0A);
          uint32_t offset;
@@ -593,34 +629,29 @@ bool processImageFile(const char *rawFileName, const char *outFileName) {
                else
                   out_row[x / 2] = (out_row[x / 2] & 0xF0) | (best & 0x0F);
             }
-            rawOutFile.write(out_row, EPD_WIDTH / 2);
+            conversionWriteOk = ImageStorage::write(rawOutFile, out_row, EPD_WIDTH / 2) && conversionWriteOk;
             memcpy(err_curr, err_next, sizeof(err_curr));
             memset(err_next, 0, sizeof(err_next));
          }
          rawOutFile.close();
          inFile.close();
-         return true;
+         return conversionWriteOk;
       }
    }
    else if (magic[0] == 0x66 && magic[1] == 0x66) {
       Serial.println("[IMAGE] Raw dithered payload detected.");
 
-      if (SerialFlash.exists(outFileName)) {
-         SerialFlashFile sf = SerialFlash.open(outFileName);
-         sf.erase();
-         sf.close();
-      }
-      SerialFlash.createErasable(outFileName, inFile.size());
       rawOutFile = SerialFlash.open(outFileName);
+      if (!rawOutFile) return false;
       inFile.seek(0);
       uint8_t buf[2048];
       int bytesRead;
       while ((bytesRead = inFile.read(buf, 2048)) > 0) {
-         rawOutFile.write(buf, bytesRead);
+         conversionWriteOk = ImageStorage::write(rawOutFile, buf, bytesRead) && conversionWriteOk;
       }
       rawOutFile.close();
       inFile.close();
-      return true;
+      return conversionWriteOk;
    }
 
    inFile.close();
@@ -630,7 +661,11 @@ bool processImageFile(const char *rawFileName, const char *outFileName) {
 // Power supply display
 #ifdef EPD_TYPE_13INCH
 bool powerSupplyDisplay(bool enable) {
+   DisplayGuard resourceGuard;
+   static bool supplyConfigured = false;
    bool tempState = systemData.displayPowerOn;
+   if (!enable && !tempState && supplyConfigured) return false;
+   supplyConfigured = true;
    if (enable) {
       pinMode(DISP_POWER, OUTPUT);
       digitalWrite(DISP_POWER, HIGH);
@@ -655,6 +690,7 @@ bool powerSupplyDisplay(bool enable) {
 }
 #else
 bool powerSupplyDisplay(bool enable) {
+   DisplayGuard resourceGuard;
    return true;
 }
 #endif
@@ -711,6 +747,7 @@ void WiFiEvent(WiFiEvent_t event) {
 }
 
 void timeoutFailsafe(int time) {
+   DisplayGuard resourceGuard;
    Serial.println("[MAIN] Timeout Failsafe");
 
    gotToDeepSleep(DEFAULT_SLEEP, true, false);
@@ -966,6 +1003,7 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
    };
 
    void onWrite(NimBLECharacteristic *pCharacteristic, NimBLEConnInfo &connInfo) override {
+      DisplayGuard resourceGuard; // shared SerialFlash SPI and settings
       std::string uuidStr = pCharacteristic->getUUID().toString();
       size_t dataLen = pCharacteristic->getValue().length();
 
@@ -1050,6 +1088,10 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
             forceExitSetup = true;
          }
          else if (cmd == "START") {
+            if (!imageStorageReady || httpStorageBusy.load()) {
+               Serial.println("[BLE] Image storage busy with HTTP");
+               return;
+            }
             if (bleWriteBuffer == nullptr) {
                bleWriteBuffer = (uint8_t *)malloc(BLE_BUFFER_SIZE);
             }
@@ -1057,13 +1099,11 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
                Serial.println("[BLE] ERROR: Failed to allocate memory for image buffer!");
                return;
             }
-            if (SerialFlash.exists("tmp.bmp")) {
-               SerialFlashFile f = SerialFlash.open("tmp.bmp");
-               f.erase();
-               f.close();
+            if (!ImageStorage::prepare(ImageStorage::IMAGE_SLOT, EPD_WIDTH * EPD_HEIGHT / 2, bleFile)) {
+               free(bleWriteBuffer);
+               bleWriteBuffer = nullptr;
+               return;
             }
-            SerialFlash.createErasable("tmp.bmp", (EPD_WIDTH * EPD_HEIGHT / 2) + 200); // Added 200 bytes for BMP header
-            bleFile = SerialFlash.open("tmp.bmp");
             bleBytesReceived = 0;
             bleWriteBufferPos = 0;
             // Modus automatisch auf Lokales Bild (BLE) wechseln
@@ -1077,7 +1117,10 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
                bleWriteBufferPos = 0;
             }
             else if (bleFile && bleWriteBufferPos > 0) {
-               bleFile.write(bleWriteBuffer, bleWriteBufferPos);
+               if (!ImageStorage::write(bleFile, bleWriteBuffer, bleWriteBufferPos)) {
+                  bleFile = SerialFlashFile();
+                  return;
+               }
                bleBytesReceived += bleWriteBufferPos;
                bleWriteBufferPos = 0;
             }
@@ -1089,11 +1132,15 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
          else if (cmd == "END") {
             if (bleFile) {
                if (bleWriteBufferPos > 0) {
-                  bleFile.write(bleWriteBuffer, bleWriteBufferPos);
+                  if (!ImageStorage::write(bleFile, bleWriteBuffer, bleWriteBufferPos)) {
+                  bleFile = SerialFlashFile();
+                  return;
+               }
                   bleBytesReceived += bleWriteBufferPos;
                   bleWriteBufferPos = 0;
                }
-               bleFile.close();
+               ImageStorage::finish(ImageStorage::IMAGE_SLOT, bleFile,
+                                    EPD_WIDTH * EPD_HEIGHT / 2, bleBytesReceived, true);
             }
             if (bleWriteBuffer != nullptr) {
                free(bleWriteBuffer);
@@ -1161,6 +1208,7 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
       else if (uuidStr == "10000003-0000-0000-0000-000000000001") {
          const uint8_t *pData = pCharacteristic->getValue().data();
          if ((bleFile || fwUpdateInProgress) && pData && dataLen > 4 && bleWriteBuffer != nullptr) {
+            if (httpStorageBusy.load()) return;
             uint32_t packetCrc = pData[0] | (pData[1] << 8) | (pData[2] << 16) | (pData[3] << 24);
             size_t actualDataLen = dataLen - 4;
             uint32_t calculatedCrc = calcCRC32(pData + 4, actualDataLen);
@@ -1350,160 +1398,157 @@ bool BleInit(String deviceId, bool enable) {
    return true;
 }
 // https://forum.arduino.cc/index.php?topic=565603.0
+// Download to a checked allocation. Preconverted BMP uses one file, no copy.
 int downloadAndSaveFile(String fileName, String url) {
-   int success = 0;
-   int systemFileSize = 0;
+   serverSuggestedSleepSeconds = 0;
+   serverSleepHeaderAtMs = 0;
    tempLastModified = "";
+   downloadedDirectBmp = false;
    WiFi.setSleep(false);
    WiFiClientSecure secureClient;
    secureClient.setInsecure();
    HTTPClient http;
    http.setTimeout(10000);
-   http.setReuse(true);
-
-   if (url.indexOf("https:") >= 0) {
-      Serial.println("[DL] Download HTTPS");
-      http.begin(secureClient, url);
-   }
-   else {
-      Serial.println("[DL] Download HTTP");
-      http.begin(url);
-   }
-
-   if (settings.httpAuthUser.length() > 0) {
+   http.setReuse(false);
+   if (url.startsWith("https:")) http.begin(secureClient, url);
+   else http.begin(url);
+   if (settings.httpAuthUser.length())
       http.setAuthorization(settings.httpAuthUser.c_str(), settings.httpAuthPassword.c_str());
-      Serial.println("[DL] HTTP Auth enabled");
+   bool haveLocalImage = ImageStorage::logicalLength() > 0;
+   if (haveLocalImage && settings.lastModified.startsWith("etag:")) {
+      http.addHeader("If-None-Match", settings.lastModified.substring(5));
    }
-
-   const char *headerKeys[] = {"Last-Modified"};
-   http.collectHeaders(headerKeys, 1);
-
-   int httpCode = http.GET();
-
-   if (httpCode > 0) {
-      // file found at server
-      if (httpCode == HTTP_CODE_OK) {
-         String lastMod = http.header("Last-Modified");
-         if (lastMod.length() > 0 && lastMod == settings.lastModified) {
-            Serial.println("[DL] File not modified, skipping download.");
-            http.end();
-            return 1; // 1 means not modified
+   else if (haveLocalImage && settings.lastModified.startsWith("last-modified:")) {
+      http.addHeader("If-Modified-Since", settings.lastModified.substring(14));
+   }
+   else if (haveLocalImage && settings.lastModified.length() > 0) {
+      // Compatibility with validators saved by releases before typed validators.
+      http.addHeader("If-Modified-Since", settings.lastModified);
+   }
+   const char *headerKeys[] = {"ETag", "Last-Modified", "X-OpenPaper-Sleep-Seconds"};
+   http.collectHeaders(headerKeys, 3);
+   int code = http.GET();
+   String serverSleep = http.header("X-OpenPaper-Sleep-Seconds");
+   int parsedServerSleep = 0;
+   const uint32_t receivedAtMs = millis();
+   const bool successfulStatus = code == HTTP_CODE_OK ||
+                                 (code == HTTP_CODE_NOT_MODIFIED && haveLocalImage);
+   if (successfulStatus && !DeviceWake::parseSleepSeconds(serverSleep.c_str(), parsedServerSleep) &&
+       serverSleep.length() > 0) {
+      Serial.println("[SLEEP] Ignoring invalid server sleep header");
+   }
+   // Publish only after the complete request succeeds, including body/storage checks.
+   auto acceptSleep = [&]() {
+      if (parsedServerSleep > 0) {
+         serverSuggestedSleepSeconds = parsedServerSleep;
+         serverSleepHeaderAtMs = receivedAtMs;
+         Serial.printf("[SLEEP] Server suggestion accepted seconds=%d\n", parsedServerSleep);
+      }
+   };
+   if (code == HTTP_CODE_NOT_MODIFIED && haveLocalImage) {
+      Serial.println("[DL] Image unchanged (HTTP 304); skipping flash write and display refresh");
+      http.end();
+      acceptSleep();
+      return 1;
+   }
+   if (code != HTTP_CODE_OK) {
+      Serial.printf("[DL] HTTP status=%d\n", code);
+      http.end();
+      return -2;
+   }
+   String etag = http.header("ETag");
+   String lastMod = http.header("Last-Modified");
+   String responseValidator = "";
+   // The EEPROM field is 130 bytes wide. Keep the value plus terminator inside
+   // that field even when a server sends an unexpectedly large validator.
+   constexpr size_t MAX_STORED_VALIDATOR_LENGTH = 128;
+   if (etag.length() > 0 && etag.length() + 5 <= MAX_STORED_VALIDATOR_LENGTH)
+      responseValidator = "etag:" + etag;
+   else if (lastMod.length() > 0 && lastMod.length() + 14 <= MAX_STORED_VALIDATOR_LENGTH)
+      responseValidator = "last-modified:" + lastMod;
+   else if (etag.length() > 0 || lastMod.length() > 0)
+      Serial.println("[DL] HTTP image validator too long; not persisting it");
+   bool usingLastModified = responseValidator.startsWith("last-modified:");
+   bool legacyLastModifiedMatch = usingLastModified && settings.lastModified == lastMod;
+   if (haveLocalImage && responseValidator.length() > 0 &&
+       (settings.lastModified == responseValidator || legacyLastModifiedMatch)) {
+      Serial.printf("[DL] Image unchanged (%s); skipping flash write and display refresh\n",
+                    usingLastModified ? "Last-Modified" : "ETag");
+      http.end();
+      acceptSleep();
+      return 1;
+   }
+   int length = http.getSize();
+   httpFileSize = length;
+   Serial.printf("[DL] Download Size: %d\n", length);
+   if (length < 54) { http.end(); return -8; }
+   auto *stream = http.getStreamPtr();
+   stream->setTimeout(10000);
+   uint8_t header[54];
+   if (stream->readBytes(header, sizeof(header)) != sizeof(header)) {
+      http.end(); return -4;
+   }
+   bool bmp4 = ImageFormat::isBmp4(header);
+   if (bmp4) {
+#ifdef EPD_TYPE_13INCH
+      const int32_t width = 1200, height = 1600;
+#else
+      const int32_t width = EPD_WIDTH, height = EPD_HEIGHT;
+#endif
+      // Driver ignores palette/direction: accept only the exact top-down geometry.
+      if (!ImageFormat::validBmp4(header, length, width, height)) {
+         Serial.println("[DL] Unsupported 4-bit BMP layout");
+         http.end(); return -8;
+      }
+      fileName = "tmp.bmp";
+   }
+   // Reject conversion inputs before touching the slot: source + output would
+   // require another flash allocation. The server already supplies this BMP format.
+   if (!bmp4) {
+      Serial.println("[DL] Fixed slot requires top-down 4-bit BMP; conversion input rejected");
+      http.end(); return -8;
+   }
+   fileName = ImageStorage::IMAGE_SLOT;
+   if (!imageTransaction(true)) { http.end(); return -9; }
+   settings.lastModified = "";
+   saveSettingsToFlash(EEPROM_SETTINGS_ADR);
+   bool allocated = ImageStorage::prepare(ImageStorage::IMAGE_SLOT, length, saveFile);
+   uint32_t written = 0;
+   bool ok = allocated;
+   if (ok) {
+      ok = ImageStorage::write(saveFile, header, sizeof(header));
+      if (ok) written = sizeof(header);
+   }
+   uint8_t buffer[2048];
+   uint32_t lastData = millis();
+   while (ok && written < uint32_t(length)) {
+      int available = stream->available();
+      if (available > 0) {
+         size_t wanted = std::min(sizeof(buffer), size_t(length - written));
+         wanted = std::min(wanted, size_t(available));
+         int count = stream->read(buffer, wanted);
+         if (count <= 0 || !ImageStorage::write(saveFile, buffer, count)) { ok = false; break; }
+         written += count;
+         lastData = millis();
+      } else {
+         if (!http.connected() || WiFi.status() != WL_CONNECTED || millis() - lastData >= 15000) {
+            ok = false; break;
          }
-
-         int len = http.getSize();
-         httpFileSize = len;
-
-         if (SerialFlash.exists(fileName.c_str())) {
-            Serial.println("[FLASH] Delete File");
-            saveFile = SerialFlash.open(fileName.c_str());
-            saveFile.erase();
-            saveFile.close();
-         }
-
-         SerialFlash.createErasable(fileName.c_str(), httpFileSize);
-         saveFile = SerialFlash.open(fileName.c_str());
-         Serial.print("[DL] Download Size: ");
-         Serial.println(len);
-         int buff_size = 2048;
-         unsigned char *buff = (unsigned char *)malloc(buff_size);
-         if (buff == nullptr) {
-            Serial.println("[DL] WARNING: Failed to allocate 2048 bytes, trying 512 bytes...");
-            buff_size = 512;
-            buff = (unsigned char *)malloc(buff_size);
-         }
-         if (buff == nullptr) {
-            Serial.println("[DL] ERROR: Failed to allocate memory for download buffer!");
-            saveFile.close();
-            http.end();
-            return -1;
-         }
-
-         WiFiClient *stream = http.getStreamPtr();
-         int write_buffer_pos = 0;
-         unsigned long lastDataTime = millis();
-         bool dlFailed = false;
-
-         while ((http.connected() || stream->available() > 0) && (len > 0 || len == -1)) {
-            int available_bytes = stream->available();
-            if (available_bytes > 0) {
-               int space_left = buff_size - write_buffer_pos;
-               int to_read = (available_bytes > space_left) ? space_left : available_bytes;
-               int c = stream->read(buff + write_buffer_pos, to_read);
-               if (c > 0) {
-                  lastDataTime = millis();
-                  write_buffer_pos += c;
-                  if (len > 0) {
-                     len -= c;
-                  }
-                  if (write_buffer_pos >= buff_size) {
-                     saveFile.write(buff, buff_size);
-                     write_buffer_pos = 0;
-                  }
-               }
-               else if (c < 0) {
-                  Serial.println("[DL] Stream read error");
-                  dlFailed = true;
-                  break;
-               }
-            }
-            else {
-               // No data available currently
-               if (millis() - lastDataTime > 15000) {
-                  Serial.println("[DL] Stream read timeout");
-                  dlFailed = true;
-                  break;
-               }
-               delay(1);
-            }
-
-            if (WiFi.status() != WL_CONNECTED) {
-               Serial.println("[DL] WiFi disconnected during download");
-               dlFailed = true;
-               break;
-            }
-         }
-
-         // Flush any remaining data to flash
-         if (!dlFailed && write_buffer_pos > 0) {
-            saveFile.write(buff, write_buffer_pos);
-         }
-         free(buff);
-
-         if (dlFailed || WiFi.status() != WL_CONNECTED) {
-            http.end();
-            saveFile.close();
-            return -4;
-         }
-
-         systemFileSize = saveFile.size();
-         Serial.print("[FLASH] File size: ");
-         Serial.println(systemFileSize);
-         Serial.print("[DL] File Diff: ");
-         int dif = systemFileSize - httpFileSize;
-         Serial.println(dif);
-         int maxDif = (httpFileSize / 80) * -1;
-         if (maxDif > -2000) {
-            maxDif = -5000;
-         }
-         Serial.print("[DL] MAX Diff: ");
-         Serial.println(maxDif);
-         if (dif < maxDif) {
-            success = -8;
-         }
-         else {
-            if (lastMod.length() > 0) {
-               tempLastModified = lastMod;
-            }
-         }
-         saveFile.close();
+         delay(1);
       }
    }
-   else {
-      Serial.println("[DL] Error on HTTP request");
-      success = -2;
-   }
+   Serial.printf("[DL] Stored need=%d allocated=%u verified=%u free_tail=%u ok=%d\n",
+                 length, saveFile.size(), written, ImageStorage::inspect().tailFree, ok);
+   ok = ImageStorage::finish(fileName.c_str(), saveFile, length, written, ok);
    http.end();
-   return success;
+   if (!ok) {
+      if (discardHttpImages()) imageTransaction(false);
+      return -8;
+   }
+   downloadedDirectBmp = bmp4;
+   tempLastModified = responseValidator;
+   acceptSleep();
+   return 0; // transaction commits only after processing has also succeeded
 }
 
 // https://github.com/zenmanenergy/ESP8266-Arduino-Examples/blob/master/helloWorld_urlencoded/urlencode.ino
@@ -1567,12 +1612,14 @@ int storeSleepTimeMem(int updateTime) {
 }
 
 void debugFS() {
+   DisplayGuard resourceGuard;
 #if DEBUG
    Serial.printf("[MAIN] SPIFFS usage %d/%d heap free: %d/%d\n", SPIFFS.usedBytes(), SPIFFS.totalBytes(), ESP.getFreeHeap(), ESP.getHeapSize());
 #endif
 }
 
 void sdTest() {
+   DisplayGuard resourceGuard;
    // Test read/write
    FsFile testFile;
    if (testFile.open("test.txt", O_WRONLY | O_CREAT | O_TRUNC)) {
@@ -1599,6 +1646,7 @@ void sdTest() {
 }
 
 bool sdInit() {
+   DisplayGuard resourceGuard;
    if (systemData.sdReady) {
       if (DEBUG_FLAG)
          Serial.println("[SD] skip, init is done...");
@@ -1644,6 +1692,7 @@ bool sdInit() {
 }
 
 int loadImageFromWeb(String url, String fileName) {
+   DisplayGuard resourceGuard;
    if (url.length() < 1)
       return -2;
    Serial.print("[DL] Download Image file: ");
@@ -1655,11 +1704,10 @@ int loadImageFromWeb(String url, String fileName) {
       debugFS();
       downloadOk = downloadAndSaveFile(fileName, newUrl);
       if (downloadOk == 0 || downloadOk == 1) {
-         if (settings.forceDownload)
-            downloadOk = 0;
          return downloadOk;
       }
       else {
+         if (SerialFlash.failed()) return -9;
          if (WiFi.status() != WL_CONNECTED) {
             WiFi.disconnect(true);
             WiFi.begin(wifiSettings.ssid.c_str(), wifiSettings.pss.c_str());
@@ -1707,6 +1755,7 @@ void setDeviceUid() {
 
 // sleep x seconds
 void gotToDeepSleep(int wakeuptimeout, bool showScreen, bool motionWake) {
+   DisplayGuard resourceGuard;
    Serial.printf("[MAIN] Going to Sleep for %d seconds (MotionWake: %d)\n", wakeuptimeout, motionWake);
    checkOrientationInBackground(0, false);
    if (!settings.sleepDisabled)
@@ -1724,7 +1773,7 @@ void gotToDeepSleep(int wakeuptimeout, bool showScreen, bool motionWake) {
    }
    ledBlink(0, false);
    delay(5);
-   display.hibernate();
+   displayHibernate();
    powerSupplyDisplay(false);
    delay(5);
    // digitalWrite(RST_PIN, 0);
@@ -1897,7 +1946,9 @@ bool usbCheckConnect() {
 }
 
 int accInit(bool skipInit) {
+   DisplayGuard resourceGuard;
    int orientation = 0;
+   bool sampleValid = true;
    if (!skipInit) {
       if (myIMU.begin(6.25, 2, false) == IMU_SUCCESS) {
          if (DEBUG_FLAG)
@@ -1924,6 +1975,7 @@ int accInit(bool skipInit) {
 #endif
    }
    myIMU.standby(false);
+   delay(180); // allow a fresh 6.25-Hz sample after leaving standby
 
    uint8_t dataLowRes = 0;
    int acc_x = 0;
@@ -1935,21 +1987,21 @@ int accInit(bool skipInit) {
       // Read accelerometer data in mg as Float
       float acc_x_loc = myIMU.axisAccel(X);
       acc_x = round((int)(acc_x_loc * 10));
-   }
+   } else { sampleValid = false; }
 
    if (myIMU.readRegister(&dataLowRes, KXTJ3_YOUT_H) ==
        IMU_SUCCESS) {
       // Read accelerometer data in mg as Float
       float acc_y_loc = myIMU.axisAccel(Y);
       acc_y = round((int)(acc_y_loc * 10));
-   }
+   } else { sampleValid = false; }
 
    if (myIMU.readRegister(&dataLowRes, KXTJ3_ZOUT_H) ==
        IMU_SUCCESS) {
       // Read accelerometer data in mg as Float
       float acc_z_loc = myIMU.axisAccel(Z);
       acc_z = round((int)(acc_z_loc * 10));
-   }
+   } else { sampleValid = false; }
 
    if (acc_x > 5 && acc_y < 5 && acc_y > -5) {
       orientation = 0;
@@ -1970,10 +2022,11 @@ int accInit(bool skipInit) {
    // Put IMU back into standby
    myIMU.resetInterrupt();
    myIMU.standby(true);
-   return orientation;
+   return sampleValid ? orientation : -1;
 }
 
 bool accIntSet(int sensity) {
+   DisplayGuard resourceGuard;
    pinMode(INT_PIN, INPUT);
    if (sensity == 0) {
       myIMU.resetInterrupt();
@@ -1988,28 +2041,26 @@ bool accIntSet(int sensity) {
 }
 
 void recheckAccOrient(int setOrientValue) {
-   if (stopAccRecheck)
-      return;
-   int accCheck = accInit(true);
-   if (accCheck != readIntFromFlash(220)) {
+   (void)setOrientValue;
+   if (!stopAccRecheck.load()) rotationRequests.request();
+}
+
+void serviceOrientation(bool force) {
+   DisplayGuard resourceGuard;
+   if (epaperIsUpdating.load()) return;
+   if (!rotationRequests.take() && !force) return;
+   if (!settings.autoRotation) return;
+   // KXTJ3 runs at 6.25 Hz. Two matching samples separated by >160 ms
+   // qualify orientation; retain the last stable value if the device is moving.
+   const int first = accInit(true);
+   const int second = accInit(true);
+   if (first < 0 || first != second) { rotationRequests.request(); return; }
+   systemData.deviceOrientation = second;
+   displaySetRotation(second == 2 || second == 3 ? 1 : 0);
+   if (second != readIntFromFlash(220)) {
       isOrientUpdate = true;
-      systemData.deviceOrientation = accCheck;
-      Serial.printf("[ACC] Update Orient to Mem: %d \n", systemData.deviceOrientation);
-      writeIntToFlash(systemData.deviceOrientation, 220);
-      // writeIntToFlash(0, 150);  // Reset picture version after ota to init update
-      if (systemData.deviceOrientation == 2 || systemData.deviceOrientation == 3) {
-         displaySetRotation(1);
-      }
-      else {
-         displaySetRotation(0);
-      }
-      if (isEpaperActive()) {
-         deinitDisplay();
-         // ESP.restart();
-      }
-   }
-   else {
-      // if (DEBUG_FLAG) Serial.printf("[ACC] No Acc Update after recheck\n");
+      Serial.printf("[ACC] Update Orient to Mem: %d \n", second);
+      writeIntToFlash(second, 220);
    }
 }
 
@@ -2067,15 +2118,12 @@ bool chargeMode(bool enable) {
 }
 
 bool resetAll(bool resetWifi) {
+   DisplayGuard resourceGuard;
    checkOrientationInBackground(0, false);
    Serial.printf("[MAIN] Reset - WIFI %d \n", resetWifi);
    writeIntToFlash(0, 220);          // restore screen orient to default
    storeSleepTimeMem(DEFAULT_SLEEP); // restore sleep mem store to default
-   if (SerialFlash.exists("tmp.bmp")) {
-      SerialFlashFile f = SerialFlash.open("tmp.bmp");
-      f.erase();
-      f.close();
-   }
+   ImageStorage::discard(ImageStorage::IMAGE_SLOT); // retain permanent allocation
    settings.downloadUrl = "";
    settings.imageMode = 1;
    settings.timeout = DEFAULT_SLEEP;
@@ -2122,6 +2170,7 @@ void startupCounter(int reset) {
 
 // inputs: nopicture,turnon,updatepicture,wifiactivate,deviceactivate
 void updateDisplayAsyncFunction(int functionNumber) {
+   DisplayGuard resourceGuard;
    epaperIsUpdating = true;
    if (functionNumber == 1) {
       powerSupplyDisplay(true);
@@ -2175,6 +2224,7 @@ void runSetupMode() {
 
    // Wait for completion, disconnect, or timeout
    while (true) {
+      serviceOrientation();
       if (wifiScanRequested) {
          wifiScanRequested = false;
          Serial.println("[NETWORK] WiFi Scan requested via BLE, starting...");
@@ -2313,6 +2363,12 @@ void runSetupMode() {
 }
 
 int processHttpDownload(String fileName) {
+   DisplayGuard resourceGuard;
+   serverSuggestedSleepSeconds = 0;
+   serverSleepHeaderAtMs = 0;
+   if (!imageStorageReady || bleWriteBuffer != nullptr || httpStorageBusy.exchange(true)) return -9;
+   struct Unlock { ~Unlock() { httpStorageBusy.store(false); } } unlock;
+   conversionWriteOk = true;
    int dlSuccess = 0;
    if (WiFi.status() != WL_CONNECTED) {
       WiFi.begin(wifiSettings.ssid.c_str(), wifiSettings.pss.c_str());
@@ -2326,7 +2382,7 @@ int processHttpDownload(String fileName) {
    if (WiFi.status() == WL_CONNECTED) {
       dlSuccess = loadImageFromWeb(settings.downloadUrl, "tmp_raw.bin");
       if (dlSuccess == 0) {
-         if (processImageFile("tmp_raw.bin", fileName.c_str())) {
+         if (downloadedDirectBmp && ImageStorage::logicalLength()) {
             dlSuccess = 0;
          }
          else {
@@ -2334,11 +2390,23 @@ int processHttpDownload(String fileName) {
             dlSuccess = -1;
          }
       }
+      if (dlSuccess == 0) {
+         if (!imageTransaction(false)) dlSuccess = -9;
+      }
+      if (dlSuccess < 0) {
+         tempLastModified = "";
+         if (imageTransactionActive && discardHttpImages()) imageTransaction(false);
+         Serial.printf("[IMAGE] Download/processing failed code=%d; no valid partial image\n", dlSuccess);
+      }
       WiFi.setSleep(true);
    }
    else {
       Serial.println("[DL] WiFi Connection Failed");
       dlSuccess = -1;
+   }
+   if (dlSuccess < 0) {
+      serverSuggestedSleepSeconds = 0;
+      serverSleepHeaderAtMs = 0;
    }
    return dlSuccess;
 }
@@ -2370,6 +2438,7 @@ void initFirstBoot(void) {
 }
 
 void fetchRemoteSettings() {
+   DisplayGuard resourceGuard;
    if (settings.settingsUrl.length() == 0)
       return;
    if (WiFi.status() != WL_CONNECTED)
@@ -2410,7 +2479,11 @@ void fetchRemoteSettings() {
             changed = true;
          }
          if (doc["downloadUrl"].is<String>()) {
-            settings.downloadUrl = doc["downloadUrl"].as<String>();
+            String newDownloadUrl = doc["downloadUrl"].as<String>();
+            if (newDownloadUrl != settings.downloadUrl) {
+               settings.downloadUrl = newDownloadUrl;
+               settings.lastModified = "";
+            }
             changed = true;
             settings.imageMode = 1;
          }
@@ -2447,14 +2520,9 @@ void fetchRemoteSettings() {
 }
 
 void accUpdateOrient() {
-   systemData.deviceOrientation = accInit();
-   if (systemData.deviceOrientation == 2 || systemData.deviceOrientation == 3) {
-      displaySetRotation(1);
-   }
-   else {
-      displaySetRotation(0);
-   }
-   return;
+   DisplayGuard resourceGuard;
+   accInit();
+   serviceOrientation(true);
 }
 
 void test() {
@@ -2569,7 +2637,15 @@ void setup() {
 
    SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN); // SCK(), MISO(),MOSI(), SS()
    SPI.setFrequency(DISPLAY_SPI_SPEED);
-   SerialFlash.begin(CS_FLASH_PIN, DISPLAY_SPI_SPEED); // proceed even if begin() fails
+   // Image flash is external; its JEDEC capacity is independent of ESP32's 4 MB.
+   imageStorageReady = SerialFlash.begin(CS_FLASH_PIN, DISPLAY_SPI_SPEED) && recoverImageTransaction();
+   if (!imageStorageReady) {
+      Serial.println("[FLASH] Initialization/recovery failed; image downloads must fail closed");
+   }
+   Serial.println("[FLASH] Persistent image slot v3 (legacy tmp.gz recovery): 983040 bytes, allocation retained");
+   auto imageSpace = ImageStorage::inspect(true);
+   Serial.printf("[FLASH] External capacity=%u block=%u free_tail=%u valid=%d\n",
+                 imageSpace.capacity, imageSpace.block, imageSpace.tailFree, imageSpace.valid);
    powerSupplyDisplay(true);
    initEpaperDisplay(SPI);
    powerSupplyDisplay(false);
@@ -2621,6 +2697,7 @@ void setup() {
 }
 
 void loop() {
+   serviceOrientation();
 
    if (downloadStart) {
       BleInit(CLIENT_ID, false);
@@ -2636,7 +2713,7 @@ void loop() {
       int dlSuccess = 0;
 
       // Fallback: If in BLE mode but the file is missing and we have a download URL configured, switch to URL mode
-      if (settings.imageMode == 0 && !SerialFlash.exists(fileName.c_str()) && settings.downloadUrl.length() > 0) {
+      if (settings.imageMode == 0 && !ImageStorage::logicalLength() && settings.downloadUrl.length() > 0) {
          Serial.println("[IMAGE] BLE mode active but tmp.bmp is missing. Fallback to URL mode.");
          settings.imageMode = 1;
          saveSettingsToFlash(EEPROM_SETTINGS_ADR);
@@ -2669,6 +2746,7 @@ void loop() {
       delay(25);
 
       int setSuccess = 0;
+      if (!imageStorageReady) dlSuccess = -9;
       if (dlSuccess == 0 || dlSuccess == 1) { // 0 = downloaded/ok, 1 = not modified
          if (dlSuccess == 0 && bleImageApplied) {
             Serial.println("[IMAGE] Image was already applied during setup mode, skipping refresh.");
@@ -2701,17 +2779,24 @@ void loop() {
       }
 
       debugFS();
-      Serial.println("[MAIN] End of Update");
+      Serial.printf("[MAIN] End of Update download=%d display=%d\n", dlSuccess, setSuccess);
       if (settings.imageMode == 0) {
          gotToDeepSleep(0, false, false);
       }
       bool doMotionWake = (settings.imageMode == 1) ? settings.motionWakeup : false;
-      if (settings.timeout > 0) {
-         gotToDeepSleep(systemData.sleepPrediction, false, doMotionWake);
+      int configuredSleep = settings.timeout > 0 ? systemData.sleepPrediction : DEFAULT_SLEEP;
+      int nextSleep = configuredSleep;
+      if (settings.imageMode == 1 && dlSuccess < 0) {
+         nextSleep = DeviceWake::retrySleepSeconds(configuredSleep);
+         Serial.printf("[SLEEP] Download failed; retry in %d seconds\n", nextSleep);
       }
-      else {
-         gotToDeepSleep(DEFAULT_SLEEP, false, doMotionWake);
+      else if (settings.imageMode == 1 && serverSuggestedSleepSeconds > 0) {
+         nextSleep = DeviceWake::remainingSleepSeconds(
+             serverSuggestedSleepSeconds, serverSleepHeaderAtMs, millis());
+         Serial.printf("[SLEEP] Timetable wake in %d seconds (server=%d)\n",
+                       nextSleep, serverSuggestedSleepSeconds);
       }
+      gotToDeepSleep(nextSleep, false, doMotionWake);
    }
 
    // Keep alive for setup mode / BLE configs

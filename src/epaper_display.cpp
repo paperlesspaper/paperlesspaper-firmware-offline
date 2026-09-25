@@ -1,6 +1,9 @@
 #include "epaper_display.h"
 #include <Arduino.h>
 #include <SerialFlash.h>
+#include "image_storage.h"
+#include "image_format.h"
+#include "epaper_13inch_transfer.h"
 #include <WiFi.h>
 #include <qrcode.h>
 
@@ -37,7 +40,9 @@ DisplaySettings displaySettings = {
 
 QRCode QR;
 
-bool epaperIsUpdating = false;
+std::atomic<bool> epaperIsUpdating{false};
+static bool needsHibernate = true;
+extern bool powerSupplyDisplay(bool enable);
 static bool displayIsInit = false;
 static SPIClass *epd_spi_bus = nullptr;
 static char epd_client_id[20] = {0};
@@ -52,6 +57,7 @@ DisplayType display(GxEPD2_730c_GDEP073E01(/*CS=*/CS_EPD_PIN, /*DC=*/DC_PIN, /*R
 U8G2_FOR_ADAFRUIT_GFX u8g2_for_adafruit_gfx;
 
 void setDisplayData(const char *clientId, int vddValue) {
+   DisplayGuard resourceGuard;
    if (clientId) {
       strncpy(epd_client_id, clientId, sizeof(epd_client_id) - 1);
       epd_client_id[sizeof(epd_client_id) - 1] = '\0';
@@ -60,6 +66,7 @@ void setDisplayData(const char *clientId, int vddValue) {
 }
 
 void initEpaperDisplay(SPIClass &spiBus) {
+   DisplayGuard resourceGuard;
    epd_spi_bus = &spiBus;
    if (displayIsInit)
       return;
@@ -81,14 +88,23 @@ bool isEpaperActive() {
    return epaperIsUpdating;
 }
 
+void displayHibernate() {
+   DisplayGuard resourceGuard;
+   if (needsHibernate) {
+      display.hibernate();
+      needsHibernate = false;
+   }
+}
+
 void deinitDisplay() {
+   DisplayGuard resourceGuard;
    pinMode(RST_PIN, OUTPUT);
    digitalWrite(RST_PIN, 1);
    delay(50); // needs a little longer
    digitalWrite(RST_PIN, 0);
    delay(20);
    displayIsInit = false;
-   display.hibernate();
+   displayHibernate();
    pinMode(RST_PIN, INPUT);
    pinMode(CS_EPD_PIN, INPUT);
    pinMode(EPD_CS_S, INPUT);
@@ -96,6 +112,7 @@ void deinitDisplay() {
 }
 
 void displayTypeDetect() {
+   DisplayGuard resourceGuard;
    uint8_t reg9A[2] = {0};
    uint8_t patternDKE1[2] = {0x36, 0x42};
    uint8_t patternDKE2[2] = {0x36, 0x36};
@@ -103,6 +120,7 @@ void displayTypeDetect() {
    uint8_t patternOKRA2[2] = {0x33, 0x00}; // Das zweite Byte wird bei OKRA 2 manchmal nicht gesendet, wir prüfen primär das erste
 
    display.enableQuickRefresh(displaySettings.displayQuickRefreshTime, false);
+   needsHibernate = true;
    display.init(115200);
 
    epd_spi_bus->endTransaction();
@@ -154,6 +172,7 @@ void displayTypeDetect() {
 }
 
 void displaySetOverlayOption(DisplayInfoKey key, bool value) {
+   DisplayGuard resourceGuard;
    switch (key) {
    case DisplayInfoKey::VERSION:
       displayInfos.version = value;
@@ -177,6 +196,7 @@ void displaySetOverlayOption(DisplayInfoKey key, bool value) {
 }
 
 void displayOverlays(DisplayType &display, DisplayInfo displayData, bool invertColors, bool fullcolor) {
+   DisplayGuard resourceGuard;
    int16_t tw = 0;
    int foreGround = GxEPD_WHITE_I;
    int backGround = GxEPD_BLACK_I;
@@ -283,6 +303,7 @@ void displayOverlays(DisplayType &display, DisplayInfo displayData, bool invertC
 }
 
 int setImageFromFS_7inch(String fileName) {
+   DisplayGuard resourceGuard;
    epaperIsUpdating = true;
    saveFile = SerialFlash.open(fileName.c_str());
    if (!saveFile) {
@@ -318,6 +339,7 @@ int setImageFromFS_7inch(String fileName) {
    }
 
    display.enableQuickRefresh(displaySettings.displayQuickRefreshTime, false);
+   needsHibernate = true;
    display.init(115200);
    display.setRotation(displaySettings.rotationPicture);
    display.setFullWindow();
@@ -345,186 +367,113 @@ int setImageFromFS_7inch(String fileName) {
    while (display.nextPage());
 
    free(lineBuffer);
+   saveFile.close();
    Serial.println("[EPD] End Draw...");
    epaperIsUpdating = false;
    return 0;
 }
 
-int setImageFromFS_13inch(String fileName, bool doRefresh) {
-   epaperIsUpdating = true;
-   saveFile = SerialFlash.open(fileName.c_str());
-   if (!saveFile) {
-      Serial.println("[BMP] File missing");
-      return -1;
+#ifdef EPD_TYPE_13INCH
+namespace {
+struct Epd13IO {
+   void command(uint8_t half, uint8_t cmd, const uint8_t *data, uint32_t size) {
+      epd_spi_bus->beginTransaction(SPISettings(Epd13::SPI_HZ, MSBFIRST, SPI_MODE0));
+      digitalWrite(CS_EPD_PIN, half == 1 ? HIGH : LOW);
+      digitalWrite(EPD_CS_S, half == 0 ? HIGH : LOW);
+      epd_spi_bus->transfer(cmd);
+      if (size) epd_spi_bus->writeBytes(data, size);
+      digitalWrite(CS_EPD_PIN, HIGH);
+      digitalWrite(EPD_CS_S, HIGH);
+      epd_spi_bus->endTransaction();
    }
-
-   uint16_t width = EPD_WIDTH;
-   uint16_t height = EPD_HEIGHT;
-   int offsetData = 0;
-
-   // Check if the file is a standard BMP (starts with 'BM')
-   uint8_t magic[2];
-   saveFile.seek(0);
-   if (saveFile.read(magic, 2) == 2) {
-      if (magic[0] == 'B' && magic[1] == 'M') {
-         // It's a standard BMP file. Read the pixel data offset at byte 0x0A
-         saveFile.seek(0x0A);
-         uint32_t bmpOffset = 0;
-         saveFile.read((uint8_t *)&bmpOffset, 4);
-         offsetData = bmpOffset;
-         Serial.printf("[BMP] Detected Windows BMP. Pixel Data starts at offset: %d\n", offsetData);
-      }
-      else {
-         Serial.println("[BMP] Detected RAW payload (no BM magic). Reading from byte 4.");
-         offsetData = 0;
-      }
+   void yieldBus() { yield(); }
+   void halfComplete(uint8_t half, uint32_t bytes) {
+      Serial.printf("[EPD] RAM controller=%s complete pixels=%u bytes=%u\n",
+                    half ? "slave" : "master", bytes * 2, bytes);
    }
-
-   Serial.printf("[BMP] Loading Image H: %d W: %d\n", height, width);
-
-   if (width > EPD_WIDTH || height > EPD_HEIGHT) {
-      Serial.printf("[BMP] Image too wide or tall!");
-      return -1;
+   bool busy() { return digitalRead(BUSY_PIN) == LOW; }
+   uint32_t now() { return millis(); }
+   void pause(uint32_t ms) { delay(ms); }
+   void refreshBegin() {
+      Serial.println("[EPD] PANEL REFRESH BEGIN mode=FULL controllers=both DRF=0x12:00 quick=off busy_active_stable_ms=5 busy_idle_stable_ms=20");
    }
-
-   display.enableQuickRefresh(displaySettings.displayQuickRefreshTime, false);
-   display.init(115200);
-   display.clearScreen(0x01); // Clear screen memory
-
-   // EPD physical resolution is 1200x1600 (2 controllers of 600x1600 each)
-   const int physWidth = EPD_HEIGHT;
-   const int physHeight = EPD_WIDTH;
-
-   int numChunks = 16;
-   int linesPerChunk = physHeight / numChunks;
-   int bytesPerHalfLine = physWidth / 4;
-
-   uint8_t *chunkBuffer = (uint8_t *)malloc(linesPerChunk * bytesPerHalfLine);
-   if (!chunkBuffer) {
-      Serial.println("[BMP] Malloc for 16 chunks failed! Trying 32 chunks...");
-      numChunks = 32;
-      linesPerChunk = physHeight / numChunks;
-      chunkBuffer = (uint8_t *)malloc(linesPerChunk * bytesPerHalfLine);
-
-      if (!chunkBuffer) {
-         Serial.println("[BMP] Malloc for 32 chunks failed! Trying 64 chunks...");
-         numChunks = 64;
-         linesPerChunk = physHeight / numChunks;
-         chunkBuffer = (uint8_t *)malloc(linesPerChunk * bytesPerHalfLine);
-
-         if (!chunkBuffer) {
-            Serial.println("[BMP] Malloc for 64 chunks failed! Aborting.");
-            return -1;
-         }
-      }
+   void refreshEnd(uint32_t ms) {
+      Serial.printf("[EPD] PANEL REFRESH END busy_seen=1 busy_idle=1 idle_stable_ms=20 elapsed_ms=%u\n", ms);
    }
-
-   Serial.println("[EPD] Streaming Partial Image to Display... ");
-
-   for (int half = 0; half < 2; half++) {
-      int csPin = (half == 0) ? CS_EPD_PIN : EPD_CS_S;
-
-      for (int chunk = 0; chunk < numChunks; chunk++) {
-         int yImageStart = chunk * linesPerChunk;
-
-         uint16_t xStartCtrl = 0;
-         uint16_t xPixel = physWidth / 2; // 600 Pixel
-         uint16_t HRST = xStartCtrl * 2;
-         uint16_t HRED = (xStartCtrl + xPixel) * 2 - 1; // 1199
-         uint16_t VRST = yImageStart / 2;
-         uint16_t VRED = (yImageStart + linesPerChunk) / 2 - 1;
-
-         bool rotate180 = (displaySettings.rotationPicture > 0);
-
-         for (int i = 0; i < linesPerChunk; i++) {
-            int lineOnDisplay = yImageStart + i;
-            int lineInImage = rotate180 ? (physHeight - 1 - lineOnDisplay) : lineOnDisplay;
-            int srcHalf = rotate180 ? (1 - half) : half;
-
-            int byteOffsetInImage = (lineInImage * 600) + (srcHalf * 300);
-            saveFile.seek(offsetData + byteOffsetInImage);
-
-            if (rotate180) {
-               uint8_t tempLine[300];
-               saveFile.read(tempLine, bytesPerHalfLine);
-               for (int b = 0; b < bytesPerHalfLine; b++) {
-                  uint8_t origByte = tempLine[bytesPerHalfLine - 1 - b];
-                  // swap nibbles: left pixel becomes right pixel, right pixel becomes left pixel
-                  chunkBuffer[i * bytesPerHalfLine + b] = ((origByte & 0x0F) << 4) | (origByte >> 4);
-               }
-            }
-            else {
-               saveFile.read(chunkBuffer + i * bytesPerHalfLine, bytesPerHalfLine);
-            }
-         }
-         SPI.endTransaction();
-         SPI.beginTransaction(SPISettings(DISPLAY_SPI_SPEED, MSBFIRST, SPI_MODE0));
-
-         // PTLW (Partial Window) Command Setting 0x83
-         digitalWrite(csPin, LOW);
-         SPI.transfer(0x83);
-         SPI.transfer(HRST >> 8);
-         SPI.transfer(HRST & 0xFF);
-         SPI.transfer(HRED >> 8);
-         SPI.transfer(HRED & 0xFF);
-         SPI.transfer(VRST >> 8);
-         SPI.transfer(VRST & 0xFF);
-         SPI.transfer(VRED >> 8);
-         SPI.transfer(VRED & 0xFF);
-         SPI.transfer(0x01); // PTLW_ENABLE
-         digitalWrite(csPin, HIGH);
-         // PTIN (Partial In) command 0x91
-         digitalWrite(csPin, LOW);
-         SPI.transfer(0x91);
-         digitalWrite(csPin, HIGH);
-         // DTM command 0x10
-         digitalWrite(csPin, LOW);
-         SPI.transfer(0x10);
-
-         // Hardware LUT conversion
-         for (int i = 0; i < linesPerChunk * bytesPerHalfLine; i++) {
-            uint8_t low = getColor(chunkBuffer[i] & 0x0F);
-            uint8_t high = getColor(chunkBuffer[i] >> 4);
-            // uint8_t raw = chunkBuffer[i];
-            chunkBuffer[i] = (high << 4) | low;
-         }
-
-         SPI.writeBytes(chunkBuffer, linesPerChunk * bytesPerHalfLine);
-         digitalWrite(csPin, HIGH);
-
-         SPI.endTransaction();
-         delay(1);
-      }
-   }
-
-   free(chunkBuffer);
-
-   Serial.println("[EPD] End Partial Streaming... Refreshing now.");
-
-   // PTLW (Partial Window) für beide Controller wieder deaktivieren,
-   // damit der nachfolgende Refresh (DRF) den gesamten Bildschirm erfasst!
-   digitalWrite(CS_EPD_PIN, LOW);
-   SPI.transfer(0x83);
-   for (int i = 0; i < 9; i++)
-      SPI.transfer(0x00);
-   digitalWrite(CS_EPD_PIN, HIGH);
-
-   digitalWrite(EPD_CS_S, LOW);
-   SPI.transfer(0x83);
-   for (int i = 0; i < 9; i++)
-      SPI.transfer(0x00);
-   digitalWrite(EPD_CS_S, HIGH);
-
-   if (doRefresh) {
-      display.refresh();
-   }
-
-   saveFile.close();
-   epaperIsUpdating = false;
-   return 0;
+   void failure(const char *stage) { Serial.printf("[EPD] PANEL REFRESH FAILED stage=%s\n", stage); }
+};
 }
 
+int setImageFromFS_13inch(String fileName, bool doRefresh) {
+   DisplayGuard resourceGuard;
+   if (!epd_spi_bus) return -1;
+   auto frame = makeDisplayFrame([] {
+      serviceOrientation(true); // two matching samples, before any init/reset
+      epaperIsUpdating = true;
+      Serial.printf("[EPD] V6 orientation frozen rotation=%u\n", displaySettings.rotationPicture);
+      return int(displaySettings.rotationPicture);
+   }, [] {
+      saveFile.close();
+      saveFile = SerialFlashFile();
+      // Normal POF has already completed on success. On ANY error, cut the
+      // physical rail once; do not issue another POF into an uncertain BUSY state.
+      digitalWrite(CS_EPD_PIN, HIGH);
+      digitalWrite(EPD_CS_S, HIGH);
+      digitalWrite(RST_PIN, LOW);
+      powerSupplyDisplay(false);
+      needsHibernate = false; // later sleep must not call driver powerOff again
+      epaperIsUpdating = false;
+      Serial.println("[EPD] V6 cleanup complete; orientation released");
+      serviceOrientation(true); // current stable orientation after POF/cleanup
+   });
+   powerSupplyDisplay(true);
+   saveFile = SerialFlash.open(fileName.c_str());
+   uint32_t length = ImageStorage::logicalLength();
+   if (!saveFile || !length) return -1;
+   uint8_t header[54];
+   if (saveFile.read(header, sizeof(header)) != sizeof(header) || SerialFlash.failed()) return -1;
+   uint32_t offset = 0;
+   if (header[0] == 'B' && header[1] == 'M') {
+      if (!ImageFormat::validBmp4(header, length, Epd13::WIDTH, Epd13::HEIGHT)) return -1;
+      offset = ImageFormat::little32(header, 10);
+   } else if (length != Epd13::IMAGE_BYTES) return -1; // BLE packed raw frame
+
+   Serial.println("[EPD] Path=EL133UF3 full-image-v6 storage=persistent-slot-v3");
+   Serial.printf("[EPD] RAM coverage=FULL 1200x1600 controllers=2x600x1600 transport=strips rows=2 offset=%u\n", offset);
+   Serial.println("[EPD] Init=standard Spectra6 vendor registers PSR=DF69 waveform=built-in quick=off spi_hz=10000000");
+   display.enableQuickRefresh(0, false);
+   display.epd2.selectSPI(*epd_spi_bus, SPISettings(Epd13::SPI_HZ, MSBFIRST, SPI_MODE0));
+   display.epd2.init(115200); // explicit normal init, never initAlt or quick reset-stop
+   // This driver lazily initializes on a RAM write. clearScreen is RAM-only;
+   // it does NOT perform an optical white clear or an extra panel refresh.
+   display.clearScreen(0x01);
+   Epd13IO io;
+   if (!Epd13::waitIdle(io, 120000)) { io.failure("initialization timeout"); return -1; }
+   uint32_t written = 0;
+   auto read = [&](uint32_t address, uint8_t *data, uint32_t size) {
+      saveFile.seek(offset + address);
+      return saveFile.read(data, size) == size && !SerialFlash.failed();
+   };
+   if (!Epd13::writeFrame(io, read, getColor, frame.orientation > 0, written)) {
+      Serial.printf("[EPD] RAM transfer FAILED bytes=%u expected=960000; no refresh\n", written);
+      return -1;
+   }
+   Serial.printf("[EPD] RAM coverage=FULL complete pixels=%u bytes=%u (image only; RAM prefill=960000 bytes)\n", written * 2, written);
+   if (!doRefresh) {
+      Serial.println("[EPD] V6 RAM-only request completed with full refresh for safe ownership");
+   }
+   Serial.println("[EPD] Refresh=FULL full-window both controllers; single waveform; no optical pre-clear");
+   if (!Epd13::refreshFull(io)) return -1;
+   Serial.println("[EPD] POF complete; image update successful");
+   return 0;
+}
+#endif
+
+extern bool imageStorageReady;
 int setImageFromFS(String fileName, bool doRefresh) {
+   DisplayGuard resourceGuard;
+   if (!imageStorageReady || SerialFlash.failed() ||
+       fileName != ImageStorage::IMAGE_SLOT || !ImageStorage::logicalLength()) return -1;
 #ifdef EPD_TYPE_13INCH
    return setImageFromFS_13inch(fileName, doRefresh);
 #else
@@ -533,11 +482,15 @@ int setImageFromFS(String fileName, bool doRefresh) {
 }
 
 void displayWipe(bool quick) {
+   DisplayGuard resourceGuard;
+   powerSupplyDisplay(true);
    if (quick) {
       display.enableQuickRefresh(displaySettings.displayQuickRefreshTime, true);
+      needsHibernate = true;
       display.init(115200);
    }
    else {
+      needsHibernate = true;
       display.init(115200);
    }
 
@@ -546,6 +499,8 @@ void displayWipe(bool quick) {
 }
 
 void displaySetText(String info, bool isBlackboard, bool quickRefresh) {
+   DisplayGuard resourceGuard;
+   powerSupplyDisplay(true);
    int foreGround = GxEPD_BLACK_I;
    int backGround = GxEPD_WHITE_I;
    bool invert = false;
@@ -557,6 +512,7 @@ void displaySetText(String info, bool isBlackboard, bool quickRefresh) {
          backGround = GxEPD_BLACK;
       }
       display.enableQuickRefresh(displaySettings.displayQuickRefreshTime, true);
+      needsHibernate = true;
       display.init(115200);
    }
    else {
@@ -566,6 +522,7 @@ void displaySetText(String info, bool isBlackboard, bool quickRefresh) {
          backGround = GxEPD_BLACK_I;
       }
       display.enableQuickRefresh(displaySettings.displayQuickRefreshTime, false);
+      needsHibernate = true;
       display.init(115200);
    }
 
@@ -597,6 +554,8 @@ void displaySetText(String info, bool isBlackboard, bool quickRefresh) {
 }
 
 bool waitDisplayComplete(bool quick) {
+   DisplayGuard resourceGuard;
+   if (!needsHibernate) return true; // V6 already completed POF or cut the rail
    int counter = 0;
    while (counter < 20) {
       counter++;
@@ -616,6 +575,8 @@ bool waitDisplayComplete(bool quick) {
 }
 
 void displayTurnOn() {
+   DisplayGuard resourceGuard;
+   powerSupplyDisplay(true);
    String info = "Ich schlafe ...";
    String info2 = "Drücke die Taste auf der Rückseite";
    String info3 = "um mich zu wecken.";
@@ -637,11 +598,13 @@ void displayTurnOn() {
 
    Serial.print(F("\n[EPD] Press to turn on Screen Loading - "));
    if (displaySettings.quickRefresh) {
+      needsHibernate = true;
       display.init(115200);
       display.enableQuickRefresh(displaySettings.displayQuickRefreshTime, true);
    }
    else {
       display.enableQuickRefresh(0, false);
+      needsHibernate = true;
       display.init(115200);
       foreGround = GxEPD_WHITE;
       backGround = GxEPD_BLACK;
@@ -702,6 +665,7 @@ void displayTurnOn() {
 }
 
 void displaySetRotation(int orientation) {
+   DisplayGuard resourceGuard;
    switch (orientation) {
    case 0:
 #ifdef EPD_TYPE_13INCH
@@ -733,6 +697,7 @@ void displaySetRotation(int orientation) {
 }
 
 void displaySetQuickRefresh(bool enable, int refreshTime, int wipeTime) {
+   DisplayGuard resourceGuard;
    if (displaySettings.globalQuickRefreshDisable) {
       displaySettings.quickRefresh = false;
       return;
