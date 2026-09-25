@@ -10,6 +10,7 @@ static std::vector<uint8_t> memory;
 static uint32_t blockSizeValue = 65536;
 static bool dropDirectory = false, dropPixels = false, stuck = false;
 static unsigned directoryErases = 0, cases = 0, allocations = 0;
+static unsigned flashWrites = 0, blockErases = 0;
 static bool recoveryUsed = false;
 static unsigned recoveryGateCalls = 0;
 static int cutAfter = -1;
@@ -30,6 +31,7 @@ void SerialFlashChip::read(uint32_t address, void *buf, uint32_t len) {
     memcpy(buf, memory.data() + address, len);
 }
 void SerialFlashChip::write(uint32_t address, const void *buf, uint32_t len) {
+    ++flashWrites;
     assert(address <= memory.size() && len <= memory.size() - address);
     if ((dropDirectory && address < blockSizeValue) || (dropPixels && address >= blockSizeValue))
         return;
@@ -50,6 +52,7 @@ bool SerialFlashChip::awaitReady(uint32_t) {
 }
 bool SerialFlashChip::ready() { return !stuck; }
 void SerialFlashChip::eraseBlock(uint32_t address) {
+    ++blockErases;
     assert(address + blockSizeValue <= memory.size());
     powerTick();
     if (!address)

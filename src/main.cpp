@@ -28,6 +28,7 @@
 #include <rom/rtc.h>
 
 #include "epaper_display.h"
+#include "device_wake.h"
 #include "types.h"
 
 #if DEBUG
@@ -171,6 +172,8 @@ bool imageStorageReady = false;
 static bool downloadedDirectBmp = false;
 static bool conversionWriteOk = true;
 static bool imageTransactionActive = false;
+static int serverSuggestedSleepSeconds = 0;
+static uint32_t serverSleepHeaderAtMs = 0;
 static bool imageTransaction(bool pending) {
    Preferences metadata;
    if (!metadata.begin("image-cache", false)) return false;
@@ -1397,6 +1400,8 @@ bool BleInit(String deviceId, bool enable) {
 // https://forum.arduino.cc/index.php?topic=565603.0
 // Download to a checked allocation. Preconverted BMP uses one file, no copy.
 int downloadAndSaveFile(String fileName, String url) {
+   serverSuggestedSleepSeconds = 0;
+   serverSleepHeaderAtMs = 0;
    tempLastModified = "";
    downloadedDirectBmp = false;
    WiFi.setSleep(false);
@@ -1420,12 +1425,30 @@ int downloadAndSaveFile(String fileName, String url) {
       // Compatibility with validators saved by releases before typed validators.
       http.addHeader("If-Modified-Since", settings.lastModified);
    }
-   const char *headerKeys[] = {"ETag", "Last-Modified"};
-   http.collectHeaders(headerKeys, 2);
+   const char *headerKeys[] = {"ETag", "Last-Modified", "X-OpenPaper-Sleep-Seconds"};
+   http.collectHeaders(headerKeys, 3);
    int code = http.GET();
+   String serverSleep = http.header("X-OpenPaper-Sleep-Seconds");
+   int parsedServerSleep = 0;
+   const uint32_t receivedAtMs = millis();
+   const bool successfulStatus = code == HTTP_CODE_OK ||
+                                 (code == HTTP_CODE_NOT_MODIFIED && haveLocalImage);
+   if (successfulStatus && !DeviceWake::parseSleepSeconds(serverSleep.c_str(), parsedServerSleep) &&
+       serverSleep.length() > 0) {
+      Serial.println("[SLEEP] Ignoring invalid server sleep header");
+   }
+   // Publish only after the complete request succeeds, including body/storage checks.
+   auto acceptSleep = [&]() {
+      if (parsedServerSleep > 0) {
+         serverSuggestedSleepSeconds = parsedServerSleep;
+         serverSleepHeaderAtMs = receivedAtMs;
+         Serial.printf("[SLEEP] Server suggestion accepted seconds=%d\n", parsedServerSleep);
+      }
+   };
    if (code == HTTP_CODE_NOT_MODIFIED && haveLocalImage) {
       Serial.println("[DL] Image unchanged (HTTP 304); skipping flash write and display refresh");
       http.end();
+      acceptSleep();
       return 1;
    }
    if (code != HTTP_CODE_OK) {
@@ -1452,6 +1475,7 @@ int downloadAndSaveFile(String fileName, String url) {
       Serial.printf("[DL] Image unchanged (%s); skipping flash write and display refresh\n",
                     usingLastModified ? "Last-Modified" : "ETag");
       http.end();
+      acceptSleep();
       return 1;
    }
    int length = http.getSize();
@@ -1523,6 +1547,7 @@ int downloadAndSaveFile(String fileName, String url) {
    }
    downloadedDirectBmp = bmp4;
    tempLastModified = responseValidator;
+   acceptSleep();
    return 0; // transaction commits only after processing has also succeeded
 }
 
@@ -1679,8 +1704,6 @@ int loadImageFromWeb(String url, String fileName) {
       debugFS();
       downloadOk = downloadAndSaveFile(fileName, newUrl);
       if (downloadOk == 0 || downloadOk == 1) {
-         if (settings.forceDownload)
-            downloadOk = 0;
          return downloadOk;
       }
       else {
@@ -2341,6 +2364,8 @@ void runSetupMode() {
 
 int processHttpDownload(String fileName) {
    DisplayGuard resourceGuard;
+   serverSuggestedSleepSeconds = 0;
+   serverSleepHeaderAtMs = 0;
    if (!imageStorageReady || bleWriteBuffer != nullptr || httpStorageBusy.exchange(true)) return -9;
    struct Unlock { ~Unlock() { httpStorageBusy.store(false); } } unlock;
    conversionWriteOk = true;
@@ -2378,6 +2403,10 @@ int processHttpDownload(String fileName) {
    else {
       Serial.println("[DL] WiFi Connection Failed");
       dlSuccess = -1;
+   }
+   if (dlSuccess < 0) {
+      serverSuggestedSleepSeconds = 0;
+      serverSleepHeaderAtMs = 0;
    }
    return dlSuccess;
 }
@@ -2755,12 +2784,19 @@ void loop() {
          gotToDeepSleep(0, false, false);
       }
       bool doMotionWake = (settings.imageMode == 1) ? settings.motionWakeup : false;
-      if (settings.timeout > 0) {
-         gotToDeepSleep(systemData.sleepPrediction, false, doMotionWake);
+      int configuredSleep = settings.timeout > 0 ? systemData.sleepPrediction : DEFAULT_SLEEP;
+      int nextSleep = configuredSleep;
+      if (settings.imageMode == 1 && dlSuccess < 0) {
+         nextSleep = DeviceWake::retrySleepSeconds(configuredSleep);
+         Serial.printf("[SLEEP] Download failed; retry in %d seconds\n", nextSleep);
       }
-      else {
-         gotToDeepSleep(DEFAULT_SLEEP, false, doMotionWake);
+      else if (settings.imageMode == 1 && serverSuggestedSleepSeconds > 0) {
+         nextSleep = DeviceWake::remainingSleepSeconds(
+             serverSuggestedSleepSeconds, serverSleepHeaderAtMs, millis());
+         Serial.printf("[SLEEP] Timetable wake in %d seconds (server=%d)\n",
+                       nextSleep, serverSuggestedSleepSeconds);
       }
+      gotToDeepSleep(nextSleep, false, doMotionWake);
    }
 
    // Keep alive for setup mode / BLE configs
