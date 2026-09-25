@@ -10,6 +10,7 @@ public:
     using std::string::string;
     ArduinoString(const std::string &s) : std::string(s) {}
     bool startsWith(const char *s) const { return rfind(s, 0) == 0; }
+    ArduinoString substring(size_t pos) const { return ArduinoString(substr(pos)); }
 };
 #define String ArduinoString
 struct {
@@ -19,16 +20,22 @@ static String tempLastModified;
 static bool downloadedDirectBmp;
 static int httpFileSize;
 static SerialFlashFile saveFile;
-static const int EEPROM_SETTINGS_ADR = 0, HTTP_CODE_OK = 200, WL_CONNECTED = 3;
+static const int EEPROM_SETTINGS_ADR = 0, HTTP_CODE_OK = 200, HTTP_CODE_NOT_MODIFIED = 304, WL_CONNECTED = 3;
 static void saveSettingsToFlash(int) {}
-static bool imageTransaction(bool) { return true; }
+static unsigned transactionStarts;
+static bool imageTransaction(bool start) {
+    if (start) ++transactionStarts;
+    return true;
+}
 static bool discardHttpImages() { return ImageStorage::discard(ImageStorage::IMAGE_SLOT); }
 static unsigned long millis() { return 0; }
 static void delay(int) {}
 struct { void setSleep(bool) {} int status() { return WL_CONNECTED; } } WiFi;
 struct WiFiClientSecure { void setInsecure() {} };
 static std::vector<uint8_t> response;
-static std::string requestedUrl, responseHash;
+static std::string requestedUrl, responseEtag, responseLastModified;
+static std::vector<std::pair<std::string, std::string>> requestHeaders;
+static int responseStatus = HTTP_CODE_OK;
 static size_t disconnectAt;
 struct FakeStream {
     size_t pos = 0;
@@ -49,9 +56,14 @@ struct HTTPClient {
     void setTimeout(int) {}
     void setReuse(bool) {}
     void setAuthorization(const char *, const char *) {}
+    void addHeader(const String &name, const String &value) { requestHeaders.emplace_back(name, value); }
     void collectHeaders(const char **, int) {}
-    int GET() { return HTTP_CODE_OK; }
-    String header(const char *) { return String(responseHash); }
+    int GET() { return responseStatus; }
+    String header(const char *name) {
+        if (!strcmp(name, "ETag")) return String(responseEtag);
+        if (!strcmp(name, "Last-Modified")) return String(responseLastModified);
+        return String();
+    }
     void end() {}
     int getSize() { return response.size(); }
     FakeStream *getStreamPtr() { return &stream; }
@@ -71,8 +83,8 @@ int main() {
         put32(2, response.size()); put32(10, 118); put32(14, 40);
         put32(18, 1200); put32(22, uint32_t(-1600));
         String url = "http://fixture/image/" + std::to_string(i) + ".bmp";
-        responseHash = "hash-" + std::to_string(i);
-        settings.lastModified = responseHash; // even colliding validators cannot suppress a new URL
+        responseEtag = "\"hash-" + std::to_string(i) + "\"";
+        responseLastModified = "date-" + std::to_string(i);
         if (i == 5) {
             disconnectAt = 4096;
             assert(downloadAndSaveFile("tmp_raw.bin", url) < 0);
@@ -88,6 +100,7 @@ int main() {
             assert(!ImageStorage::logicalLength());
         }
         assert(downloadAndSaveFile("tmp_raw.bin", url) == 0);
+        settings.lastModified = tempLastModified;
         assert(requestedUrl == url && downloadedDirectBmp);
         assert(ImageStorage::logicalLength() == response.size());
         assert(allocations == 1 && directoryErases == 0 && ImageStorage::inspect().tailFree == 0);
@@ -97,5 +110,44 @@ int main() {
         file.close();
         SerialFlash.begin(21);
     }
-    std::puts("PASS: 24 production HTTP downloads, changing URL/hash/content, disconnect and power cut; allocations=1");
+
+    auto stored = std::vector<uint8_t>(response.size());
+    auto file = SerialFlash.open(ImageStorage::IMAGE_SLOT);
+    assert(file.read(stored.data(), stored.size()) == stored.size());
+    file.close();
+    unsigned startsBeforeSkip = transactionStarts;
+    requestHeaders.clear();
+    assert(downloadAndSaveFile("tmp_raw.bin", requestedUrl) == 1);
+    assert(transactionStarts == startsBeforeSkip);
+    assert(requestHeaders.size() == 1);
+    assert(requestHeaders[0].first == "If-None-Match");
+    assert(requestHeaders[0].second == responseEtag);
+    file = SerialFlash.open(ImageStorage::IMAGE_SLOT);
+    std::vector<uint8_t> afterSkip(response.size());
+    assert(file.read(afterSkip.data(), afterSkip.size()) == afterSkip.size() && afterSkip == stored);
+    file.close();
+
+    responseStatus = HTTP_CODE_NOT_MODIFIED;
+    assert(downloadAndSaveFile("tmp_raw.bin", requestedUrl) == 1);
+    responseStatus = HTTP_CODE_OK;
+
+    responseEtag.clear();
+    responseLastModified = "stable-date";
+    settings.lastModified = "last-modified:stable-date";
+    assert(downloadAndSaveFile("tmp_raw.bin", requestedUrl) == 1);
+    settings.lastModified = "stable-date";
+    assert(downloadAndSaveFile("tmp_raw.bin", requestedUrl) == 1);
+
+    responseEtag.assign(200, 'x');
+    settings.lastModified = "last-modified:stable-date";
+    assert(downloadAndSaveFile("tmp_raw.bin", requestedUrl) == 1);
+
+    reset(1048576);
+    responseEtag = "\"same-validator-but-no-local-file\"";
+    responseLastModified.clear();
+    settings.lastModified = "etag:\"same-validator-but-no-local-file\"";
+    assert(downloadAndSaveFile("tmp_raw.bin", requestedUrl) == 0);
+    assert(ImageStorage::logicalLength() == response.size());
+
+    std::puts("PASS: 24 production downloads plus ETag, Last-Modified, HTTP 304 and missing-slot validation; allocations=1");
 }

@@ -1409,15 +1409,51 @@ int downloadAndSaveFile(String fileName, String url) {
    else http.begin(url);
    if (settings.httpAuthUser.length())
       http.setAuthorization(settings.httpAuthUser.c_str(), settings.httpAuthPassword.c_str());
-   const char *headerKeys[] = {"Last-Modified"};
-   http.collectHeaders(headerKeys, 1);
+   bool haveLocalImage = ImageStorage::logicalLength() > 0;
+   if (haveLocalImage && settings.lastModified.startsWith("etag:")) {
+      http.addHeader("If-None-Match", settings.lastModified.substring(5));
+   }
+   else if (haveLocalImage && settings.lastModified.startsWith("last-modified:")) {
+      http.addHeader("If-Modified-Since", settings.lastModified.substring(14));
+   }
+   else if (haveLocalImage && settings.lastModified.length() > 0) {
+      // Compatibility with validators saved by releases before typed validators.
+      http.addHeader("If-Modified-Since", settings.lastModified);
+   }
+   const char *headerKeys[] = {"ETag", "Last-Modified"};
+   http.collectHeaders(headerKeys, 2);
    int code = http.GET();
+   if (code == HTTP_CODE_NOT_MODIFIED && haveLocalImage) {
+      Serial.println("[DL] Image unchanged (HTTP 304); skipping flash write and display refresh");
+      http.end();
+      return 1;
+   }
    if (code != HTTP_CODE_OK) {
       Serial.printf("[DL] HTTP status=%d\n", code);
       http.end();
       return -2;
    }
+   String etag = http.header("ETag");
    String lastMod = http.header("Last-Modified");
+   String responseValidator = "";
+   // The EEPROM field is 130 bytes wide. Keep the value plus terminator inside
+   // that field even when a server sends an unexpectedly large validator.
+   constexpr size_t MAX_STORED_VALIDATOR_LENGTH = 128;
+   if (etag.length() > 0 && etag.length() + 5 <= MAX_STORED_VALIDATOR_LENGTH)
+      responseValidator = "etag:" + etag;
+   else if (lastMod.length() > 0 && lastMod.length() + 14 <= MAX_STORED_VALIDATOR_LENGTH)
+      responseValidator = "last-modified:" + lastMod;
+   else if (etag.length() > 0 || lastMod.length() > 0)
+      Serial.println("[DL] HTTP image validator too long; not persisting it");
+   bool usingLastModified = responseValidator.startsWith("last-modified:");
+   bool legacyLastModifiedMatch = usingLastModified && settings.lastModified == lastMod;
+   if (haveLocalImage && responseValidator.length() > 0 &&
+       (settings.lastModified == responseValidator || legacyLastModifiedMatch)) {
+      Serial.printf("[DL] Image unchanged (%s); skipping flash write and display refresh\n",
+                    usingLastModified ? "Last-Modified" : "ETag");
+      http.end();
+      return 1;
+   }
    int length = http.getSize();
    httpFileSize = length;
    Serial.printf("[DL] Download Size: %d\n", length);
@@ -1486,7 +1522,7 @@ int downloadAndSaveFile(String fileName, String url) {
       return -8;
    }
    downloadedDirectBmp = bmp4;
-   tempLastModified = lastMod;
+   tempLastModified = responseValidator;
    return 0; // transaction commits only after processing has also succeeded
 }
 
@@ -2414,7 +2450,11 @@ void fetchRemoteSettings() {
             changed = true;
          }
          if (doc["downloadUrl"].is<String>()) {
-            settings.downloadUrl = doc["downloadUrl"].as<String>();
+            String newDownloadUrl = doc["downloadUrl"].as<String>();
+            if (newDownloadUrl != settings.downloadUrl) {
+               settings.downloadUrl = newDownloadUrl;
+               settings.lastModified = "";
+            }
             changed = true;
             settings.imageMode = 1;
          }
