@@ -2394,13 +2394,16 @@ void fetchRemoteSettings() {
          bool changed = false;
 
          if (doc["timeout"].is<int>()) {
-            settings.timeout = doc["timeout"];
-            changed = true;
-            // sleepPrediction was already computed in setup() with the old timeout
-            systemData.newSleepTimeSet = false;
-            storeSleepTimeMem(settings.timeout);
-            if (systemData.newSleepTimeSet)
-               systemData.sleepPrediction = calculateSleepDuration(settings.timeout, true, false);
+            int newTimeout = doc["timeout"];
+            if (newTimeout > 0) {
+               settings.timeout = newTimeout;
+               changed = true;
+               // sleepPrediction was already computed in setup() with the old timeout
+               systemData.newSleepTimeSet = false;
+               storeSleepTimeMem(settings.timeout);
+               if (systemData.newSleepTimeSet)
+                  systemData.sleepPrediction = calculateSleepDuration(settings.timeout, true, false);
+            }
          }
          if (doc["motionWakeup"].is<bool>()) {
             settings.motionWakeup = doc["motionWakeup"];
