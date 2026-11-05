@@ -282,56 +282,6 @@ void displayOverlays(DisplayType &display, DisplayInfo displayData, bool invertC
    }
 }
 
-static bool parseAndValidateImageFile(SerialFlashFile &file, uint32_t expectedPixelBytes, uint32_t &outOffset) {
-   outOffset = 0;
-   if (!file || file.size() < expectedPixelBytes) {
-      return false;
-   }
-   if (file.size() >= expectedPixelBytes + 8) {
-      uint32_t trailer[2] = {0, 0};
-      file.seek(file.size() - 8);
-      if (file.read(trailer, 8) != 8) {
-         return false;
-      }
-      bool trailerValid = (trailer[0] == 0x50454E44UL && trailer[1] == 0x444F4E45UL) ||
-                          (trailer[0] == 0xFFFFFFFFUL && trailer[1] == 0xFFFFFFFFUL);
-      if (!trailerValid) {
-         Serial.println("[BMP] Image slot has uncommitted or interrupted write");
-         return false;
-      }
-   }
-
-   uint8_t magic[2] = {0xFF, 0xFF};
-   file.seek(0);
-   if (file.read(magic, 2) != 2) {
-      return false;
-   }
-   if (magic[0] == 0xFF && magic[1] == 0xFF) {
-      Serial.println("[BMP] Image slot is empty/erased");
-      return false;
-   }
-   if (magic[0] == 'B' && magic[1] == 'M') {
-      file.seek(0x0A);
-      uint32_t bmpOffset = 0;
-      if (file.read((uint8_t *)&bmpOffset, 4) != 4 || bmpOffset < 14 || bmpOffset > 65536) {
-         Serial.println("[BMP] Invalid BMP pixel offset");
-         return false;
-      }
-      outOffset = bmpOffset;
-      Serial.printf("[BMP] Detected Windows BMP. Pixel Data starts at offset: %u\n", outOffset);
-   }
-   else {
-      Serial.println("[BMP] Detected RAW payload (no BM magic). Reading from byte 0.");
-      outOffset = 0;
-   }
-
-   if (file.size() < outOffset + expectedPixelBytes) {
-      Serial.println("[BMP] Image file smaller than required pixel payload");
-      return false;
-   }
-   return true;
-}
-
 int setImageFromFS_7inch(String fileName) {
    epaperIsUpdating = true;
    saveFile = SerialFlash.open(fileName.c_str());
@@ -343,14 +293,39 @@ int setImageFromFS_7inch(String fileName) {
 
    uint16_t width = EPD_WIDTH;
    uint16_t height = EPD_HEIGHT;
-   uint32_t offsetData = 0;
-   if (!parseAndValidateImageFile(saveFile, (uint32_t)(EPD_WIDTH * EPD_HEIGHT / 2), offsetData)) {
+   int offsetData = 0;
+
+   // Check if the file is a standard BMP (starts with 'BM')
+   uint8_t magic[2] = {0xFF, 0xFF};
+   if (saveFile.read(magic, 2) == 2 && !(magic[0] == 0xFF && magic[1] == 0xFF)) {
+      if (magic[0] == 'B' && magic[1] == 'M') {
+         // It's a standard BMP file. Read the pixel data offset at byte 0x0A
+         saveFile.seek(0x0A);
+         uint32_t bmpOffset = 0;
+         saveFile.read((uint8_t *)&bmpOffset, 4);
+         offsetData = bmpOffset;
+         Serial.printf("[BMP] Detected Windows BMP. Pixel Data starts at offset: %d\n", offsetData);
+      }
+      else {
+         Serial.println("[BMP] Detected RAW payload (no BM magic). Reading from byte 0.");
+      }
+   }
+   else {
+      Serial.println("[BMP] Image slot is empty/erased");
       saveFile.close();
       epaperIsUpdating = false;
       return -1;
    }
 
    Serial.printf("[BMP] Loading Image H: %d W: %d\n", height, width);
+
+   if (width > EPD_WIDTH || height > EPD_HEIGHT || offsetData < 0 ||
+       saveFile.size() < (uint32_t)offsetData + (EPD_WIDTH * EPD_HEIGHT / 2)) {
+      Serial.printf("[BMP] Image invalid or smaller than required payload!\n");
+      saveFile.close();
+      epaperIsUpdating = false;
+      return -1;
+   }
 
    display.enableQuickRefresh(displaySettings.displayQuickRefreshTime, false);
    display.init(115200);
@@ -366,17 +341,13 @@ int setImageFromFS_7inch(String fileName) {
       return -1;
    }
 
-   bool readFailed = false;
    display.firstPage();
    do {
       display.fillScreen(GxEPD_WHITE);
       saveFile.seek(offsetData);
 
       for (int y = 0; y < height; y++) {
-         if (saveFile.read(lineBuffer, bufferSize) != (uint32_t)bufferSize) {
-            memset(lineBuffer, 0x66, bufferSize);
-            readFailed = true;
-         }
+         saveFile.read(lineBuffer, bufferSize);
          for (int x = 0; x < width; x++) {
             uint8_t colorData = lineBuffer[x / 2];
             uint8_t colorNibble = (x % 2 == 0) ? (colorData >> 4) : (colorData & 0x0F);
@@ -392,7 +363,7 @@ int setImageFromFS_7inch(String fileName) {
    saveFile.close();
    Serial.println("[EPD] End Draw...");
    epaperIsUpdating = false;
-   return readFailed ? -1 : 0;
+   return 0;
 }
 
 int setImageFromFS_13inch(String fileName, bool doRefresh) {
@@ -406,14 +377,41 @@ int setImageFromFS_13inch(String fileName, bool doRefresh) {
 
    uint16_t width = EPD_WIDTH;
    uint16_t height = EPD_HEIGHT;
-   uint32_t offsetData = 0;
-   if (!parseAndValidateImageFile(saveFile, (uint32_t)(EPD_WIDTH * EPD_HEIGHT / 2), offsetData)) {
+   int offsetData = 0;
+
+   // Check if the file is a standard BMP (starts with 'BM')
+   uint8_t magic[2] = {0xFF, 0xFF};
+   saveFile.seek(0);
+   if (saveFile.read(magic, 2) == 2 && !(magic[0] == 0xFF && magic[1] == 0xFF)) {
+      if (magic[0] == 'B' && magic[1] == 'M') {
+         // It's a standard BMP file. Read the pixel data offset at byte 0x0A
+         saveFile.seek(0x0A);
+         uint32_t bmpOffset = 0;
+         saveFile.read((uint8_t *)&bmpOffset, 4);
+         offsetData = bmpOffset;
+         Serial.printf("[BMP] Detected Windows BMP. Pixel Data starts at offset: %d\n", offsetData);
+      }
+      else {
+         Serial.println("[BMP] Detected RAW payload (no BM magic). Reading from byte 4.");
+         offsetData = 0;
+      }
+   }
+   else {
+      Serial.println("[BMP] Image slot is empty/erased");
       saveFile.close();
       epaperIsUpdating = false;
       return -1;
    }
 
    Serial.printf("[BMP] Loading Image H: %d W: %d\n", height, width);
+
+   if (width > EPD_WIDTH || height > EPD_HEIGHT || offsetData < 0 ||
+       saveFile.size() < (uint32_t)offsetData + (EPD_WIDTH * EPD_HEIGHT / 2)) {
+      Serial.printf("[BMP] Image invalid or smaller than required payload!\n");
+      saveFile.close();
+      epaperIsUpdating = false;
+      return -1;
+   }
 
    display.enableQuickRefresh(displaySettings.displayQuickRefreshTime, false);
    display.init(115200);
