@@ -200,6 +200,10 @@ bool buttonWake = false; // true if wakeup via reset button
 bool fwUpdateInProgress = false;
 bool stopAccRecheck = false;
 bool isOrientUpdate = false;
+uint32_t lastDownloadedBytes = 0;
+int serverSleepSeconds = 0;
+uint32_t serverSleepReceivedMs = 0;
+constexpr uint32_t IMAGE_SLOT_SIZE = (EPD_WIDTH * EPD_HEIGHT / 2) + 4096;
 uint8_t *strip_buffer = nullptr;
 int16_t err_curr[MAX_EPD_WIDTH * 3];
 int16_t err_next[MAX_EPD_WIDTH * 3];
@@ -302,7 +306,9 @@ uint8_t findClosestColor(int r, int g, int b) {
 void *myOpen(const char *filename, int32_t *size) {
    jpgInFile = SerialFlash.open(filename);
    if (jpgInFile) {
-      *size = jpgInFile.size();
+      *size = (lastDownloadedBytes > 0 && lastDownloadedBytes <= jpgInFile.size())
+                  ? (int32_t)lastDownloadedBytes
+                  : (int32_t)jpgInFile.size();
       return (void *)1;
    }
    return NULL;
@@ -426,31 +432,87 @@ int JPEGDraw(JPEGDRAW *pDraw) {
    return 1;
 }
 
+bool waitFlashReady(uint32_t timeoutMs = 10000) {
+   unsigned long start = millis();
+   while (!SerialFlash.ready()) {
+      if (millis() - start > timeoutMs) {
+         Serial.println("[FLASH] ERROR: Timeout waiting for SerialFlash ready!");
+         return false;
+      }
+      delay(1);
+   }
+   return true;
+}
+
+void discardFlashSlot(SerialFlashFile &file) {
+   if (file) {
+      file.erase();
+      waitFlashReady();
+      file.close();
+      file = SerialFlashFile();
+   }
+}
+
+bool prepareFlashSlot(const char *name, uint32_t requiredSize, SerialFlashFile &outFile) {
+   uint32_t targetSize = (requiredSize > IMAGE_SLOT_SIZE) ? requiredSize : IMAGE_SLOT_SIZE;
+   outFile = SerialFlash.open(name);
+   if (!outFile || outFile.size() < targetSize) {
+      if (outFile) {
+         SerialFlash.remove(outFile);
+         outFile.close();
+      }
+      if (!SerialFlash.createErasable(name, targetSize)) {
+         Serial.println("[FLASH] Slot allocation failed, resetting SerialFlash directory...");
+         SerialFlash.eraseBlock(0);
+         if (!waitFlashReady())
+            return false;
+         if (strcmp(name, "tmp.bmp") != 0)
+            SerialFlash.createErasable("tmp.bmp", IMAGE_SLOT_SIZE);
+         if (!SerialFlash.createErasable(name, targetSize)) {
+            Serial.println("[FLASH] ERROR: Failed to allocate SerialFlash slot!");
+            return false;
+         }
+      }
+      outFile = SerialFlash.open(name);
+   }
+   if (!outFile)
+      return false;
+   outFile.erase();
+   outFile.seek(0);
+   return waitFlashReady();
+}
+
+bool hasValidFlashImage(const char *name = "tmp.bmp") {
+   SerialFlashFile f = SerialFlash.open(name);
+   uint8_t magic[2] = {0xFF, 0xFF};
+   return f && f.size() >= (uint32_t)(EPD_WIDTH * EPD_HEIGHT / 2) &&
+          f.read(magic, 2) == 2 && !(magic[0] == 0xFF && magic[1] == 0xFF);
+}
+
 bool processImageFile(const char *rawFileName, const char *outFileName) {
    SerialFlashFile inFile = SerialFlash.open(rawFileName);
    if (!inFile)
       return false;
-   uint8_t magic[2];
+   uint8_t magic[2] = {0, 0};
    inFile.read(magic, 2);
    Serial.printf("[IMAGE] Read magic: 0x%02X 0x%02X from file '%s'\n", magic[0], magic[1], rawFileName);
    inFile.seek(0);
 
    if (magic[0] == 0xFF && magic[1] == 0xD8) {
       Serial.println("[IMAGE] JPEG detected. Dithering on-device...");
-      if (SerialFlash.exists(outFileName)) {
-         SerialFlashFile sf = SerialFlash.open(outFileName);
-         sf.erase();
-         sf.close();
-      }
-      SerialFlash.createErasable(outFileName, (EPD_WIDTH * EPD_HEIGHT / 2));
-      rawOutFile = SerialFlash.open(outFileName);
+      inFile.close();
+      if (!prepareFlashSlot(outFileName, IMAGE_SLOT_SIZE, rawOutFile))
+         return false;
 
       memset(err_curr, 0, sizeof(err_curr));
       memset(err_next, 0, sizeof(err_next));
       strip_y_start = 0;
       strip_height = 0;
 
-      jpeg.open(rawFileName, myOpen, myClose, myRead, mySeek, JPEGDraw);
+      if (!jpeg.open(rawFileName, myOpen, myClose, myRead, mySeek, JPEGDraw)) {
+         discardFlashSlot(rawOutFile);
+         return false;
+      }
       int scale = 0;
       if (jpeg.getWidth() > 3200) {
          scale = JPEG_SCALE_EIGHTH;
@@ -469,14 +531,21 @@ bool processImageFile(const char *rawFileName, const char *outFileName) {
       if (!strip_buffer) {
          Serial.println("[IMAGE] OOM allocating strip_buffer");
          jpeg.close();
-         rawOutFile.close();
+         discardFlashSlot(rawOutFile);
          return false;
       }
       current_out_y = 0;
 
-      jpeg.decode(0, 0, scale);
-      flushStripBuffer();
+      bool decodeOk = (jpeg.decode(0, 0, scale) == 1);
+      if (decodeOk)
+         flushStripBuffer();
       jpeg.close();
+      free(strip_buffer);
+      strip_buffer = nullptr;
+      if (!decodeOk) {
+         discardFlashSlot(rawOutFile);
+         return false;
+      }
 
       while (current_out_y < EPD_HEIGHT) {
          uint8_t whiteLine[MAX_EPD_WIDTH / 2];
@@ -485,47 +554,40 @@ bool processImageFile(const char *rawFileName, const char *outFileName) {
          current_out_y++;
       }
 
-      free(strip_buffer);
-      strip_buffer = nullptr;
+      waitFlashReady();
       rawOutFile.close();
       return true;
    }
    else if (magic[0] == 'B' && magic[1] == 'M') {
       inFile.seek(0x1C);
-      uint16_t bpp;
+      uint16_t bpp = 0;
       inFile.read((uint8_t *)&bpp, 2);
       if (bpp == 4) {
          Serial.println("[IMAGE] 4-bit BMP detected. Already dithered.");
-
-         if (SerialFlash.exists(outFileName)) {
-            SerialFlashFile sf = SerialFlash.open(outFileName);
-            sf.erase();
-            sf.close();
+         if (!prepareFlashSlot(outFileName, IMAGE_SLOT_SIZE, rawOutFile)) {
+            inFile.close();
+            return false;
          }
-         SerialFlash.createErasable(outFileName, inFile.size());
-         rawOutFile = SerialFlash.open(outFileName);
          inFile.seek(0);
          uint8_t buf[2048];
          int bytesRead;
          while ((bytesRead = inFile.read(buf, 2048)) > 0) {
             rawOutFile.write(buf, bytesRead);
          }
+         waitFlashReady();
          rawOutFile.close();
          inFile.close();
          return true;
       }
       else {
          Serial.println("[IMAGE] 24-bit BMP detected. Dithering...");
-         if (SerialFlash.exists(outFileName)) {
-            SerialFlashFile sf = SerialFlash.open(outFileName);
-            sf.erase();
-            sf.close();
+         if (!prepareFlashSlot(outFileName, IMAGE_SLOT_SIZE, rawOutFile)) {
+            inFile.close();
+            return false;
          }
-         SerialFlash.createErasable(outFileName, (EPD_WIDTH * EPD_HEIGHT / 2));
-         rawOutFile = SerialFlash.open(outFileName);
 
          inFile.seek(0x0A);
-         uint32_t offset;
+         uint32_t offset = 0;
          inFile.read((uint8_t *)&offset, 4);
          inFile.seek(offset);
 
@@ -597,6 +659,7 @@ bool processImageFile(const char *rawFileName, const char *outFileName) {
             memcpy(err_curr, err_next, sizeof(err_curr));
             memset(err_next, 0, sizeof(err_next));
          }
+         waitFlashReady();
          rawOutFile.close();
          inFile.close();
          return true;
@@ -604,20 +667,17 @@ bool processImageFile(const char *rawFileName, const char *outFileName) {
    }
    else if (magic[0] == 0x66 && magic[1] == 0x66) {
       Serial.println("[IMAGE] Raw dithered payload detected.");
-
-      if (SerialFlash.exists(outFileName)) {
-         SerialFlashFile sf = SerialFlash.open(outFileName);
-         sf.erase();
-         sf.close();
+      if (!prepareFlashSlot(outFileName, IMAGE_SLOT_SIZE, rawOutFile)) {
+         inFile.close();
+         return false;
       }
-      SerialFlash.createErasable(outFileName, inFile.size());
-      rawOutFile = SerialFlash.open(outFileName);
       inFile.seek(0);
       uint8_t buf[2048];
       int bytesRead;
       while ((bytesRead = inFile.read(buf, 2048)) > 0) {
          rawOutFile.write(buf, bytesRead);
       }
+      waitFlashReady();
       rawOutFile.close();
       inFile.close();
       return true;
@@ -935,6 +995,10 @@ class ServerCallbacks : public NimBLEServerCallbacks
       Serial.printf("\n[BLE] Client disconnected");
       isBleClientConnected = false;
       lastDisconnectTime = millis();
+      if (bleFile) {
+         Serial.println("\n[BLE] Upload interrupted by disconnect; discarding slot.");
+         discardFlashSlot(bleFile);
+      }
       if (bleWriteBuffer != nullptr) {
          free(bleWriteBuffer);
          bleWriteBuffer = nullptr;
@@ -1057,17 +1121,16 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
                Serial.println("[BLE] ERROR: Failed to allocate memory for image buffer!");
                return;
             }
-            if (SerialFlash.exists("tmp.bmp")) {
-               SerialFlashFile f = SerialFlash.open("tmp.bmp");
-               f.erase();
-               f.close();
+            if (!prepareFlashSlot("tmp.bmp", IMAGE_SLOT_SIZE, bleFile)) {
+               free(bleWriteBuffer);
+               bleWriteBuffer = nullptr;
+               return;
             }
-            SerialFlash.createErasable("tmp.bmp", (EPD_WIDTH * EPD_HEIGHT / 2) + 200); // Added 200 bytes for BMP header
-            bleFile = SerialFlash.open("tmp.bmp");
             bleBytesReceived = 0;
             bleWriteBufferPos = 0;
             // Modus automatisch auf Lokales Bild (BLE) wechseln
             settings.imageMode = 0;
+            settings.lastModified = "";
             saveSettingsToFlash(EEPROM_SETTINGS_ADR);
             Serial.println("[BLE] Upload STARTED. Switched to ImageMode 0.");
          }
@@ -1093,7 +1156,15 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
                   bleBytesReceived += bleWriteBufferPos;
                   bleWriteBufferPos = 0;
                }
-               bleFile.close();
+               if (bleBytesReceived < (EPD_WIDTH * EPD_HEIGHT / 2)) {
+                  Serial.printf("[BLE] WARNING: Incomplete BLE payload (%d bytes). Discarding!\n", bleBytesReceived);
+                  discardFlashSlot(bleFile);
+               }
+               else {
+                  waitFlashReady();
+                  bleFile.close();
+                  bleFile = SerialFlashFile();
+               }
             }
             if (bleWriteBuffer != nullptr) {
                free(bleWriteBuffer);
@@ -1352,14 +1423,16 @@ bool BleInit(String deviceId, bool enable) {
 // https://forum.arduino.cc/index.php?topic=565603.0
 int downloadAndSaveFile(String fileName, String url) {
    int success = 0;
-   int systemFileSize = 0;
    tempLastModified = "";
+   lastDownloadedBytes = 0;
+   serverSleepSeconds = 0;
    WiFi.setSleep(false);
    WiFiClientSecure secureClient;
    secureClient.setInsecure();
    HTTPClient http;
    http.setTimeout(10000);
    http.setReuse(true);
+   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 
    if (url.indexOf("https:") >= 0) {
       Serial.println("[DL] Download HTTPS");
@@ -1375,33 +1448,56 @@ int downloadAndSaveFile(String fileName, String url) {
       Serial.println("[DL] HTTP Auth enabled");
    }
 
-   const char *headerKeys[] = {"Last-Modified"};
-   http.collectHeaders(headerKeys, 1);
+   bool canSkipIfUnchanged = !settings.forceDownload && hasValidFlashImage("tmp.bmp");
+   if (canSkipIfUnchanged && settings.lastModified.length() > 0) {
+      if (settings.lastModified.startsWith("etag:"))
+         http.addHeader("If-None-Match", settings.lastModified.substring(5));
+      else
+         http.addHeader("If-Modified-Since", settings.lastModified);
+   }
+
+   const char *headerKeys[] = {"Last-Modified", "ETag", "X-OpenPaper-Sleep-Seconds"};
+   http.collectHeaders(headerKeys, 3);
 
    int httpCode = http.GET();
+   int srvSleep = http.header("X-OpenPaper-Sleep-Seconds").toInt();
+   uint32_t srvSleepAtMs = millis();
+
+   if (httpCode == HTTP_CODE_NOT_MODIFIED && canSkipIfUnchanged) {
+      Serial.println("[DL] Image unchanged (HTTP 304); skipping download.");
+      if (srvSleep >= 60 && srvSleep <= 86400) {
+         serverSleepSeconds = srvSleep;
+         serverSleepReceivedMs = srvSleepAtMs;
+      }
+      http.end();
+      return 1;
+   }
 
    if (httpCode > 0) {
       // file found at server
       if (httpCode == HTTP_CODE_OK) {
+         String etag = http.header("ETag");
+         etag.trim();
          String lastMod = http.header("Last-Modified");
-         if (lastMod.length() > 0 && lastMod == settings.lastModified) {
+         lastMod.trim();
+         String validator = (etag.length() > 0) ? ("etag:" + etag) : lastMod;
+         if (canSkipIfUnchanged && validator.length() > 0 &&
+             (validator == settings.lastModified || lastMod == settings.lastModified)) {
             Serial.println("[DL] File not modified, skipping download.");
+            if (srvSleep >= 60 && srvSleep <= 86400) {
+               serverSleepSeconds = srvSleep;
+               serverSleepReceivedMs = srvSleepAtMs;
+            }
             http.end();
             return 1; // 1 means not modified
          }
 
          int len = http.getSize();
          httpFileSize = len;
-
-         if (SerialFlash.exists(fileName.c_str())) {
-            Serial.println("[FLASH] Delete File");
-            saveFile = SerialFlash.open(fileName.c_str());
-            saveFile.erase();
-            saveFile.close();
+         if (!prepareFlashSlot(fileName.c_str(), (len > 0) ? (uint32_t)len : IMAGE_SLOT_SIZE, saveFile)) {
+            http.end();
+            return -8;
          }
-
-         SerialFlash.createErasable(fileName.c_str(), httpFileSize);
-         saveFile = SerialFlash.open(fileName.c_str());
          Serial.print("[DL] Download Size: ");
          Serial.println(len);
          int buff_size = 2048;
@@ -1413,7 +1509,7 @@ int downloadAndSaveFile(String fileName, String url) {
          }
          if (buff == nullptr) {
             Serial.println("[DL] ERROR: Failed to allocate memory for download buffer!");
-            saveFile.close();
+            discardFlashSlot(saveFile);
             http.end();
             return -1;
          }
@@ -1469,33 +1565,24 @@ int downloadAndSaveFile(String fileName, String url) {
          }
          free(buff);
 
-         if (dlFailed || WiFi.status() != WL_CONNECTED) {
+         lastDownloadedBytes = saveFile.position();
+         if (dlFailed || WiFi.status() != WL_CONNECTED || lastDownloadedBytes == 0 ||
+             (httpFileSize > 0 && lastDownloadedBytes != (uint32_t)httpFileSize) || !waitFlashReady()) {
+            Serial.printf("[DL] Download incomplete (%u / %d bytes), discarding.\n", lastDownloadedBytes, httpFileSize);
+            discardFlashSlot(saveFile);
             http.end();
-            saveFile.close();
             return -4;
          }
 
-         systemFileSize = saveFile.size();
-         Serial.print("[FLASH] File size: ");
-         Serial.println(systemFileSize);
-         Serial.print("[DL] File Diff: ");
-         int dif = systemFileSize - httpFileSize;
-         Serial.println(dif);
-         int maxDif = (httpFileSize / 80) * -1;
-         if (maxDif > -2000) {
-            maxDif = -5000;
-         }
-         Serial.print("[DL] MAX Diff: ");
-         Serial.println(maxDif);
-         if (dif < maxDif) {
-            success = -8;
-         }
-         else {
-            if (lastMod.length() > 0) {
-               tempLastModified = lastMod;
-            }
+         tempLastModified = validator;
+         if (srvSleep >= 60 && srvSleep <= 86400) {
+            serverSleepSeconds = srvSleep;
+            serverSleepReceivedMs = srvSleepAtMs;
          }
          saveFile.close();
+      }
+      else {
+         success = -2;
       }
    }
    else {
@@ -1929,12 +2016,16 @@ int accInit(bool skipInit) {
    int acc_x = 0;
    int acc_y = 0;
    int acc_z = 0;
+   bool sampleValid = true;
 
    if (myIMU.readRegister(&dataLowRes, KXTJ3_XOUT_H) ==
        IMU_SUCCESS) {
       // Read accelerometer data in mg as Float
       float acc_x_loc = myIMU.axisAccel(X);
       acc_x = round((int)(acc_x_loc * 10));
+   }
+   else {
+      sampleValid = false;
    }
 
    if (myIMU.readRegister(&dataLowRes, KXTJ3_YOUT_H) ==
@@ -1943,12 +2034,18 @@ int accInit(bool skipInit) {
       float acc_y_loc = myIMU.axisAccel(Y);
       acc_y = round((int)(acc_y_loc * 10));
    }
+   else {
+      sampleValid = false;
+   }
 
    if (myIMU.readRegister(&dataLowRes, KXTJ3_ZOUT_H) ==
        IMU_SUCCESS) {
       // Read accelerometer data in mg as Float
       float acc_z_loc = myIMU.axisAccel(Z);
       acc_z = round((int)(acc_z_loc * 10));
+   }
+   else {
+      sampleValid = false;
    }
 
    if (acc_x > 5 && acc_y < 5 && acc_y > -5) {
@@ -1970,7 +2067,7 @@ int accInit(bool skipInit) {
    // Put IMU back into standby
    myIMU.resetInterrupt();
    myIMU.standby(true);
-   return orientation;
+   return sampleValid ? orientation : -1;
 }
 
 bool accIntSet(int sensity) {
@@ -1988,10 +2085,10 @@ bool accIntSet(int sensity) {
 }
 
 void recheckAccOrient(int setOrientValue) {
-   if (stopAccRecheck)
+   if (stopAccRecheck || isEpaperActive() || !settings.autoRotation)
       return;
    int accCheck = accInit(true);
-   if (accCheck != readIntFromFlash(220)) {
+   if (accCheck >= 0 && accCheck != readIntFromFlash(220)) {
       isOrientUpdate = true;
       systemData.deviceOrientation = accCheck;
       Serial.printf("[ACC] Update Orient to Mem: %d \n", systemData.deviceOrientation);
@@ -2003,13 +2100,6 @@ void recheckAccOrient(int setOrientValue) {
       else {
          displaySetRotation(0);
       }
-      if (isEpaperActive()) {
-         deinitDisplay();
-         // ESP.restart();
-      }
-   }
-   else {
-      // if (DEBUG_FLAG) Serial.printf("[ACC] No Acc Update after recheck\n");
    }
 }
 
@@ -2073,10 +2163,11 @@ bool resetAll(bool resetWifi) {
    storeSleepTimeMem(DEFAULT_SLEEP); // restore sleep mem store to default
    if (SerialFlash.exists("tmp.bmp")) {
       SerialFlashFile f = SerialFlash.open("tmp.bmp");
-      f.erase();
-      f.close();
+      discardFlashSlot(f);
    }
    settings.downloadUrl = "";
+   settings.lastModified = "";
+   settings.settingsLastModified = "";
    settings.imageMode = 1;
    settings.timeout = DEFAULT_SLEEP;
    settings.httpAuthUser = "";
@@ -2410,7 +2501,11 @@ void fetchRemoteSettings() {
             changed = true;
          }
          if (doc["downloadUrl"].is<String>()) {
-            settings.downloadUrl = doc["downloadUrl"].as<String>();
+            String newDownloadUrl = doc["downloadUrl"].as<String>();
+            if (newDownloadUrl != settings.downloadUrl) {
+               settings.downloadUrl = newDownloadUrl;
+               settings.lastModified = "";
+            }
             changed = true;
             settings.imageMode = 1;
          }
@@ -2636,7 +2731,7 @@ void loop() {
       int dlSuccess = 0;
 
       // Fallback: If in BLE mode but the file is missing and we have a download URL configured, switch to URL mode
-      if (settings.imageMode == 0 && !SerialFlash.exists(fileName.c_str()) && settings.downloadUrl.length() > 0) {
+      if (settings.imageMode == 0 && !hasValidFlashImage(fileName.c_str()) && settings.downloadUrl.length() > 0) {
          Serial.println("[IMAGE] BLE mode active but tmp.bmp is missing. Fallback to URL mode.");
          settings.imageMode = 1;
          saveSettingsToFlash(EEPROM_SETTINGS_ADR);
@@ -2670,24 +2765,19 @@ void loop() {
 
       int setSuccess = 0;
       if (dlSuccess == 0 || dlSuccess == 1) { // 0 = downloaded/ok, 1 = not modified
-         if (dlSuccess == 0 && bleImageApplied) {
+         if (settings.imageMode == 0 && bleImageApplied) {
             Serial.println("[IMAGE] Image was already applied during setup mode, skipping refresh.");
             setSuccess = 0;
-            if (tempLastModified.length() > 0) {
-               settings.lastModified = tempLastModified;
-               saveSettingsToFlash(EEPROM_SETTINGS_ADR);
-               tempLastModified = "";
-            }
          }
          else if (dlSuccess == 0 || settings.imageMode == 0) {
             WiFi.disconnect(true);
             setSuccess = setImageFromFS(fileName);
-            if (setSuccess == 0 && dlSuccess == 0) {
-               if (tempLastModified.length() > 0) {
+            if (setSuccess == 0 && dlSuccess == 0 && settings.imageMode == 1) {
+               if (settings.lastModified != tempLastModified) {
                   settings.lastModified = tempLastModified;
                   saveSettingsToFlash(EEPROM_SETTINGS_ADR);
-                  tempLastModified = "";
                }
+               tempLastModified = "";
             }
          }
          else {
@@ -2706,12 +2796,17 @@ void loop() {
          gotToDeepSleep(0, false, false);
       }
       bool doMotionWake = (settings.imageMode == 1) ? settings.motionWakeup : false;
-      if (settings.timeout > 0) {
-         gotToDeepSleep(systemData.sleepPrediction, false, doMotionWake);
+      int nextSleep = (settings.timeout > 0) ? systemData.sleepPrediction : DEFAULT_SLEEP;
+      if (settings.imageMode == 1 && (dlSuccess < 0 || setSuccess < 0)) {
+         nextSleep = constrain(nextSleep, 60, 300);
+         Serial.printf("[SLEEP] Update failed; retry in %d seconds\n", nextSleep);
       }
-      else {
-         gotToDeepSleep(DEFAULT_SLEEP, false, doMotionWake);
+      else if (settings.imageMode == 1 && serverSleepSeconds > 0) {
+         int elapsed = (millis() - serverSleepReceivedMs) / 1000;
+         nextSleep = max(60, serverSleepSeconds - elapsed);
+         Serial.printf("[SLEEP] Server-directed wake in %d seconds\n", nextSleep);
       }
+      gotToDeepSleep(nextSleep, false, doMotionWake);
    }
 
    // Keep alive for setup mode / BLE configs
