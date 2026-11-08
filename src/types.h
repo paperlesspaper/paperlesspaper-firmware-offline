@@ -2,10 +2,11 @@
 #include <Arduino.h>
 
 // ==========================================
-// DISPLAY SELECTION
+// DISPLAY SELECTION (configured via platformio.ini)
 // ==========================================
-#define EPD_TYPE_13INCH
-// #define EPD_TYPE_7INCH
+#if !defined(EPD_TYPE_13INCH) && !defined(EPD_TYPE_7INCH)
+#define EPD_TYPE_7INCH
+#endif
 // ==========================================
 
 #define SOFTWARE_VERSION "0.0.0"

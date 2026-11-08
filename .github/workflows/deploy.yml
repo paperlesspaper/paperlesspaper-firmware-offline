@@ -22,13 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        include:
-          - epd_type: 13INCH
-            display_val: 1
-            suffix: epd13
-          - epd_type: 7INCH
-            display_val: 0
-            suffix: epd7
+        target: [epd13, epd7]
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -59,17 +53,12 @@ jobs:
           pip install platformio
 
       - name: Install PlatformIO Packages
-        run: pio pkg install -e ESP32-C6-DevKitM-1
-
-      - name: Set Display Type
-        run: |
-          sed -i 's/#define SET_DISPLAY 0/#define SET_DISPLAY ${{ matrix.display_val }}/g' src/main.cpp
-          sed -i 's/#define SET_DISPLAY 1/#define SET_DISPLAY ${{ matrix.display_val }}/g' src/main.cpp
+        run: pio pkg install -e ${{ matrix.target }}
 
       - name: Build Firmware
         id: pio_build
         continue-on-error: true
-        run: pio run -e ESP32-C6-DevKitM-1
+        run: pio run -e ${{ matrix.target }}
 
       - name: Fallback Clean Build
         if: steps.pio_build.outcome == 'failure'
@@ -77,14 +66,14 @@ jobs:
           echo "Cached build failed. Performing clean build..."
           rm -rf .pio
           rm -rf ~/.platformio/.cache
-          pio pkg install -e ESP32-C6-DevKitM-1
-          pio run -e ESP32-C6-DevKitM-1
+          pio pkg install -e ${{ matrix.target }}
+          pio run -e ${{ matrix.target }}
 
       - name: Upload Firmware Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: offline_firmware_${{ matrix.suffix }}
-          path: .pio/build/ESP32-C6-DevKitM-1/firmware.bin
+          name: offline_firmware_${{ matrix.target }}
+          path: .pio/build/${{ matrix.target }}/firmware.bin
 
   build_web:
     runs-on: ubuntu-latest
