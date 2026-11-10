@@ -42,15 +42,15 @@ jobs:
         target: [epd7, epd13]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
       - name: Cache PlatformIO
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.platformio
@@ -80,7 +80,7 @@ jobs:
           fi
 
       - name: Upload firmware artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: hil_firmware_${{ matrix.target }}
           path: .pio/build/${{ matrix.target }}/firmware.bin
@@ -94,10 +94,10 @@ jobs:
     timeout-minutes: 120
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Checkout cloud testbench (hardware layer)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: paperlesspaper/paperlesspaper-firmware
           ref: ${{ env.CLOUD_TESTBENCH_REF }}
@@ -108,7 +108,7 @@ jobs:
         run: pip install -r hil/requirements.txt
 
       - name: Download firmware
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: hil_firmware_epd7
           path: build_artifact_epd7
@@ -126,7 +126,7 @@ jobs:
 
       - name: Upload results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: hil_junit_epd7
           path: junit_epd7.xml
@@ -144,10 +144,10 @@ jobs:
     timeout-minutes: 120
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Checkout cloud testbench (hardware layer)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: paperlesspaper/paperlesspaper-firmware
           ref: ${{ env.CLOUD_TESTBENCH_REF }}
@@ -158,7 +158,7 @@ jobs:
         run: pip install -r hil/requirements.txt
 
       - name: Download firmware
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: hil_firmware_epd13
           path: build_artifact_epd13
@@ -176,7 +176,7 @@ jobs:
 
       - name: Upload results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: hil_junit_epd13
           path: junit_epd13.xml
@@ -189,15 +189,15 @@ jobs:
     if: always()
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
       - name: Download results
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           pattern: hil_junit_*

@@ -228,8 +228,8 @@ uint8_t *bleWriteBuffer = nullptr;
 void ledBlink(int timeout, bool on, int dimValue = 100);
 void debugFS(void);
 bool BleInit(String deviceId, bool enable);
-void writeIntToFlash(int value, int startAddr);
-void writeStringToFlash(const char *toStore, int startAddr, int maxLen = MAX_SETTING_STRING_LEN);
+void writeIntToFlash(int value, int startAddr, bool commit = true);
+void writeStringToFlash(const char *toStore, int startAddr, int maxLen = MAX_SETTING_STRING_LEN, bool commit = true);
 int storeSleepTimeMem(int updateTime = 0);
 void gotToDeepSleep(int seconds, bool showScreen = true, bool motionWake = true);
 int accInit(bool skipInit = false);
@@ -1069,7 +1069,7 @@ bool EepromClear() {
 
 // Stores a string of at most maxLen characters plus terminator, so a long
 // value can never run into the neighbouring EEPROM field.
-void writeStringToFlash(const char *toStore, int startAddr, int maxLen) {
+void writeStringToFlash(const char *toStore, int startAddr, int maxLen, bool commit) {
    int len = strlen(toStore);
    if (len > maxLen) {
       Serial.printf("[MEM] WARNING: String at EEPROM %d truncated (%d > %d)\n", startAddr, len, maxLen);
@@ -1079,7 +1079,8 @@ void writeStringToFlash(const char *toStore, int startAddr, int maxLen) {
       EEPROM.write(startAddr + i, toStore[i]);
    }
    EEPROM.write(startAddr + len, '\0');
-   EEPROM.commit();
+   if (commit)
+      EEPROM.commit();
 }
 
 String readStringFromFlash(int startAddr) {
@@ -1103,27 +1104,32 @@ int readIntFromFlash(int addr) {
    return data3.integer;
 }
 
-void writeIntToFlash(int value, int startAddr) {
-   DataLayout data2;
-   data2.integer = value;
-   EEPROM.put(startAddr, data2);
-   EEPROM.commit();
+// Writes exactly the 4 bytes of the value. (Writing the whole 8 byte DataLayout
+// put 4 uninitialised bytes into the field that follows 5 bytes later.)
+void writeIntToFlash(int value, int startAddr, bool commit) {
+   EEPROM.put(startAddr, value);
+   if (commit)
+      EEPROM.commit();
 }
 
 void saveSettingsToFlash(int startAddr) {
-   writeIntToFlash(settings.showBatteryWarning, startAddr + 5);
-   writeIntToFlash(settings.showWifiWarning, startAddr + 10);
-   writeIntToFlash(settings.sleepDisabled, startAddr + 15);
-   writeIntToFlash(settings.imageMode, startAddr + 20);
-   writeStringToFlash(settings.downloadUrl.c_str(), startAddr + 25);
-   writeStringToFlash(settings.lastModified.c_str(), startAddr + 155);
-   writeStringToFlash(settings.httpAuthUser.c_str(), startAddr + 285);
-   writeStringToFlash(settings.httpAuthPassword.c_str(), startAddr + 415);
-   writeIntToFlash(settings.motionWakeup, startAddr + 545);
-   writeIntToFlash(settings.chargerMode, startAddr + 550);
-   writeStringToFlash(settings.settingsUrl.c_str(), startAddr + 555);
-   writeStringToFlash(settings.settingsLastModified.c_str(), startAddr + 685);
-   writeIntToFlash(settings.autoRotation, startAddr + 815);
+   // All fields go to flash in one commit, so a power cut (or a press of the reset
+   // button) while saving leaves either the old or the new settings, never a mix.
+   const int maxLen = MAX_SETTING_STRING_LEN;
+   writeIntToFlash(settings.showBatteryWarning, startAddr + 5, false);
+   writeIntToFlash(settings.showWifiWarning, startAddr + 10, false);
+   writeIntToFlash(settings.sleepDisabled, startAddr + 15, false);
+   writeIntToFlash(settings.imageMode, startAddr + 20, false);
+   writeStringToFlash(settings.downloadUrl.c_str(), startAddr + 25, maxLen, false);
+   writeStringToFlash(settings.lastModified.c_str(), startAddr + 155, maxLen, false);
+   writeStringToFlash(settings.httpAuthUser.c_str(), startAddr + 285, maxLen, false);
+   writeStringToFlash(settings.httpAuthPassword.c_str(), startAddr + 415, maxLen, false);
+   writeIntToFlash(settings.motionWakeup, startAddr + 545, false);
+   writeIntToFlash(settings.chargerMode, startAddr + 550, false);
+   writeStringToFlash(settings.settingsUrl.c_str(), startAddr + 555, maxLen, false);
+   writeStringToFlash(settings.settingsLastModified.c_str(), startAddr + 685, maxLen, false);
+   writeIntToFlash(settings.autoRotation, startAddr + 815, false);
+   EEPROM.commit();
    Serial.println("[MEM] Settings saved to EEPROM");
 }
 
