@@ -486,55 +486,128 @@ export class DeviceBleInterface {
       this.onStatusChange(isFirmware ? "Starte Firmware Update..." : "Öffne Flash Puffer...", "text-blue-500");
       await cmdChar.writeValue(this.encodeText(isFirmware ? "START_FW" : "START"));
 
-      const chunkSize = 238;
-      const checkpointSize = 19040;
+      const initView = await cmdChar.readValue();
+      const initStatus = initView.getUint16(0, true);
+      if (initStatus === 0xffff) {
+        throw new Error("Geräte-Puffer konnte nicht initialisiert werden (Flash/RAM Fehler).");
+      }
+
+      const useV2 = initView.byteLength >= 8;
+      let chunkSize = 238;
+      let checkpointSize = 19040;
+      let burstSize = 1;
+      let burstDelayMs = 6;
+
+      if (useV2) {
+        await cmdChar.writeValue(this.encodeText("V2"));
+        const negotiatedPayload = initView.getUint16(6, true);
+        chunkSize = negotiatedPayload >= 20 && negotiatedPayload <= 508 ? negotiatedPayload : 240;
+        checkpointSize = 32768; // 128 * 256B: exakte SPI-NOR-Flash-Page-Ausrichtung
+        burstSize = 6;
+        burstDelayMs = 1;
+      }
+
+      const dataBytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+      const totalCrc = this.calcCRC32(dataBytes);
+      const totalCrcHex = totalCrc.toString(16).padStart(8, "0");
       let offset = 0;
       let retryCount = 0;
 
-      while (offset < buffer.length) {
-        let windowEnd = Math.min(offset + checkpointSize, buffer.length);
-        let bytesToSend = windowEnd - offset;
+      while (offset < dataBytes.length) {
+        const windowEnd = Math.min(offset + checkpointSize, dataBytes.length);
+        const bytesToSend = windowEnd - offset;
+        let seq = 0;
+        let sendErrorOccurred = false;
 
-        for (let currentOffset = offset; currentOffset < windowEnd; currentOffset += chunkSize) {
-          let chunkData = buffer.slice(currentOffset, currentOffset + chunkSize);
+        try {
+          for (let currentOffset = offset; currentOffset < windowEnd; currentOffset += chunkSize) {
+            const endChunk = Math.min(currentOffset + chunkSize, windowEnd);
+            const chunkData = dataBytes.subarray(currentOffset, endChunk);
+            let packet;
 
-          let packet = new Uint8Array(chunkData.length + 4);
-          let crc = this.calcCRC32(chunkData);
-          packet[0] = crc & 0xff;
-          packet[1] = (crc >> 8) & 0xff;
-          packet[2] = (crc >> 16) & 0xff;
-          packet[3] = (crc >>> 24) & 0xff;
-          packet.set(chunkData, 4);
+            if (useV2) {
+              packet = new Uint8Array(chunkData.length + 1);
+              packet[0] = seq & 0xff;
+              packet.set(chunkData, 1);
+            } else {
+              packet = new Uint8Array(chunkData.length + 4);
+              const crc = this.calcCRC32(chunkData);
+              packet[0] = crc & 0xff;
+              packet[1] = (crc >> 8) & 0xff;
+              packet[2] = (crc >> 16) & 0xff;
+              packet[3] = (crc >>> 24) & 0xff;
+              packet.set(chunkData, 4);
+            }
 
-          let isLastInWindow = currentOffset + chunkSize >= windowEnd;
+            seq++;
+            const isLastInWindow = endChunk >= windowEnd;
 
-          if (isLastInWindow) {
-            await dataChar.writeValue(packet);
+            if (isLastInWindow) {
+              if (dataChar.writeValueWithResponse) {
+                await dataChar.writeValueWithResponse(packet);
+              } else {
+                await dataChar.writeValue(packet);
+              }
+            } else {
+              await dataChar.writeValueWithoutResponse(packet);
+              if (seq % burstSize === 0 && burstDelayMs > 0) {
+                await new Promise((r) => setTimeout(r, burstDelayMs));
+              }
+            }
+          }
+        } catch (sendErr) {
+          if (!this.bleDevice || !this.bleDevice.gatt || !this.bleDevice.gatt.connected) {
+            throw sendErr;
+          }
+          console.warn("BLE Sende-Warnung im Fenster, wiederhole Checkpoint:", sendErr);
+          sendErrorOccurred = true;
+          await new Promise((r) => setTimeout(r, 40));
+        }
+
+        let isWindowValid = false;
+        let ramBytes = 0;
+
+        if (!sendErrorOccurred) {
+          const statusView = await cmdChar.readValue();
+          ramBytes = statusView.getUint16(0, true);
+
+          if (useV2 && ramBytes === 0xffff) {
+            throw new Error("Schreibfehler im externen Flash-Speicher während des Uploads.");
+          }
+
+          if (useV2 && statusView.byteLength >= 6) {
+            const remoteCrc = statusView.getUint32(2, true);
+            const localCrc = this.calcCRC32(dataBytes.subarray(offset, windowEnd));
+            isWindowValid = ramBytes === bytesToSend && remoteCrc === localCrc;
+            if (!isWindowValid) {
+              console.warn(`Checkpoint Mismatch! Erwartet: ${bytesToSend}B (CRC 0x${localCrc.toString(16)}), RAM hat: ${ramBytes}B (CRC 0x${remoteCrc.toString(16)})`);
+            }
           } else {
-            await dataChar.writeValueWithoutResponse(packet);
-            await new Promise((r) => setTimeout(r, 6));
+            isWindowValid = ramBytes === bytesToSend;
           }
         }
 
-        let statusView = await cmdChar.readValue();
-        let ramBytes = statusView.getUint16(0, true);
-
-        if (ramBytes === bytesToSend) {
+        if (isWindowValid) {
           await cmdChar.writeValue(this.encodeText("FLUSH"));
           offset = windowEnd;
           retryCount = 0;
         } else {
-          console.warn(`Paketverlust! Erwartet: ${bytesToSend}, RAM hat: ${ramBytes}`);
+          if (burstSize > 2) {
+            burstSize = Math.max(1, Math.floor(burstSize / 2));
+          } else {
+            burstDelayMs = Math.min(12, burstDelayMs + 2);
+          }
+          await new Promise((r) => setTimeout(r, 30));
           await cmdChar.writeValue(this.encodeText("CLEAR"));
           retryCount++;
 
           if (retryCount > 10) {
             throw new Error(`Upload fehlgeschlagen! Checkpoint bei ${offset} konnte nicht übertragen werden.`);
           }
-          this.onStatusChange(`Paketverlust! Wiederhole Checkpoint... (Versuch ${retryCount})`, "text-orange-500");
+          this.onStatusChange(`Paketverlust korrigiert – wiederhole Checkpoint... (Versuch ${retryCount})`, "text-orange-500");
         }
 
-        let percent = Math.round((offset / buffer.length) * 100);
+        let percent = Math.round((offset / dataBytes.length) * 100);
         this.onUploadProgress(isFirmware ? 'firmware' : 'image', percent);
         this.onStatusChange(`Sende ${isFirmware ? 'Firmware' : 'Daten'}... ${percent}%`, "text-green-500");
       }
@@ -543,7 +616,7 @@ export class DeviceBleInterface {
       
       if (isFirmware) {
         this.onStatusChange("Beende Firmware Update & Neustart...", "text-blue-500");
-        await cmdChar.writeValue(this.encodeText("END_FW"));
+        await cmdChar.writeValue(this.encodeText(useV2 ? `END_FW:${totalCrcHex}` : "END_FW"));
         
         // Wait briefly and verify if firmware reported an error
         await new Promise((r) => setTimeout(r, 100));
@@ -566,10 +639,20 @@ export class DeviceBleInterface {
           }
         }, 1500);
       } else {
-        this.onStatusChange("Speichere im Flash...", "text-blue-500");
-        await cmdChar.writeValue(this.encodeText("END"));
+        this.onStatusChange("Prüfe & speichere im Flash...", "text-blue-500");
+        await cmdChar.writeValue(this.encodeText(useV2 ? `END:${totalCrcHex}` : "END"));
+        if (useV2) {
+          const endStatusView = await cmdChar.readValue();
+          const endStatus = endStatusView.getUint16(0, true);
+          const flashCrc = endStatusView.byteLength >= 6 ? endStatusView.getUint32(2, true) : totalCrc;
+          if (endStatus === 0xffff || flashCrc !== totalCrc) {
+            throw new Error(
+              `Bild-Integritätsprüfung im Flash fehlgeschlagen (Flash-CRC 0x${flashCrc.toString(16)} != 0x${totalCrcHex}).`
+            );
+          }
+        }
         this.onStatusChange("Aktualisiere das Display...", "text-blue-500");
-        await new Promise((r) => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, 200));
         await cmdChar.writeValue(this.encodeText("APPLY"));
         this.onStatusChange("Upload abgeschlossen! 🚀", "text-green-600");
       }

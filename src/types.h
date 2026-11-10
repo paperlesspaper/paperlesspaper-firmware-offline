@@ -13,6 +13,7 @@
 #define DEBUG 1
 
 #define DISPLAY_SPI_SPEED 20000000
+#define FLASH_SPI_SPEED 8000000
 #define QR_VERSION 3
 #define QR_QUIET_ZONE 4
 
