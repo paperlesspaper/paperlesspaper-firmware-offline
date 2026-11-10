@@ -93,6 +93,11 @@
 #define EEPROM_SIZE 2048          // EEPROM size
 #define EEPROM_SETTINGS_ADR 500   // start address to store settings
 #define BLE_BUFFER_SIZE 32768
+#define MAX_SETTING_STRING_LEN 128 // max characters of a string setting (EEPROM slot is 130 bytes)
+#define MAX_WIFI_SSID_LEN 32       // EEPROM 0-39
+#define MAX_WIFI_PASS_LEN 64       // EEPROM 40-105
+#define MIN_SLEEP_TIMEOUT 60       // seconds
+#define MAX_SLEEP_TIMEOUT 2592000  // seconds (30 days)
 
 #define DEFAULT_SLEEP 3600 // Default time how long to sleep after update
 #define FAILSAVE_TIMER 180 // Time to shutdown the device if no reaction or hangup
@@ -224,6 +229,7 @@ void ledBlink(int timeout, bool on, int dimValue = 100);
 void debugFS(void);
 bool BleInit(String deviceId, bool enable);
 void writeIntToFlash(int value, int startAddr);
+void writeStringToFlash(const char *toStore, int startAddr, int maxLen = MAX_SETTING_STRING_LEN);
 int storeSleepTimeMem(int updateTime = 0);
 void gotToDeepSleep(int seconds, bool showScreen = true, bool motionWake = true);
 int accInit(bool skipInit = false);
@@ -914,10 +920,7 @@ bool powerSupplyDisplay(bool enable) {
 #endif
 
 void WiFiEvent(WiFiEvent_t event) {
-   if (DEBUG_FLAG)
-      // Serial.printf("[WiFi-event] event: %d\n", event);
-
-      switch (event) {
+   switch (event) {
       case ARDUINO_EVENT_WIFI_STA_GOT_IP:
          if (DEBUG_FLAG)
             Serial.println("[NETWORK] WiFi connected");
@@ -961,7 +964,9 @@ void WiFiEvent(WiFiEvent_t event) {
             }
          }
          break;
-      }
+      default:
+         break;
+   }
 }
 
 void timeoutFailsafe(int time) {
@@ -1062,12 +1067,18 @@ bool EepromClear() {
    return true;
 }
 
-void writeStringToFlash(const char *toStore, int startAddr) {
-   int i = 0;
-   for (; i < LENGTH(toStore); i++) {
+// Stores a string of at most maxLen characters plus terminator, so a long
+// value can never run into the neighbouring EEPROM field.
+void writeStringToFlash(const char *toStore, int startAddr, int maxLen) {
+   int len = strlen(toStore);
+   if (len > maxLen) {
+      Serial.printf("[MEM] WARNING: String at EEPROM %d truncated (%d > %d)\n", startAddr, len, maxLen);
+      len = maxLen;
+   }
+   for (int i = 0; i < len; i++) {
       EEPROM.write(startAddr + i, toStore[i]);
    }
-   EEPROM.write(startAddr + i, '\0');
+   EEPROM.write(startAddr + len, '\0');
    EEPROM.commit();
 }
 
@@ -1233,6 +1244,14 @@ class ServerCallbacks : public NimBLEServerCallbacks
 
 } serverCallbacks;
 
+// Rejects BLE string values that would not fit into their EEPROM slot.
+static bool bleValueFits(const NimBLEAttValue &val, size_t maxLen, const char *name) {
+   if (val.length() <= maxLen)
+      return true;
+   Serial.printf("[BLE] ERROR: %s too long (%u > %u), ignored.\n", name, (unsigned)val.length(), (unsigned)maxLen);
+   return false;
+}
+
 class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
 {
    void onRead(NimBLECharacteristic *pCharacteristic, NimBLEConnInfo &connInfo) override {
@@ -1278,15 +1297,21 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
 
       // Für String-Werte eine sichere Konvertierung mit dem richtigen c_str()
       if (uuidStr == "a62eed84-7b0d-11ed-a1eb-0242ac120002") {
+         if (!bleValueFits(attrVal, MAX_WIFI_PASS_LEN, "WiFi password"))
+            return;
          wifiSettings.pss = attrVal.c_str();
-         Serial.printf("[BLE] Set wifi PASS: %s\n", wifiSettings.pss.c_str());
+         Serial.printf("[BLE] Set wifi PASS (%u chars)\n", (unsigned)wifiSettings.pss.length());
          wifiSettings.isDeployWifi = true;
       }
       else if (uuidStr == "090b0ef2-7b0d-11ed-a1eb-0242ac120002") {
+         if (!bleValueFits(attrVal, MAX_WIFI_SSID_LEN, "WiFi SSID"))
+            return;
          wifiSettings.ssid = attrVal.c_str();
          Serial.printf("[BLE] Set wifi SSID: %s\n", wifiSettings.ssid.c_str());
       }
       else if (uuidStr == "10000001-0000-0000-0000-000000000001") {
+         if (!bleValueFits(attrVal, MAX_SETTING_STRING_LEN, "Download URL"))
+            return;
          settings.downloadUrl = attrVal.c_str();
          settings.lastModified = ""; // Reset lastModified um Download zu erzwingen
          Serial.printf("[BLE] Set URL: %s\n", settings.downloadUrl.c_str());
@@ -1295,19 +1320,33 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
          }
       }
       else if (uuidStr == "10000007-0000-0000-0000-000000000001") {
+         if (!bleValueFits(attrVal, MAX_SETTING_STRING_LEN, "HTTP user"))
+            return;
          settings.httpAuthUser = attrVal.c_str();
          Serial.printf("[BLE] Set HTTP Auth user: %s\n", settings.httpAuthUser.c_str());
       }
       else if (uuidStr == "10000008-0000-0000-0000-000000000001") {
+         if (!bleValueFits(attrVal, MAX_SETTING_STRING_LEN, "HTTP password"))
+            return;
          settings.httpAuthPassword = attrVal.c_str();
          Serial.println("[BLE] Set HTTP Auth password");
       }
       else if (uuidStr == "10000002-0000-0000-0000-000000000001") {
-         settings.imageMode = atoi(attrVal.c_str());
+         int newMode = atoi(attrVal.c_str());
+         if (newMode != 0 && newMode != 1) {
+            Serial.printf("[BLE] ERROR: Invalid Image Mode %d, ignored.\n", newMode);
+            return;
+         }
+         settings.imageMode = newMode;
          Serial.printf("[BLE] Set Image Mode: %d\n", settings.imageMode);
       }
       else if (uuidStr == "10000005-0000-0000-0000-000000000001") {
-         settings.timeout = atoi(attrVal.c_str());
+         long newTimeout = strtol(attrVal.c_str(), nullptr, 10);
+         if (newTimeout < MIN_SLEEP_TIMEOUT || newTimeout > MAX_SLEEP_TIMEOUT) {
+            Serial.printf("[BLE] ERROR: Timeout %ld out of range (%d-%d), ignored.\n", newTimeout, MIN_SLEEP_TIMEOUT, MAX_SLEEP_TIMEOUT);
+            return;
+         }
+         settings.timeout = (int)newTimeout;
          Serial.printf("[BLE] Set Timeout/Sleep: %d\n", settings.timeout);
       }
       else if (uuidStr == "10000006-0000-0000-0000-000000000001") {
@@ -1327,6 +1366,8 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
          saveSettingsToFlash(EEPROM_SETTINGS_ADR);
       }
       else if (uuidStr == "1000000b-0000-0000-0000-000000000001") {
+         if (!bleValueFits(attrVal, MAX_SETTING_STRING_LEN, "Settings URL"))
+            return;
          settings.settingsUrl = attrVal.c_str();
          Serial.printf("[BLE] Set Settings URL: %s\n", settings.settingsUrl.c_str());
          settings.settingsLastModified = ""; // Reset cache on new URL
@@ -1833,12 +1874,12 @@ bool BleInit(String deviceId, bool enable) {
    systemInfoCharacteristic->setValue(sysOut.c_str());
 
    urlCharacteristic->setValue(settings.downloadUrl.c_str());
-   char imgModeStr[8];
-   sprintf(imgModeStr, "%d", settings.imageMode);
+   char imgModeStr[16];
+   snprintf(imgModeStr, sizeof(imgModeStr), "%d", settings.imageMode);
    imageModeCharacteristic->setValue(imgModeStr);
 
-   char timeoutStr[8];
-   sprintf(timeoutStr, "%d", settings.timeout);
+   char timeoutStr[16];
+   snprintf(timeoutStr, sizeof(timeoutStr), "%d", settings.timeout);
    timeoutCharacteristic->setValue(timeoutStr);
    settingsUrlCharacteristic->setValue(settings.settingsUrl.c_str());
    httpAuthUserCharacteristic->setValue(settings.httpAuthUser.c_str());
@@ -1922,6 +1963,10 @@ int downloadAndSaveFile(String fileName, String url) {
          String lastMod = http.header("Last-Modified");
          lastMod.trim();
          String validator = (etag.length() > 0) ? ("etag:" + etag) : lastMod;
+         if (validator.length() > MAX_SETTING_STRING_LEN) {
+            // Does not fit into EEPROM; a truncated validator would never match.
+            validator = (lastMod.length() <= MAX_SETTING_STRING_LEN) ? lastMod : String("");
+         }
          if (canSkipIfUnchanged && validator.length() > 0 &&
              (validator == settings.lastModified || lastMod == settings.lastModified)) {
             Serial.println("[DL] File not modified, skipping download.");
@@ -2697,6 +2742,28 @@ bool updateDisplayAsync(String functionName) {
    return true;
 }
 
+// Logs the CRC32 of the display payload stored in a flash slot, so the HIL
+// testbench can compare the on-device dithering result against a reference.
+void logImageSlotCrc(const char *name) {
+   if (!DEBUG_FLAG)
+      return;
+   prepareSpiBusForFlash();
+   SerialFlashFile f = SerialFlash.open(name);
+   const uint32_t payloadLen = (EPD_WIDTH * EPD_HEIGHT / 2);
+   const uint32_t scratchSize = 4096;
+   uint8_t *scratch = (uint8_t *)malloc(scratchSize);
+   uint32_t crc = 0;
+   if (f && scratch != nullptr && verifyFlashSlotCrc(f, payloadLen, scratch, scratchSize, crc)) {
+      Serial.printf("[IMAGE] Slot CRC: 0x%08X (%s, %u bytes)\n", crc, name, payloadLen);
+   }
+   else {
+      Serial.printf("[IMAGE] Slot CRC: unavailable (%s)\n", name);
+   }
+   free(scratch);
+   if (f)
+      f.close();
+}
+
 void runSetupMode() {
    Serial.println("[MAIN] Setup Mode Triggered");
    prepareSpiBusForFlash();
@@ -2787,8 +2854,8 @@ void runSetupMode() {
          if (WiFi.status() == WL_CONNECTED) {
             Serial.println("[WIFI] Connected successfully!");
             // check valid wifi connection
-            writeStringToFlash(wifiSettings.ssid.c_str(), 0);
-            writeStringToFlash(wifiSettings.pss.c_str(), 40);
+            writeStringToFlash(wifiSettings.ssid.c_str(), 0, MAX_WIFI_SSID_LEN);
+            writeStringToFlash(wifiSettings.pss.c_str(), 40, MAX_WIFI_PASS_LEN);
          }
          else {
             Serial.println("[WIFI] Connection timeout!");
@@ -2803,6 +2870,7 @@ void runSetupMode() {
          if (settings.autoRotation) {
             accUpdateOrient();
          }
+         logImageSlotCrc("tmp.bmp");
          setImageFromFS("tmp.bmp");
       }
 
@@ -2821,7 +2889,7 @@ void runSetupMode() {
 
       if (!isBleClientConnected) {
          if (millis() - lastDisconnectTime > SETUP_MODE_TIMEOUT * 1000) {
-            Serial.println("[MAIN] No BLE connection for 60s. Switching to fetch/refresh mode.");
+            Serial.printf("[MAIN] No BLE connection for %ds. Switching to fetch/refresh mode.\n", SETUP_MODE_TIMEOUT);
             break;
          }
       }
@@ -2948,7 +3016,7 @@ void fetchRemoteSettings() {
 
          if (doc["timeout"].is<int>()) {
             int newTimeout = doc["timeout"];
-            if (newTimeout > 0) {
+            if (newTimeout >= MIN_SLEEP_TIMEOUT && newTimeout <= MAX_SLEEP_TIMEOUT) {
                settings.timeout = newTimeout;
                changed = true;
                // sleepPrediction was already computed in setup() with the old timeout
@@ -2972,24 +3040,36 @@ void fetchRemoteSettings() {
          }
          if (doc["downloadUrl"].is<String>()) {
             String newDownloadUrl = doc["downloadUrl"].as<String>();
-            if (newDownloadUrl != settings.downloadUrl) {
-               settings.downloadUrl = newDownloadUrl;
-               settings.lastModified = "";
+            if (newDownloadUrl.length() > MAX_SETTING_STRING_LEN) {
+               Serial.println("[HTTP] ERROR: downloadUrl too long, ignored.");
             }
-            changed = true;
-            settings.imageMode = 1;
+            else {
+               if (newDownloadUrl != settings.downloadUrl) {
+                  settings.downloadUrl = newDownloadUrl;
+                  settings.lastModified = "";
+               }
+               changed = true;
+               settings.imageMode = 1;
+            }
          }
          if (doc["httpAuthUser"].is<String>()) {
-            settings.httpAuthUser = doc["httpAuthUser"].as<String>();
-            changed = true;
+            String v = doc["httpAuthUser"].as<String>();
+            if (v.length() <= MAX_SETTING_STRING_LEN) {
+               settings.httpAuthUser = v;
+               changed = true;
+            }
          }
          if (doc["httpAuthPassword"].is<String>()) {
-            settings.httpAuthPassword = doc["httpAuthPassword"].as<String>();
-            changed = true;
+            String v = doc["httpAuthPassword"].as<String>();
+            if (v.length() <= MAX_SETTING_STRING_LEN) {
+               settings.httpAuthPassword = v;
+               changed = true;
+            }
          }
 
          if (http.hasHeader("Last-Modified")) {
-            settings.settingsLastModified = http.header("Last-Modified");
+            String v = http.header("Last-Modified");
+            settings.settingsLastModified = (v.length() <= MAX_SETTING_STRING_LEN) ? v : String("");
             changed = true;
          }
 
@@ -3120,6 +3200,7 @@ void setup() {
    sleep(1);
 
    Serial.printf("[MAIN] INIT Device V: %s\n", firmwareVersion);
+   Serial.println("[MAIN] FW: offline"); // lets tools tell this firmware apart from the cloud firmware
    if (DEBUG_FLAG)
       Serial.printf("[MAIN] Current counter value: %u VDD: %d\n", StartCounter, systemData.vddValue);
    if (!SPIFFS.begin(true)) {
@@ -3243,6 +3324,7 @@ void loop() {
          }
          else if (dlSuccess == 0 || settings.imageMode == 0) {
             WiFi.disconnect(true);
+            logImageSlotCrc(fileName.c_str());
             setSuccess = setImageFromFS(fileName);
             if (setSuccess == 0 && dlSuccess == 0 && settings.imageMode == 1) {
                if (settings.lastModified != tempLastModified) {

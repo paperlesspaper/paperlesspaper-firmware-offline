@@ -21,3 +21,8 @@ secrets.h
 /web_new
 main_13.cpp.disabled
 *.code-workspace
+# HIL testbench
+/_cloud
+junit_*.xml
+__pycache__/
+.pytest_cache/

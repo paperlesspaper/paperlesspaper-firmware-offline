@@ -142,7 +142,7 @@ Liest den aktuellen Status des Geräts (WLAN etc.).
 |------|------|------------|--------------|
 | `4c578d4c-...` | **WiFi Connected** | Read, Notify | Gibt `1` zurück, wenn mit WLAN verbunden, sonst `0`. |
 | `4c578d4d-...` | **WiFi Info** | Read, Notify | JSON-String mit Verbindungsdetails (z.B. `{"ip": "192...", "rssi": -65}`). |
-| `4c578d4e-...` | **System Info** | Read, Notify | JSON-String mit Systemdaten (Batteriespannung in mV, USB-Status, Ladestatus). |
+| `60000001-7b0e-...` | **System Info** | Read, Notify | JSON-String mit Systemdaten: `voltage` (mV), `usb`, `charging`, `version`, `fw` (`offline`), `display` (`7` / `13`). |
 | `5131a3fc-...` | **WiFi Scan** | Read, Notify | Liste gefundener WLANs. Wird asynchron befüllt, wenn das Kommando `SCAN_WIFI` über den Upload CMD Kanal gesendet wurde. Format: `SSID´RSSI´´SSID2´RSSI2´´`. |
 
 ### 2. WiFi Data Service
@@ -162,15 +162,20 @@ Verwaltet alle Einstellungen und kümmert sich um den Upload von Bildern und Fir
 |------|------|------------|--------------|
 | `10000001-...` | **Download URL** | Read, Write | HTTP URL für den Bild-Download. Bei Eingabe einer URL wechselt das Gerät automatisch in den URL-Modus (Image Mode = 1). |
 | `10000002-...` | **Image Mode** | Read, Write | Modus: `0` = Lokales Bild (BLE), `1` = Web URL. |
-| `10000003-...` | **Upload Data** | Write | Stream für Binärdaten (Bilder / Firmware). Das 1. Byte ist der CRC8 des restlichen Payloads. |
-| `10000004-...` | **Upload CMD** | Read, Write | Befehlskanal (siehe "Befehle" unten). Bei "Read" liefert er die aktuell im RAM befindlichen Bytes (für den Bild-Upload Checkpoint-Mechanismus). |
-| `10000005-...` | **Timeout** | Read, Write | Sleep Timeout in Sekunden (z.B. `3600`). |
+| `10000003-...` | **Upload Data** | Write | Stream für Binärdaten (Bilder / Firmware). Protokoll V2: 1 Byte Sequenznummer + Daten. Legacy: 4 Byte CRC32 (little endian) + Daten. |
+| `10000004-...` | **Upload CMD** | Read, Write | Befehlskanal (siehe "Befehle" unten). "Read" liefert 8 Bytes Status (little endian): `uint16` Bytes im RAM-Puffer (`0xFFFF` = Upload-Fehler, `0xFFFE` = Sequenzfehler), `uint32` CRC32 des Puffers bzw. nach `END` des gespeicherten Bildes, `uint16` maximale Nutzdaten pro Paket. |
+| `10000005-...` | **Timeout** | Read, Write | Sleep Timeout in Sekunden (z.B. `3600`). Erlaubt: 60 bis 2592000 (30 Tage), andere Werte werden ignoriert. |
 | `1000000b-...` | **Settings URL** | Read, Write | Optionale HTTP(s) URL zu einem JSON-Config File. |
 | `10000007-...` | **HTTP User** | Read, Write | Benutzername für HTTP Basic Auth. |
 | `10000008-...` | **HTTP Pass** | Read, Write | Passwort für HTTP Basic Auth. |
 | `10000009-...` | **Motion Wakeup** | Read, Write | `1` / `true` = Aufwecken bei Bewegung aktiviert (nur URL Modus). |
 | `1000000a-...` | **Charger Mode** | Read, Write | `1` / `true` = Ladefunktion für NiMH-Akkus aktiviert. |
 | `1000000c-...` | **Auto Rotation** | Read, Write | `1` / `true` = Automatische Bildschirmausrichtung via Accelerometer aktiviert. |
+| `1000000d-...` | **Firmware Version** | Read | Version der laufenden Firmware. |
+
+Texte (URLs, HTTP User/Pass) dürfen höchstens 128 Zeichen lang sein, die SSID 32 und das WLAN-Passwort 64. Längere Werte werden abgelehnt.
+
+> **Sicherheit:** Die BLE-Schnittstelle hat keine Authentifizierung. Solange das Gerät im Setup-Modus ist, kann jeder in Funkreichweite Einstellungen ändern, das Gerät zurücksetzen oder eine Firmware aufspielen.
 
 ---
 
@@ -185,16 +190,18 @@ Der CMD Channel verarbeitet Strings, um Uploads zu steuern oder das Gerät zurü
 #### Ablauf: Bild Upload (BMP)
 Bilder werden in kleine "Checkpoints" (Fenster) unterteilt, um Paketverlusten vorzubeugen:
 1. `START`: Bereitet den Flash-Speicher (`tmp.bmp`) und den RAM-Puffer für ein neues Bild vor.
-2. Senden der Daten (über `Upload Data`): In Chunks à z.B. 238 Bytes + 1 Byte CRC.
-3. Nach einem Checkpoint-Fenster (z.B. 80 Pakete) liest die Web-UI den `Upload CMD` (Read). Stimmen die gesendeten Bytes mit dem im ESP gepufferten Wert überein, wird der Befehl `FLUSH` gesendet, um die Daten aus dem RAM in den Flash zu schreiben. Bei einem Fehler (Bytes fehlen) sendet die UI `CLEAR`, um den RAM zu leeren, und überträgt das Fenster erneut.
-4. `END`: Schließt die Datei ab.
-5. `APPLY`: Zeigt das Bild direkt auf dem Display an.
+2. `V2`: Schaltet auf das Protokoll V2 um (Sequenznummer statt CRC32 pro Paket).
+3. Senden der Daten (über `Upload Data`) in Fenstern von 32768 Bytes.
+4. Nach jedem Fenster liest die Web-UI den `Upload CMD` (Read). Stimmen Byte-Anzahl und CRC32 mit dem im ESP gepufferten Fenster überein, wird `FLUSH` gesendet, um die Daten aus dem RAM in den Flash zu schreiben. Bei einem Fehler sendet die UI `CLEAR`, um den RAM zu leeren, und überträgt das Fenster erneut.
+5. `END:<crc32 hex>`: Schließt die Datei ab. Das Gerät liest das Bild aus dem Flash zurück und verwirft es, wenn Länge oder CRC32 nicht stimmen.
+6. `APPLY`: Zeigt das Bild direkt auf dem Display an.
 
 #### Ablauf: Firmware Upload (OTA via BLE)
-Die Firmware wird direkt in die OTA-Partition geflasht. Es gibt keinen Checkpoint-Mechanismus in der Web-UI, dafür wartet sie auf das erfolgreiche Senden jedes einzelnen Pakets:
+Die Firmware wird direkt in die OTA-Partition geflasht, mit denselben Fenstern und Prüfungen wie beim Bild-Upload:
 1. `START_FW`: Initialisiert den OTA-Prozess (`Update.begin()`).
-2. Senden der Daten (über `Upload Data`): In Chunks. Jeder Chunk wird vom ESP per CRC geprüft und direkt mit `Update.write()` geschrieben.
-3. `END_FW`: Schließt den OTA-Prozess ab (`Update.end()`) und startet das Gerät automatisch in der neuen Firmware neu.
+2. `V2`, dann `FW_SIZE:<bytes>`: Meldet die Größe an (65536 bis 1900544 Bytes).
+3. Senden der Daten in Fenstern, jeweils mit Status-Read und `FLUSH` (schreibt per `Update.write()`) oder `CLEAR`.
+4. `END_FW:<crc32 hex>`: Prüft Größe und CRC32, schließt den OTA-Prozess ab (`Update.end()`) und startet das Gerät kurz darauf in der neuen Firmware neu. Bei einem Fehler bleibt die alte Firmware aktiv.
 
 #### Ablauf: Firmware Upload (via USB / Web Serial)
 Falls Bluetooth nicht verfügbar ist oder du das Gerät lieber direkt per Kabel flashen möchtest, unterstützt die Web-UI das Flashen über die Web Serial API (mittels `esptool-js`):
@@ -202,6 +209,20 @@ Falls Bluetooth nicht verfügbar ist oder du das Gerät lieber direkt per Kabel 
 2. **Bootloader-Modus aktivieren**: Halte den kleinen Knopf auf der Rückseite gedrückt, drücke kurz den Reset-Knopf (großer Knopf) und lass den kleinen Knopf dann los.
 3. **Flashen**: Wähle in der Web-UI den Reiter "USB-Kabel (COM-Port)", klicke auf den Flash-Button, wähle den passenden COM-Port im Browser-Dialog aus und der Flasher überträgt die App-Partition (Baudrate: `921600`, Offset: `0x10000`) automatisch auf das Gerät.
 
+
+## Hardware-in-the-Loop Test
+
+Die Firmware wird auf echter Hardware getestet (`hil/`), auf demselben Windows-Runner und denselben Geräten wie die [Cloud Firmware](https://github.com/paperlesspaper/paperlesspaper-firmware). Der Workflow [`hil-test.yml`](.github/workflows/hil-test.yml) läuft bei jedem Push auf `dev` und manuell.
+
+- **Hardware-Schicht:** Relais, serielle Ports und Log-Maskierung kommen aus `testbench/` der Cloud Firmware. Der Workflow checkt das Repository dafür nach `_cloud/` aus; lokal wird ein Checkout neben diesem Repository gefunden oder über `CLOUD_TESTBENCH_ROOT` angegeben.
+- **Ablauf pro Gerät:** Kandidat per BLE flashen (egal ob Cloud oder Offline Firmware läuft) → Factory Reset mit 5 Power-Cycles → BLE-Schnittstelle prüfen → Cloud-Produktionsfirmware per BLE zurückflashen. Der letzte Schritt läuft immer, weil die Cloud-Tests ihn voraussetzen.
+- **Lokal ausführen** (am PC mit der Testhardware):
+  ```powershell
+  pip install -r hil/requirements.txt
+  pio run -e epd7
+  python -m hil.run --target epd7 -v
+  ```
+- **Nicht abbrechen:** Ein laufender Test flasht Geräte per BLE. Ohne verdrahteten Boot-Taster lässt sich ein Gerät mit unvollständiger oder defekter Firmware nur von Hand wiederbeleben.
 
 ## Roadmap (not ordered)
 
