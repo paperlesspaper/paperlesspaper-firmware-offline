@@ -27,7 +27,7 @@
         </div>
 
         <!-- Global System Status Bar (Hidden until connected) -->
-        <div id="systemStatusBar" class="hidden mb-6 w-full bg-white border border-gray-200 rounded-xl shadow-sm p-4 flex justify-around items-center transition-all duration-500 transform scale-95 opacity-0">
+        <div id="systemStatusBar" class="hidden mb-4 w-full bg-white border border-gray-200 rounded-xl shadow-sm p-4 flex flex-wrap gap-3 justify-around items-center transition-all duration-500 transform scale-95 opacity-0">
             <div class="flex items-center space-x-3">
                 <div id="batteryIconBg" class="bg-blue-100 p-2 rounded-full">
                     <svg id="batteryIcon" class="w-5 h-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -39,7 +39,7 @@
                     <p id="systemVoltage" class="text-sm font-bold text-gray-800">-- V</p>
                 </div>
             </div>
-            <div class="h-10 w-px bg-gray-200"></div>
+            <div class="h-10 w-px bg-gray-200 hidden sm:block"></div>
             <div class="flex items-center space-x-3">
                 <div id="chargerIconBg" class="bg-gray-100 p-2 rounded-full transition-colors">
                     <svg id="chargerIcon" class="w-5 h-5 text-gray-500 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -51,6 +51,32 @@
                     <p id="systemChargerStatus" class="text-sm font-bold text-gray-800">Prüfe...</p>
                 </div>
             </div>
+            <div class="h-10 w-px bg-gray-200 hidden sm:block"></div>
+            <div class="flex items-center space-x-3">
+                <div id="fwVersionIconBg" class="bg-purple-100 p-2 rounded-full transition-colors">
+                    <svg id="fwVersionIcon" class="w-5 h-5 text-purple-600 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                    </svg>
+                </div>
+                <div>
+                    <p class="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Firmware</p>
+                    <p id="systemFwVersion" class="text-sm font-bold text-gray-800">--</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Firmware Version Warning Banner (Shown when connected device has outdated firmware) -->
+        <div id="firmwareVersionWarning" class="hidden mb-6 p-4 bg-amber-50 border border-amber-300 rounded-xl shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div class="flex items-start space-x-3">
+                <span class="text-xl leading-none mt-0.5">⚠️</span>
+                <div>
+                    <p id="firmwareVersionWarningTitle" class="text-sm font-bold text-amber-900">Veraltete Firmware erkannt</p>
+                    <p id="firmwareVersionWarningText" class="text-xs text-amber-800 mt-0.5 leading-relaxed">Auf dem Gerät ist nicht die aktuelle Firmware-Version installiert.</p>
+                </div>
+            </div>
+            <button type="button" id="btnJumpToOta" class="bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold py-2 px-3.5 rounded-lg shadow-sm transition-colors whitespace-nowrap self-end sm:self-center">
+                Zum Update →
+            </button>
         </div>
 
         <div class="flex border-b border-gray-200 mb-6">
@@ -290,7 +316,7 @@
                 </div>
 
                 <!-- SECTION 2: Offline Firmware -->
-                <div class="bg-purple-50/50 p-5 rounded-xl border border-purple-200 space-y-4 shadow-sm">
+                <div id="offlineFirmwareCard" class="bg-purple-50/50 p-5 rounded-xl border border-purple-200 space-y-4 shadow-sm">
                     <div class="flex items-start justify-between">
                         <div>
                             <h3 class="text-lg font-bold text-purple-900 flex items-center gap-2">
@@ -298,7 +324,10 @@
                             </h3>
                             <p class="text-xs text-purple-700/80 mt-1">Open-Source-Firmware für maximale Unabhängigkeit. Alle Datentransfers laufen Lokal via BLE oder WiFi.</p>
                         </div>
-                        <span class="text-xs font-semibold px-2 py-0.5 rounded bg-purple-100 text-purple-800 border border-purple-200">Local</span>
+                        <div class="flex items-center gap-1.5">
+                            <span id="expectedOfflineFwBadge" class="text-xs font-mono font-semibold px-2 py-0.5 rounded bg-white text-purple-700 border border-purple-200">v0.1.0</span>
+                            <span class="text-xs font-semibold px-2 py-0.5 rounded bg-purple-100 text-purple-800 border border-purple-200">Local</span>
+                        </div>
                     </div>
 
                     <button id="btnUpdateOfflineFw" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-2.5 px-4 rounded-lg transition-colors shadow flex items-center justify-center gap-2">
@@ -348,89 +377,92 @@
 
                 <input type="file" id="fileInput" accept="image/*" class="w-full mb-4 text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:font-semibold file:bg-indigo-100 file:text-indigo-700 hover:file:bg-indigo-200 cursor-pointer" />
 
-                <details class="my-4 bg-white shadow-sm border border-gray-200 rounded-lg">
-                    <summary class="cursor-pointer text-sm font-semibold text-gray-700 bg-gray-50 px-4 py-3 rounded-lg hover:bg-gray-100 transition-colors list-none flex justify-between items-center">
-                        <span>Erweiterte Bild-Einstellungen</span>
-                        <svg class="w-5 h-5 text-gray-500 transform transition-transform duration-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                        </svg>
-                    </summary>
-                    <div id="expertControls" class="space-y-3 p-4 border-t border-gray-200">
-                        <div class="grid grid-cols-2 gap-4">
-                            <div>
-                                <label class="block text-xs font-semibold text-gray-600 mb-1">Dithering Algorithmus</label>
-                                <select id="errorDiffusionMatrix" class="w-full text-sm border border-gray-300 rounded p-2">
-                                    <option value="floydSteinberg" selected>Floyd-Steinberg</option>
-                                    <option value="atkinson">Atkinson</option>
-                                    <option value="jarvisJudiceNinke">Jarvis-Judice-Ninke</option>
-                                    <option value="sierra2">Sierra 2</option>
-                                </select>
+                    <details id="imageSettingsDetails" class="my-4 bg-white shadow-sm border border-gray-200 rounded-lg">
+                        <summary class="cursor-pointer text-sm font-semibold text-gray-700 bg-gray-50 px-4 py-3 rounded-lg hover:bg-gray-100 transition-colors list-none flex justify-between items-center">
+                            <span>Erweiterte Bild-Einstellungen</span>
+                            <svg class="w-5 h-5 text-gray-500 transform transition-transform duration-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                            </svg>
+                        </summary>
+                        <div id="expertControls" class="space-y-3 p-4 border-t border-gray-200">
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-semibold text-gray-600 mb-1">Dithering Algorithmus</label>
+                                    <select id="errorDiffusionMatrix" class="w-full text-sm border border-gray-300 rounded p-2">
+                                        <option value="floydSteinberg" selected>Floyd-Steinberg</option>
+                                        <option value="atkinson">Atkinson</option>
+                                        <option value="jarvisJudiceNinke">Jarvis-Judice-Ninke</option>
+                                        <option value="sierra2">Sierra 2</option>
+                                    </select>
+                                </div>
+                                <div>
+                                        <label class="block text-xs font-semibold text-gray-600 mb-1 flex items-center justify-between">
+                                            <span>Display</span>
+                                            <span id="displayAutoBadge" class="hidden text-[10px] font-semibold text-green-700 bg-green-100 px-1.5 py-0.5 rounded">Vom Gerät</span>
+                                        </label>
+                                        <select id="displaySizeSelect" class="w-full text-sm border border-gray-300 rounded p-2 disabled:bg-gray-100 disabled:text-gray-600 disabled:cursor-not-allowed">
+                                            <option value="7" selected>7.3" (800x480)</option>
+                                            <option value="13">13.3" (1200x1600)</option>
+                                        </select>
+                                </div>
+                                <div class="col-span-2">
+                                    <label class="block text-xs font-semibold text-gray-600 mb-1">Palette</label>
+                                    <select id="paletteSelect" class="w-full text-sm border border-gray-300 rounded p-2">
+                                        <option value="spectra6Original">Spectra 6 Originalfarben (Knallig)</option>
+                                        <option value="spectra6Custom" selected>Spectra 6 Custom</option>
+                                        <option value="new">Spectra 6 Profil (new.json)</option>
+                                    </select>
+                                </div>
+                                <div id="paletteEditor" class="col-span-2 flex items-center justify-between bg-gray-50 p-2 rounded">
+                                    <!-- Palette colors will be injected here -->
+                                </div>
+                                <div class="col-span-2 flex justify-between items-center bg-gray-50 p-2 rounded">
+                                    <label class="flex items-center text-sm text-gray-600 font-medium">
+                                        <input type="checkbox" id="serpentine" checked class="mr-2 h-4 w-4 text-indigo-600 rounded" />
+                                        Serpentine Dithering
+                                    </label>
+                                </div>
                             </div>
-                            <div>
-                                <label class="block text-xs font-semibold text-gray-600 mb-1">Display</label>
-                                <select id="displaySizeSelect" class="w-full text-sm border border-gray-300 rounded p-2">
-                                    <option value="7" selected>7.3" (800x480)</option>
-                                    <option value="13">13.3" (1200x1600)</option>
-                                </select>
+                            <hr />
+                            <div class="space-y-3 pt-1">
+                                <div class="flex items-center">
+                                    <label class="w-24 text-xs font-semibold text-gray-600">Helligkeit</label>
+                                    <input type="range" id="processingBrightness" min="-100" max="100" value="0" class="flex-1 accent-indigo-600" />
+                                </div>
+                                <div class="flex items-center">
+                                    <label class="w-24 text-xs font-semibold text-gray-600">Kontrast</label>
+                                    <input type="range" id="processingContrast" min="-100" max="100" value="0" class="flex-1 accent-indigo-600" />
+                                </div>
+                                <div class="flex items-center">
+                                    <label class="w-24 text-xs font-semibold text-gray-600">Sättigung</label>
+                                    <input type="range" id="processingSaturation" min="-100" max="100" value="0" class="flex-1 accent-indigo-600" />
+                                </div>
                             </div>
-                            <div class="col-span-2">
-                                <label class="block text-xs font-semibold text-gray-600 mb-1">Palette</label>
-                                <select id="paletteSelect" class="w-full text-sm border border-gray-300 rounded p-2">
-                                    <option value="spectra6Original">Spectra 6 Originalfarben (Knallig)</option>
-                                    <option value="spectra6Custom" selected>Spectra 6 Custom</option>
-                                    <option value="new">Spectra 6 Profil (new.json)</option>
-                                </select>
-                            </div>
-                            <div id="paletteEditor" class="col-span-2 flex items-center justify-between bg-gray-50 p-2 rounded">
-                                <!-- Palette colors will be injected here -->
-                            </div>
-                            <div class="col-span-2 flex justify-between items-center bg-gray-50 p-2 rounded">
-                                <label class="flex items-center text-sm text-gray-600 font-medium">
-                                    <input type="checkbox" id="serpentine" checked class="mr-2 h-4 w-4 text-indigo-600 rounded" />
-                                    Serpentine Dithering
-                                </label>
+                            <div class="pt-2">
+                                <button id="btnAutoDither" class="w-full bg-indigo-100 hover:bg-indigo-200 text-indigo-700 font-semibold py-2 rounded transition">Auto-Optimieren</button>
                             </div>
                         </div>
-                        <hr />
-                        <div class="space-y-3 pt-1">
-                            <div class="flex items-center">
-                                <label class="w-24 text-xs font-semibold text-gray-600">Helligkeit</label>
-                                <input type="range" id="processingBrightness" min="-100" max="100" value="0" class="flex-1 accent-indigo-600" />
-                            </div>
-                            <div class="flex items-center">
-                                <label class="w-24 text-xs font-semibold text-gray-600">Kontrast</label>
-                                <input type="range" id="processingContrast" min="-100" max="100" value="0" class="flex-1 accent-indigo-600" />
-                            </div>
-                            <div class="flex items-center">
-                                <label class="w-24 text-xs font-semibold text-gray-600">Sättigung</label>
-                                <input type="range" id="processingSaturation" min="-100" max="100" value="0" class="flex-1 accent-indigo-600" />
-                            </div>
-                        </div>
-                        <div class="pt-2">
-                            <button id="btnAutoDither" class="w-full bg-indigo-100 hover:bg-indigo-200 text-indigo-700 font-semibold py-2 rounded transition">Auto-Optimieren</button>
+                    </details>
+
+                    <div class="flex space-x-2 mb-4">
+                        <button id="btnRotate" class="w-full bg-yellow-100 hover:bg-yellow-200 text-yellow-700 font-semibold py-2 rounded transition" title="Bild um 90° drehen">↻ Bild drehen</button>
+                    </div>
+
+                    <div class="flex justify-center mb-4" id="previewContainer" style="cursor: pointer">
+                        <div class="relative inline-block">
+                            <canvas id="previewCanvas" class="border border-gray-300 shadow-sm rounded max-w-full bg-white block"></canvas>
+                            <canvas id="previewHoverCanvas" class="border border-gray-300 shadow-sm rounded max-w-full bg-white pointer-events-none opacity-0 transition-opacity duration-200 block" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10"></canvas>
+                            <div id="previewHoverLabel" class="absolute top-2 right-2 bg-black/60 text-white text-xs px-2 py-1 rounded pointer-events-none opacity-0 transition-opacity duration-200" style="z-index: 11">⚙️ Raw Dithering</div>
                         </div>
                     </div>
-                </details>
 
-                <div class="flex space-x-2 mb-4">
-                    <button id="btnRotate" class="w-full bg-yellow-100 hover:bg-yellow-200 text-yellow-700 font-semibold py-2 rounded transition" title="Bild um 90° drehen">↻ Bild drehen</button>
-                </div>
+                    <button id="btnUploadImage" disabled class="w-full bg-gray-500 hover:bg-gray-600 disabled:bg-gray-400 disabled:cursor-not-allowed text-white font-bold py-3 rounded-lg shadow transition-colors mb-2">SENDEN</button>
 
-                <div class="flex justify-center mb-4" id="previewContainer" style="cursor: pointer">
-                    <div class="relative inline-block">
-                        <canvas id="previewCanvas" class="border border-gray-300 shadow-sm rounded max-w-full bg-white block"></canvas>
-                        <canvas id="previewHoverCanvas" class="border border-gray-300 shadow-sm rounded max-w-full bg-white pointer-events-none opacity-0 transition-opacity duration-200 block" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10"></canvas>
-                        <div id="previewHoverLabel" class="absolute top-2 right-2 bg-black/60 text-white text-xs px-2 py-1 rounded pointer-events-none opacity-0 transition-opacity duration-200" style="z-index: 11">⚙️ Raw Dithering</div>
+                    <button id="btnDownloadBin" disabled class="w-full bg-indigo-500 hover:bg-indigo-600 disabled:bg-gray-400 disabled:cursor-not-allowed text-white font-bold py-3 rounded-lg shadow transition-colors block">Download</button>
+
+                    <div id="progressContainer" class="hidden w-full bg-gray-200 rounded-full h-2.5 mt-4">
+                        <div id="progressBar" class="bg-green-600 h-2.5 rounded-full" style="width: 0%"></div>
                     </div>
-                </div>
-
-                <button id="btnUploadImage" disabled class="w-full bg-gray-500 hover:bg-gray-600 disabled:bg-gray-400 disabled:cursor-not-allowed text-white font-bold py-3 rounded-lg shadow transition-colors mb-2">SENDEN</button>
-
-                <button id="btnDownloadBin" disabled class="w-full bg-indigo-500 hover:bg-indigo-600 disabled:bg-gray-400 disabled:cursor-not-allowed text-white font-bold py-3 rounded-lg shadow transition-colors block">Download</button>
-
-                <div id="progressContainer" class="hidden w-full bg-gray-200 rounded-full h-2.5 mt-4">
-                    <div id="progressBar" class="bg-green-600 h-2.5 rounded-full" style="width: 0%"></div>
-                </div>
             </div>
         </div>
 
@@ -585,15 +617,15 @@
         <p class="text-sm text-gray-600 mb-4">Wähle dein Gerät aus, um die neuste lokal verfügbare Offline-Firmware zu flashen.</p>
 
         <label class="block text-sm text-gray-600 mb-1">Gerät (Displaygröße)</label>
-        <select id="offlineOtaDeviceSelect" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none transition mb-6">
-            <option value="epd7">7 Zoll (paper 7)</option>
-            <option value="epd13">13 Zoll (paper l)</option>
-        </select>
+            <select id="offlineOtaDeviceSelect" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none transition mb-6 disabled:bg-gray-100 disabled:text-gray-600 disabled:cursor-not-allowed">
+                <option value="epd7">7.3 Zoll (paper 7)</option>
+                <option value="epd13">13.3 Zoll (paper L)</option>
+            </select>
 
-        <div class="flex space-x-3">
-            <button id="btnCancelOfflineOta" class="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold py-2 rounded-lg transition-colors">Abbrechen</button>
-            <button id="btnConfirmOfflineOta" class="flex-1 bg-purple-500 hover:bg-purple-600 text-white font-bold py-2 rounded-lg transition-colors">Flashen</button>
-        </div>
+            <div class="flex space-x-3">
+                <button id="btnCancelOfflineOta" class="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold py-2 rounded-lg transition-colors">Abbrechen</button>
+                <button id="btnConfirmOfflineOta" class="flex-1 bg-purple-500 hover:bg-purple-600 text-white font-bold py-2 rounded-lg transition-colors">Flashen</button>
+            </div>
     </dialog>
 
     <!-- OTA Confirmation Dialog -->
@@ -603,10 +635,10 @@
 
         <div class="mb-4">
             <label class="block text-sm font-medium text-gray-700 mb-1">Gerätetyp</label>
-            <select id="otaDeviceSelect" class="w-full border-gray-300 rounded-lg shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border">
-                <option value="epd7">Paper 7 (epd7)</option>
-                <option value="epd13">Paper L (epd13)</option>
-            </select>
+                <select id="otaDeviceSelect" class="w-full border-gray-300 rounded-lg shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border disabled:bg-gray-100 disabled:text-gray-600 disabled:cursor-not-allowed">
+                    <option value="epd7">7.3" Paper 7 (epd7)</option>
+                    <option value="epd13">13.3" Paper L (epd13)</option>
+                </select>
         </div>
 
         <div class="flex justify-end gap-3 mt-6">

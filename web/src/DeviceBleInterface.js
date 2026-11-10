@@ -1,3 +1,55 @@
+export const MAX_OTA_FW_SIZE = 0x1d0000; // 1.900.544 Bytes (app0/app1 in part.csv)
+export const MIN_OTA_FW_SIZE = 65536;
+
+export async function validateEsp32FirmwareBinary(buffer) {
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+
+  if (bytes.length < MIN_OTA_FW_SIZE) {
+    throw new Error(`Ungültige Firmware-Datei: Datei ist zu klein (${(bytes.length / 1024).toFixed(1)} KB).`);
+  }
+  if (bytes.length > MAX_OTA_FW_SIZE) {
+    throw new Error(`Firmware-Datei ist zu groß (${(bytes.length / 1024).toFixed(1)} KB, maximal ${(MAX_OTA_FW_SIZE / 1024).toFixed(0)} KB für die OTA-Partition).`);
+  }
+
+  // ESP32 Image Header Magic (0xE9)
+  if (bytes[0] !== 0xe9) {
+    if (bytes[0] === 0x3c || bytes[0] === 0x7b) {
+      throw new Error("Ungültige Firmware-Datei: Statt einer Binärdatei wurde Text/HTML geladen (evtl. 404-Fehler).");
+    }
+    if (bytes[0] === 0x50 && bytes[1] === 0x4b) {
+      throw new Error("Ungültige Firmware-Datei: ZIP-Archiv erkannt. Bitte entpacke zuerst die .bin-Datei.");
+    }
+    throw new Error(`Ungültige Firmware-Datei: Kein gültiger ESP32-Image-Header (Magic 0x${bytes[0].toString(16).padStart(2, "0")} statt 0xe9).`);
+  }
+
+  // ESP32-C6 Chip ID (uint16 LE an Offset 12 == 0x000D)
+  const chipId = bytes[12] | (bytes[13] << 8);
+  if (chipId !== 0x000d) {
+    throw new Error(`Falsche Ziel-Hardware in Firmware-Datei (Chip-ID 0x${chipId.toString(16)}, erwartet ESP32-C6 / 0x000d).`);
+  }
+
+  // ESP_APP_DESC_MAGIC_WORD (uint32 LE an Offset 32 == 0xABCD5432) – unterscheidet App-Image (0x10000) von Bootloader/Merged-Image (0x0)
+  const appDescMagic = (bytes[32] | (bytes[33] << 8) | (bytes[34] << 16) | (bytes[35] << 24)) >>> 0;
+  if (appDescMagic !== 0xabcd5432) {
+    throw new Error("Ungültiges App-Image: Dies scheint ein Bootloader- oder Komplett-Image (0x0) bzw. eine SPIFFS-Datei zu sein. Bitte verwende das App-Image (firmware.bin).");
+  }
+
+  // Falls SHA-256 angehängt ist (hash_appended == 1 an Offset 23), vor dem Upload kryptografisch prüfen
+  if (bytes[23] === 0x01 && globalThis.crypto?.subtle) {
+    const body = bytes.subarray(0, bytes.length - 32);
+    const expectedHash = bytes.subarray(bytes.length - 32);
+    const digestBuf = await globalThis.crypto.subtle.digest("SHA-256", body);
+    const actualHash = new Uint8Array(digestBuf);
+    for (let i = 0; i < 32; i++) {
+      if (actualHash[i] !== expectedHash[i]) {
+        throw new Error("Firmware-Datei ist beschädigt (SHA-256 Prüfsumme ungültig). Bitte lade die Datei erneut herunter.");
+      }
+    }
+  }
+
+  return true;
+}
+
 export class DeviceBleInterface {
   constructor() {
     this.WIFI_SERVICE_UUID = "0515c086-7b0c-11ed-a1eb-0242ac120002";
@@ -15,6 +67,7 @@ export class DeviceBleInterface {
     this.CHARGER_MODE_UUID = "1000000a-0000-0000-0000-000000000001"; // READ/WRITE
     this.SETTINGS_URL_UUID = "1000000b-0000-0000-0000-000000000001"; // READ/WRITE
     this.AUTO_ROTATION_UUID = "1000000c-0000-0000-0000-000000000001"; // READ/WRITE
+    this.FIRMWARE_VERSION_UUID = "1000000d-0000-0000-0000-000000000001"; // READ
 
     this.DEVICE_DATA_SERVICE_UUID = "7f74170e-7b0e-11ed-a1eb-0242ac120002";
     this.WIFI_SCAN_UUID = "5131a3fc-7b0e-11ed-a1eb-0242ac120002";
@@ -26,9 +79,15 @@ export class DeviceBleInterface {
     this.settingsService = null;
     this.wifiService = null;
     this.deviceDataService = null;
-    
+    this.deviceFirmwareVersion = null;
+    this.deviceFirmwareType = null;
+    this.isConnected = false;
+    this.isPaperL = false;
+    this._boundHandleDisconnect = () => this.handleDisconnect();
+
     this.reconnectInterval = null;
     this.manualDisconnect = false;
+    this.otaRebooting = false;
     this.reconnectAttempts = 0;
     this.isScanningWifi = false;
     this.isWritingDirectSettings = false;
@@ -43,6 +102,7 @@ export class DeviceBleInterface {
     this.onSystemStatusChange = () => {};
     this.onSettingsLoaded = () => {};
     this.onUploadProgress = () => {};
+    this.onFirmwareVersionCheck = () => {};
   }
 
   encodeText(text) {
@@ -60,23 +120,33 @@ export class DeviceBleInterface {
     return (crc ^ 0xffffffff) >>> 0;
   }
 
+  detectIsPaperL() {
+    const name = String(this.bleDevice?.name || "")
+      .trim()
+      .toLowerCase();
+    return name.startsWith("epd13");
+  }
+
   async connect() {
     try {
       this.manualDisconnect = false;
+      if (this.reconnectInterval) clearTimeout(this.reconnectInterval);
+      if (this.bleDevice) {
+        this.bleDevice.removeEventListener("gattserverdisconnected", this._boundHandleDisconnect);
+        if (this.bleDevice.gatt?.connected) {
+          this.bleDevice.gatt.disconnect();
+        }
+      }
       this.onStatusChange("Fordere Bluetooth-Kopplung an...", "text-blue-500");
       this.bleDevice = await navigator.bluetooth.requestDevice({
         filters: [{ namePrefix: "epd" }],
         optionalServices: [this.SETTINGS_SERVICE_UUID, this.WIFI_SERVICE_UUID, this.DEVICE_DATA_SERVICE_UUID],
       });
 
-      let isPaperL = false;
-      if (this.bleDevice.name && this.bleDevice.name.startsWith("epd13-")) {
-        isPaperL = true;
-      }
+      this.isPaperL = this.detectIsPaperL();
+      this.bleDevice.addEventListener("gattserverdisconnected", this._boundHandleDisconnect);
 
-      this.bleDevice.addEventListener("gattserverdisconnected", () => this.handleDisconnect());
-
-      await this.connectToGatt(isPaperL);
+      await this.connectToGatt(this.isPaperL);
     } catch (error) {
       console.error(error);
       this.onStatusChange("Kopplung abgebrochen oder Fehler: " + error.message, "text-red-500");
@@ -86,12 +156,17 @@ export class DeviceBleInterface {
   async connectToGatt(isPaperL) {
     if (this.bleDevice && this.bleDevice.gatt.connected) return;
 
+    const resolvedIsPaperL = typeof isPaperL === "boolean" ? isPaperL : this.detectIsPaperL();
+    this.isPaperL = resolvedIsPaperL;
+
     try {
       this.onStatusChange(`Verbinde zu GATT Server... ${this.reconnectAttempts > 0 ? `(Versuch ${this.reconnectAttempts})` : ""}`, "text-blue-500");
       const server = await this.bleDevice.gatt.connect();
       this.reconnectAttempts = 0;
 
       this.onStatusChange("Lade Services...", "text-blue-500");
+      this.deviceFirmwareVersion = null;
+      this.deviceFirmwareType = null;
       this.settingsService = await server.getPrimaryService(this.SETTINGS_SERVICE_UUID);
       this.wifiService = await server.getPrimaryService(this.WIFI_SERVICE_UUID);
       this.deviceDataService = await server.getPrimaryService(this.DEVICE_DATA_SERVICE_UUID);
@@ -100,17 +175,40 @@ export class DeviceBleInterface {
       await this.setupWifiListeners();
       await this.setupSystemListeners();
 
+      if (!this.deviceFirmwareVersion) {
+        try {
+          const fwVerChar = await this.settingsService.getCharacteristic(this.FIRMWARE_VERSION_UUID);
+          const fwVerStr = new TextDecoder()
+            .decode(await fwVerChar.readValue())
+            .replace(/\0/g, "")
+            .trim();
+          if (fwVerStr) {
+            this.deviceFirmwareVersion = fwVerStr;
+            this.deviceFirmwareType = "offline";
+          }
+        } catch (e) {
+          // Ältere Firmware ohne 1000000d Characteristic
+        }
+      }
+
+      this.isConnected = true;
+      this.onFirmwareVersionCheck({
+        version: this.deviceFirmwareVersion,
+        fw: this.deviceFirmwareType,
+        isPaperL: Boolean(this.isPaperL),
+      });
       this.onStatusChange("Erfolgreich Verbunden!", "text-green-600");
-      this.onConnected(isPaperL);
+      this.onConnected(this.isPaperL);
     } catch (error) {
       console.error(error);
+      this.isConnected = false;
       if (!this.manualDisconnect) {
         this.reconnectAttempts++;
         if (this.reconnectAttempts <= 12) {
           this.onStatusChange(`Verbindungsfehler. Reconnect in 5s... (${this.reconnectAttempts}/12)`, "text-orange-500");
           if (this.reconnectInterval) clearTimeout(this.reconnectInterval);
           this.reconnectInterval = setTimeout(() => {
-            this.connectToGatt(isPaperL);
+            this.connectToGatt(this.isPaperL);
           }, 5000);
         } else {
           this.onStatusChange("Verbindung endgültig verloren.", "text-red-500");
@@ -124,6 +222,7 @@ export class DeviceBleInterface {
   }
 
   handleDisconnect() {
+    this.isConnected = false;
     this.settingsService = null;
     this.wifiService = null;
     this.deviceDataService = null;
@@ -135,14 +234,16 @@ export class DeviceBleInterface {
       this.reconnectAttempts = 1;
       this.onStatusChange(`Verbindung unterbrochen. Reconnect in 5s... (${this.reconnectAttempts}/12)`, "text-orange-500");
       this.reconnectInterval = setTimeout(() => {
-        this.connectToGatt();
+        this.connectToGatt(this.isPaperL);
       }, 5000);
+    } else if (this.otaRebooting) {
+      this.otaRebooting = false;
+      this.onStatusChange("Firmware erfolgreich installiert! Gerät startet neu... 🚀", "text-green-600");
     } else {
       this.onStatusChange("Gerät getrennt.", "text-orange-500");
-      this.onDisconnected();
     }
-    
-    // Wir rufen hier nochmal explizit den UI disconnect auf
+
+    // UI disconnect aufrufen
     this.onDisconnected();
   }
 
@@ -294,14 +395,26 @@ export class DeviceBleInterface {
         const jsonStr = new TextDecoder().decode(data).replace(/\0/g, "");
         if (jsonStr.length > 2) {
           try {
-            this.onSystemStatusChange(JSON.parse(jsonStr));
+            const parsed = JSON.parse(jsonStr);
+            if (parsed && typeof parsed.version === "string" && parsed.version.trim()) {
+              this.deviceFirmwareVersion = parsed.version.trim();
+            }
+            if (parsed && typeof parsed.fw === "string" && parsed.fw.trim()) {
+              this.deviceFirmwareType = parsed.fw.trim();
+            }
+            if (parsed && (parsed.display === "13" || parsed.display === 13 || parsed.display === "epd13")) {
+              this.isPaperL = true;
+            } else if (parsed && (parsed.display === "7" || parsed.display === 7 || parsed.display === "epd7")) {
+              this.isPaperL = false;
+            }
+            this.onSystemStatusChange(parsed);
           } catch (err) {}
         }
       };
-      
+
       sysInfoChar.addEventListener("characteristicvaluechanged", (e) => updateSysInfo(e.target.value));
       await sysInfoChar.startNotifications();
-      
+
       const sysInfoData = await sysInfoChar.readValue();
       updateSysInfo(sysInfoData);
     } catch (e) {
@@ -428,10 +541,10 @@ export class DeviceBleInterface {
     try {
       this.isWritingDirectSettings = true;
       let charUUID = null;
-      if (type === 'motionWakeup') charUUID = this.MOTION_WAKEUP_UUID;
-      if (type === 'chargerMode') charUUID = this.CHARGER_MODE_UUID;
-      if (type === 'autoRotation') charUUID = this.AUTO_ROTATION_UUID;
-      
+      if (type === "motionWakeup") charUUID = this.MOTION_WAKEUP_UUID;
+      if (type === "chargerMode") charUUID = this.CHARGER_MODE_UUID;
+      if (type === "autoRotation") charUUID = this.AUTO_ROTATION_UUID;
+
       if (charUUID) {
         const char = await this.settingsService.getCharacteristic(charUUID);
         await char.writeValue(this.encodeText(value ? "1" : "0"));
@@ -467,11 +580,15 @@ export class DeviceBleInterface {
 
   async uploadData(buffer, isFirmware = false) {
     if (!this.settingsService) return;
-    
+
     try {
-      this.onUploadProgress(isFirmware ? 'firmware' : 'image', 0);
-      
-      if (!isFirmware) {
+      this.onUploadProgress(isFirmware ? "firmware" : "image", 0);
+      const dataBytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+
+      if (isFirmware) {
+        this.onStatusChange("Prüfe Firmware-Datei...", "text-blue-500");
+        await validateEsp32FirmwareBinary(dataBytes);
+      } else {
         try {
           const modeChar = await this.settingsService.getCharacteristic(this.MODE_UUID);
           await modeChar.writeValue(this.encodeText("0"));
@@ -486,96 +603,196 @@ export class DeviceBleInterface {
       this.onStatusChange(isFirmware ? "Starte Firmware Update..." : "Öffne Flash Puffer...", "text-blue-500");
       await cmdChar.writeValue(this.encodeText(isFirmware ? "START_FW" : "START"));
 
-      const chunkSize = 238;
-      const checkpointSize = 19040;
+      const initView = await cmdChar.readValue();
+      const initStatus = initView.getUint16(0, true);
+      if (initStatus === 0xffff) {
+        throw new Error(isFirmware ? "OTA-Partition auf dem Gerät konnte nicht geöffnet werden (Flash/RAM Fehler)." : "Geräte-Puffer konnte nicht initialisiert werden (Flash/RAM Fehler).");
+      }
+
+      const useV2 = initView.byteLength >= 8;
+      let chunkSize = 238;
+      let checkpointSize = 19040;
+      let burstSize = 1;
+      let burstDelayMs = 6;
+
+      if (useV2) {
+        await cmdChar.writeValue(this.encodeText("V2"));
+        if (isFirmware) {
+          await cmdChar.writeValue(this.encodeText(`FW_SIZE:${dataBytes.length}`));
+          const sizeView = await cmdChar.readValue();
+          if (sizeView.getUint16(0, true) === 0xffff) {
+            throw new Error(`Firmware-Größe (${(dataBytes.length / 1024).toFixed(1)} KB) passt nicht in die OTA-Partition des Geräts.`);
+          }
+        }
+        const negotiatedPayload = initView.getUint16(6, true);
+        chunkSize = negotiatedPayload >= 20 && negotiatedPayload <= 508 ? negotiatedPayload : 240;
+        checkpointSize = 32768; // 128 * 256B: exakte SPI-NOR-Flash-Page-Ausrichtung
+        burstSize = 6;
+        burstDelayMs = 1;
+      }
+
+      const totalCrc = this.calcCRC32(dataBytes);
+      const totalCrcHex = totalCrc.toString(16).padStart(8, "0");
       let offset = 0;
       let retryCount = 0;
 
-      while (offset < buffer.length) {
-        let windowEnd = Math.min(offset + checkpointSize, buffer.length);
-        let bytesToSend = windowEnd - offset;
+      while (offset < dataBytes.length) {
+        const windowEnd = Math.min(offset + checkpointSize, dataBytes.length);
+        const bytesToSend = windowEnd - offset;
+        let seq = 0;
+        let sendErrorOccurred = false;
 
-        for (let currentOffset = offset; currentOffset < windowEnd; currentOffset += chunkSize) {
-          let chunkData = buffer.slice(currentOffset, currentOffset + chunkSize);
+        try {
+          for (let currentOffset = offset; currentOffset < windowEnd; currentOffset += chunkSize) {
+            const endChunk = Math.min(currentOffset + chunkSize, windowEnd);
+            const chunkData = dataBytes.subarray(currentOffset, endChunk);
+            let packet;
 
-          let packet = new Uint8Array(chunkData.length + 4);
-          let crc = this.calcCRC32(chunkData);
-          packet[0] = crc & 0xff;
-          packet[1] = (crc >> 8) & 0xff;
-          packet[2] = (crc >> 16) & 0xff;
-          packet[3] = (crc >>> 24) & 0xff;
-          packet.set(chunkData, 4);
+            if (useV2) {
+              packet = new Uint8Array(chunkData.length + 1);
+              packet[0] = seq & 0xff;
+              packet.set(chunkData, 1);
+            } else {
+              packet = new Uint8Array(chunkData.length + 4);
+              const crc = this.calcCRC32(chunkData);
+              packet[0] = crc & 0xff;
+              packet[1] = (crc >> 8) & 0xff;
+              packet[2] = (crc >> 16) & 0xff;
+              packet[3] = (crc >>> 24) & 0xff;
+              packet.set(chunkData, 4);
+            }
 
-          let isLastInWindow = currentOffset + chunkSize >= windowEnd;
+            seq++;
+            const isLastInWindow = endChunk >= windowEnd;
 
-          if (isLastInWindow) {
-            await dataChar.writeValue(packet);
+            if (isLastInWindow) {
+              if (dataChar.writeValueWithResponse) {
+                await dataChar.writeValueWithResponse(packet);
+              } else {
+                await dataChar.writeValue(packet);
+              }
+            } else {
+              await dataChar.writeValueWithoutResponse(packet);
+              if (seq % burstSize === 0 && burstDelayMs > 0) {
+                await new Promise((r) => setTimeout(r, burstDelayMs));
+              }
+            }
+          }
+        } catch (sendErr) {
+          if (!this.bleDevice || !this.bleDevice.gatt || !this.bleDevice.gatt.connected) {
+            throw sendErr;
+          }
+          console.warn("BLE Sende-Warnung im Fenster, wiederhole Checkpoint:", sendErr);
+          sendErrorOccurred = true;
+          await new Promise((r) => setTimeout(r, 40));
+        }
+
+        let isWindowValid = false;
+        let ramBytes = 0;
+
+        if (!sendErrorOccurred) {
+          const statusView = await cmdChar.readValue();
+          ramBytes = statusView.getUint16(0, true);
+
+          if (useV2 && ramBytes === 0xffff) {
+            throw new Error(isFirmware ? "Schreibfehler in der internen OTA-Partition während des Firmware-Uploads." : "Schreibfehler im externen Flash-Speicher während des Uploads.");
+          }
+
+          if (useV2 && statusView.byteLength >= 6) {
+            const remoteCrc = statusView.getUint32(2, true);
+            const localCrc = this.calcCRC32(dataBytes.subarray(offset, windowEnd));
+            isWindowValid = ramBytes === bytesToSend && remoteCrc === localCrc;
+            if (!isWindowValid) {
+              console.warn(`Checkpoint Mismatch! Erwartet: ${bytesToSend}B (CRC 0x${localCrc.toString(16)}), RAM hat: ${ramBytes}B (CRC 0x${remoteCrc.toString(16)})`);
+            }
           } else {
-            await dataChar.writeValueWithoutResponse(packet);
-            await new Promise((r) => setTimeout(r, 6));
+            isWindowValid = ramBytes === bytesToSend;
           }
         }
 
-        let statusView = await cmdChar.readValue();
-        let ramBytes = statusView.getUint16(0, true);
-
-        if (ramBytes === bytesToSend) {
+        if (isWindowValid) {
           await cmdChar.writeValue(this.encodeText("FLUSH"));
+          if (isFirmware && useV2 && offset === 0) {
+            const firstFlushView = await cmdChar.readValue();
+            if (firstFlushView.getUint16(0, true) === 0xffff) {
+              throw new Error("Gerät hat den Firmware-Header beim Schreiben in die OTA-Partition abgelehnt.");
+            }
+          }
           offset = windowEnd;
           retryCount = 0;
         } else {
-          console.warn(`Paketverlust! Erwartet: ${bytesToSend}, RAM hat: ${ramBytes}`);
+          if (burstSize > 2) {
+            burstSize = Math.max(1, Math.floor(burstSize / 2));
+          } else {
+            burstDelayMs = Math.min(12, burstDelayMs + 2);
+          }
+          await new Promise((r) => setTimeout(r, 30));
           await cmdChar.writeValue(this.encodeText("CLEAR"));
           retryCount++;
 
           if (retryCount > 10) {
             throw new Error(`Upload fehlgeschlagen! Checkpoint bei ${offset} konnte nicht übertragen werden.`);
           }
-          this.onStatusChange(`Paketverlust! Wiederhole Checkpoint... (Versuch ${retryCount})`, "text-orange-500");
+          this.onStatusChange(`Paketverlust korrigiert – wiederhole Checkpoint... (Versuch ${retryCount})`, "text-orange-500");
         }
 
-        let percent = Math.round((offset / buffer.length) * 100);
-        this.onUploadProgress(isFirmware ? 'firmware' : 'image', percent);
-        this.onStatusChange(`Sende ${isFirmware ? 'Firmware' : 'Daten'}... ${percent}%`, "text-green-500");
+        let percent = Math.round((offset / dataBytes.length) * 100);
+        this.onUploadProgress(isFirmware ? "firmware" : "image", percent);
+        this.onStatusChange(`Sende ${isFirmware ? "Firmware" : "Daten"}... ${percent}%`, "text-green-500");
       }
 
-      this.onUploadProgress(isFirmware ? 'firmware' : 'image', 100);
-      
+      this.onUploadProgress(isFirmware ? "firmware" : "image", 100);
+
       if (isFirmware) {
-        this.onStatusChange("Beende Firmware Update & Neustart...", "text-blue-500");
-        await cmdChar.writeValue(this.encodeText("END_FW"));
-        
-        // Wait briefly and verify if firmware reported an error
-        await new Promise((r) => setTimeout(r, 100));
+        this.onStatusChange("Verifiziere Firmware im Flash (CRC32 & SHA-256)...", "text-blue-500");
+        const hasDeferredReboot = Boolean(this.deviceFirmwareVersion);
+
         try {
+          await cmdChar.writeValue(this.encodeText(useV2 ? `END_FW:${totalCrcHex}` : "END_FW"));
           const statusView = await cmdChar.readValue();
           const statusVal = statusView.getUint16(0, true);
-          if (statusVal === 0xFFFF) {
-            throw new Error("Firmware-Integritätsprüfung auf dem Gerät fehlgeschlagen. Versuche es noch einmal.");
+          const deviceCrc = statusView.byteLength >= 6 ? statusView.getUint32(2, true) : totalCrc;
+
+          if (statusVal === 0xffff || statusVal === 0xfffe || (useV2 && deviceCrc !== totalCrc)) {
+            throw new Error("Firmware-Integritätsprüfung auf dem Gerät fehlgeschlagen (CRC32/SHA-256 Mismatch). Alte Firmware bleibt aktiv.");
           }
         } catch (e) {
-          // If connection was disconnected by the fast reboot, ignore the GATT read error (indicates success)
-          if (!e.message.includes("GATT") && !e.message.includes("disconnect")) {
+          const isDisconnectErr = e?.message && (e.message.includes("GATT") || e.message.includes("disconnect") || e.message.includes("NetworkError"));
+          // Nur ältere Firmwares (< 0.1.0 ohne Versionsmeldung) starten noch direkt im GATT-Callback neu
+          if (hasDeferredReboot || !isDisconnectErr) {
             throw e;
           }
         }
+
+        this.manualDisconnect = true;
+        this.otaRebooting = true;
+        if (this.reconnectInterval) clearTimeout(this.reconnectInterval);
+        this.onStatusChange("Firmware erfolgreich verifiziert! Gerät startet neu... 🚀", "text-green-600");
 
         setTimeout(() => {
           if (this.bleDevice && this.bleDevice.gatt.connected) {
             this.bleDevice.gatt.disconnect();
           }
-        }, 1500);
+        }, 800);
       } else {
-        this.onStatusChange("Speichere im Flash...", "text-blue-500");
-        await cmdChar.writeValue(this.encodeText("END"));
+        this.onStatusChange("Prüfe & speichere im Flash...", "text-blue-500");
+        await cmdChar.writeValue(this.encodeText(useV2 ? `END:${totalCrcHex}` : "END"));
+        if (useV2) {
+          const endStatusView = await cmdChar.readValue();
+          const endStatus = endStatusView.getUint16(0, true);
+          const flashCrc = endStatusView.byteLength >= 6 ? endStatusView.getUint32(2, true) : totalCrc;
+          if (endStatus === 0xffff || flashCrc !== totalCrc) {
+            throw new Error(`Bild-Integritätsprüfung im Flash fehlgeschlagen (Flash-CRC 0x${flashCrc.toString(16)} != 0x${totalCrcHex}).`);
+          }
+        }
         this.onStatusChange("Aktualisiere das Display...", "text-blue-500");
-        await new Promise((r) => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, 200));
         await cmdChar.writeValue(this.encodeText("APPLY"));
         this.onStatusChange("Upload abgeschlossen! 🚀", "text-green-600");
       }
     } catch (error) {
       console.error(error);
-      this.onStatusChange(`Fehler beim ${isFirmware ? 'Firmware ' : ''}Upload: ` + error.message, "text-red-500");
+      this.onStatusChange(`Fehler beim ${isFirmware ? "Firmware " : ""}Upload: ` + error.message, "text-red-500");
       throw error;
     }
   }

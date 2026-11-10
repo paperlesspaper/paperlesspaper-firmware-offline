@@ -1,6 +1,32 @@
 import { GeneratePicture } from "./GeneratePicture.js";
-import { DeviceBleInterface } from "./DeviceBleInterface.js";
+import { DeviceBleInterface, validateEsp32FirmwareBinary } from "./DeviceBleInterface.js";
 import { ESPLoader, Transport } from "esptool-js";
+
+const EXPECTED_FW_VERSION =
+  typeof __EXPECTED_FW_VERSION__ !== "undefined" ? __EXPECTED_FW_VERSION__ : "0.1.0";
+
+function compareSemver(vA, vB) {
+  const clean = (v) =>
+    String(v || "")
+      .trim()
+      .replace(/^v/i, "")
+      .split("-")[0]
+      .split(".")
+      .map((n) => parseInt(n, 10) || 0);
+  const a = clean(vA);
+  const b = clean(vB);
+  const len = Math.max(a.length, b.length, 3);
+  for (let i = 0; i < len; i++) {
+    const diff = (a[i] || 0) - (b[i] || 0);
+    if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+const expectedOfflineFwBadge = document.getElementById("expectedOfflineFwBadge");
+if (expectedOfflineFwBadge) {
+  expectedOfflineFwBadge.innerText = `v${EXPECTED_FW_VERSION}`;
+}
 
 const generatePicture = new GeneratePicture();
 const bleInterface = new DeviceBleInterface();
@@ -122,19 +148,78 @@ const processingSaturation = document.getElementById("processingSaturation");
 const btnAutoDither = document.getElementById("btnAutoDither");
 const btnRotate = document.getElementById("btnRotate");
 const displaySizeSelect = document.getElementById("displaySizeSelect");
+const displayAutoBadge = document.getElementById("displayAutoBadge");
+const imageSettingsDetails = document.getElementById("imageSettingsDetails");
+
+function expandImageSettings() {
+  if (imageSettingsDetails) {
+    imageSettingsDetails.open = true;
+  }
+}
+
+function syncUploadButtonState() {
+  if (!btnUploadImage) return;
+  const hasImage = Boolean(generatePicture.getOriginalImage());
+  if (bleInterface.isConnected) {
+    btnUploadImage.disabled = !hasImage;
+    btnUploadImage.classList.remove("bg-gray-500", "hover:bg-gray-600", "bg-gray-400");
+    btnUploadImage.classList.add("bg-green-600", "hover:bg-green-700");
+    btnUploadImage.innerText = "SENDEN";
+  } else {
+    btnUploadImage.disabled = true;
+    btnUploadImage.classList.remove("bg-green-600", "hover:bg-green-700", "bg-green-500");
+    btnUploadImage.classList.add("bg-gray-500", "hover:bg-gray-600");
+    btnUploadImage.innerText = "SENDEN";
+  }
+}
+
+function applyDisplayProfile(isPaperL, lockToDevice = false) {
+  const nextWidth = isPaperL ? 1200 : 800;
+  const nextHeight = isPaperL ? 1600 : 480;
+  const dimsChanged = EPD_WIDTH !== nextWidth || EPD_HEIGHT !== nextHeight;
+
+  EPD_WIDTH = nextWidth;
+  EPD_HEIGHT = nextHeight;
+  canvas.width = EPD_WIDTH;
+  canvas.height = EPD_HEIGHT;
+
+  if (displaySizeSelect) {
+    displaySizeSelect.value = isPaperL ? "13" : "7";
+    displaySizeSelect.disabled = lockToDevice;
+    displaySizeSelect.title = lockToDevice
+      ? `Automatisch an verbundenes Gerät angepasst (${isPaperL ? '13.3"' : '7.3"'})`
+      : "";
+  }
+  if (displayAutoBadge) {
+    displayAutoBadge.classList.toggle("hidden", !lockToDevice);
+  }
+
+  const deviceCode = isPaperL ? "epd13" : "epd7";
+  if (otaDeviceSelect) {
+    otaDeviceSelect.value = deviceCode;
+  }
+  if (offlineOtaDeviceSelect) {
+    offlineOtaDeviceSelect.value = deviceCode;
+  }
+
+  const img = generatePicture.getOriginalImage();
+  if (img && dimsChanged) {
+    if ((img.height > img.width && EPD_WIDTH > EPD_HEIGHT) || (img.width > img.height && EPD_HEIGHT > EPD_WIDTH)) {
+      generatePicture.setImageRotation(270);
+    } else {
+      generatePicture.setImageRotation(0);
+    }
+    updatePreview();
+  }
+}
 
 if (displaySizeSelect) {
   displaySizeSelect.addEventListener("change", (e) => {
-    if (e.target.value === "13") {
-      EPD_WIDTH = 1200;
-      EPD_HEIGHT = 1600;
-    } else {
-      EPD_WIDTH = 800;
-      EPD_HEIGHT = 480;
+    if (bleInterface.isConnected) {
+      applyDisplayProfile(bleInterface.isPaperL, true);
+      return;
     }
-    canvas.width = EPD_WIDTH;
-    canvas.height = EPD_HEIGHT;
-    if (generatePicture.getOriginalImage()) updatePreview();
+    applyDisplayProfile(e.target.value === "13", false);
   });
 }
 
@@ -222,46 +307,124 @@ bleInterface.onStatusChange = (text, colorClass) => {
 };
 
 bleInterface.onConnected = (isPaperL) => {
-  if (isPaperL) {
-    EPD_WIDTH = 1200;
-    EPD_HEIGHT = 1600;
-    document.title = "paper L Setup";
-    const headerTitle = document.querySelector("h1");
-    if (headerTitle) headerTitle.innerText = "paper L Setup";
-    if (displaySizeSelect) displaySizeSelect.value = "13";
+  const is13Inch = Boolean(isPaperL);
+  applyDisplayProfile(is13Inch, true);
+
+  const headerTitle = document.querySelector("h1");
+  if (is13Inch) {
+    document.title = 'paper L Setup (13.3")';
+    if (headerTitle) headerTitle.innerText = 'Paperlesspaper Offline (13.3")';
   } else {
-    EPD_WIDTH = 800;
-    EPD_HEIGHT = 480;
-    document.title = "paper 7 Setup";
-    const headerTitle = document.querySelector("h1");
-    if (headerTitle) headerTitle.innerText = "E-Paper Setup";
-    if (displaySizeSelect) displaySizeSelect.value = "7";
-  }
-  canvas.width = EPD_WIDTH;
-  canvas.height = EPD_HEIGHT;
-  if (generatePicture.getOriginalImage()) {
-    updatePreview();
+    document.title = 'paper 7 Setup (7.3")';
+    if (headerTitle) headerTitle.innerText = 'Paperlesspaper Offline (7.3")';
   }
 
   btnConnect.classList.add("hidden");
   btnDisconnect.classList.remove("hidden");
 
   // controlsOta is always visible in viewOta
-
-  if (btnUploadImage) {
-    btnUploadImage.disabled = false;
-    btnUploadImage.classList.remove("bg-gray-500", "hover:bg-gray-600", "bg-gray-400");
-    btnUploadImage.classList.add("bg-green-600", "hover:bg-green-700");
-    btnUploadImage.innerText = "SENDEN";
-  }
+  syncUploadButtonState();
 
   controls.classList.remove("hidden");
   setTimeout(() => controls.classList.remove("opacity-0"), 100);
 };
 
+const firmwareVersionWarning = document.getElementById("firmwareVersionWarning");
+const firmwareVersionWarningTitle = document.getElementById("firmwareVersionWarningTitle");
+const firmwareVersionWarningText = document.getElementById("firmwareVersionWarningText");
+const btnJumpToOta = document.getElementById("btnJumpToOta");
+
+if (btnJumpToOta) {
+  btnJumpToOta.addEventListener("click", () => {
+    document.getElementById("tabOta")?.click();
+    if (typeof setOtaMode === "function") {
+      setOtaMode("ble");
+    }
+    const offlineCard = document.getElementById("offlineFirmwareCard");
+    if (offlineCard) {
+      offlineCard.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  });
+}
+
+function updateFirmwareVersionUI(versionInfo) {
+  const fwVersionEl = document.getElementById("systemFwVersion");
+  const fwIconBg = document.getElementById("fwVersionIconBg");
+  const fwIcon = document.getElementById("fwVersionIcon");
+  const devVer = versionInfo?.version ? String(versionInfo.version).trim() : null;
+
+  if (devVer && compareSemver(devVer, EXPECTED_FW_VERSION) >= 0) {
+    if (firmwareVersionWarning) firmwareVersionWarning.classList.add("hidden");
+    if (fwVersionEl) {
+      fwVersionEl.innerText = `v${devVer} ✓`;
+      fwVersionEl.className = "text-sm font-bold text-green-600";
+    }
+    if (fwIconBg) fwIconBg.setAttribute("class", "bg-green-100 p-2 rounded-full transition-colors");
+    if (fwIcon) fwIcon.setAttribute("class", "w-5 h-5 text-green-600 transition-colors");
+  } else {
+    if (firmwareVersionWarning) firmwareVersionWarning.classList.remove("hidden");
+    if (devVer) {
+      if (firmwareVersionWarningTitle) {
+        firmwareVersionWarningTitle.innerText = `Firmware-Update verfügbar (v${devVer} → v${EXPECTED_FW_VERSION})`;
+      }
+      if (firmwareVersionWarningText) {
+        firmwareVersionWarningText.innerText = `Auf deinem E-Paper läuft Version v${devVer} (aktuell ist v${EXPECTED_FW_VERSION}). Bitte aktualisiere die Firmware für maximale Stabilität und Fehlerkorrektur.`;
+      }
+      if (fwVersionEl) {
+        fwVersionEl.innerText = `v${devVer} ⚠`;
+        fwVersionEl.className = "text-sm font-bold text-amber-600";
+      }
+    } else {
+      if (firmwareVersionWarningTitle) {
+        firmwareVersionWarningTitle.innerText = "Veraltete oder abweichende Firmware erkannt";
+      }
+      if (firmwareVersionWarningText) {
+        firmwareVersionWarningText.innerText = `Auf deinem E-Paper ist nicht die aktuelle Offline-Firmware v${EXPECTED_FW_VERSION} installiert. Ein Update wird empfohlen.`;
+      }
+      if (fwVersionEl) {
+        fwVersionEl.innerText = "Veraltet ⚠";
+        fwVersionEl.className = "text-sm font-bold text-amber-600";
+      }
+    }
+    if (fwIconBg) fwIconBg.setAttribute("class", "bg-amber-100 p-2 rounded-full transition-colors");
+    if (fwIcon) fwIcon.setAttribute("class", "w-5 h-5 text-amber-600 transition-colors");
+  }
+}
+
+bleInterface.onFirmwareVersionCheck = (versionInfo) => {
+  updateFirmwareVersionUI(versionInfo);
+};
+
 bleInterface.onDisconnected = () => {
   controls.classList.add("hidden", "opacity-0");
   // controlsOta is always visible in viewOta
+
+  document.title = "E-Paper Konfiguration";
+  const headerTitle = document.querySelector("h1");
+  if (headerTitle) headerTitle.innerText = "Paperlesspaper Offline";
+
+  if (displaySizeSelect) {
+    displaySizeSelect.disabled = false;
+    displaySizeSelect.title = "";
+  }
+  if (displayAutoBadge) {
+    displayAutoBadge.classList.add("hidden");
+  }
+  if (otaDeviceSelect) {
+    otaDeviceSelect.disabled = false;
+  }
+  if (offlineOtaDeviceSelect) {
+    offlineOtaDeviceSelect.disabled = false;
+  }
+
+  if (firmwareVersionWarning) {
+    firmwareVersionWarning.classList.add("hidden");
+  }
+  const fwVersionEl = document.getElementById("systemFwVersion");
+  if (fwVersionEl) {
+    fwVersionEl.innerText = "--";
+    fwVersionEl.className = "text-sm font-bold text-gray-800";
+  }
 
   const statusBar = document.getElementById("systemStatusBar");
   if (statusBar) {
@@ -269,12 +432,7 @@ bleInterface.onDisconnected = () => {
     setTimeout(() => statusBar.classList.add("hidden"), 500);
   }
 
-  if (btnUploadImage) {
-    btnUploadImage.disabled = true;
-    btnUploadImage.classList.remove("bg-green-600", "hover:bg-green-700", "bg-green-500");
-    btnUploadImage.classList.add("bg-gray-500", "hover:bg-gray-600");
-    btnUploadImage.innerText = "SENDEN";
-  }
+  syncUploadButtonState();
 
   wifiList.innerHTML = "";
 
@@ -377,6 +535,14 @@ bleInterface.onSystemStatusChange = (info) => {
     chargerEl.className = "text-sm font-bold text-gray-500";
     chargerIconBg.setAttribute("class", "bg-gray-100 p-2 rounded-full transition-colors");
     chargerIcon.setAttribute("class", "w-5 h-5 text-gray-500 transition-colors");
+  }
+  if (info.display === "13" || info.display === 13 || info.display === "epd13") {
+    applyDisplayProfile(true, true);
+  } else if (info.display === "7" || info.display === 7 || info.display === "epd7") {
+    applyDisplayProfile(false, true);
+  }
+  if (typeof info.version === "string" && info.version.trim()) {
+    updateFirmwareVersionUI({ version: info.version.trim(), fw: info.fw });
   }
 };
 
@@ -593,10 +759,13 @@ async function updatePreview(options = null) {
   setStatus("Erzeuge Dithering Vorschau...", "text-yellow-600");
 
   try {
+    if (bleInterface.isConnected) {
+      applyDisplayProfile(bleInterface.isPaperL, true);
+    }
     generatePicture.setEpdDimensions(EPD_WIDTH, EPD_HEIGHT);
     await generatePicture.processPreview(canvas, hoverCanvas, paletteSelect ? paletteSelect.value : "spectra6Custom", matrix, isSerpentine, brightnessInt, contrastInt, saturationInt, currentOptions);
 
-    btnUploadImage.disabled = false;
+    syncUploadButtonState();
     btnDownloadBin.disabled = false;
     setStatus("Bildvorschau optimiert und bereit zum Upload!", "text-green-600");
   } catch (e) {
@@ -607,6 +776,10 @@ async function updatePreview(options = null) {
 
 async function generateFullBuffer(options = null) {
   if (!generatePicture.getOriginalImage()) return;
+
+  if (bleInterface.isConnected) {
+    applyDisplayProfile(bleInterface.isPaperL, true);
+  }
 
   const matrix = errorDiffusionMatrix.value;
   const isSerpentine = serpentine.checked;
@@ -630,12 +803,16 @@ fileInput.addEventListener("change", (e) => {
 
   const img = new Image();
   img.onload = () => {
+    if (bleInterface.isConnected) {
+      applyDisplayProfile(bleInterface.isPaperL, true);
+    }
     generatePicture.setOriginalImage(img);
     if ((img.height > img.width && EPD_WIDTH > EPD_HEIGHT) || (img.width > img.height && EPD_HEIGHT > EPD_WIDTH)) {
       generatePicture.setImageRotation(270);
     } else {
       generatePicture.setImageRotation(0);
     }
+    expandImageSettings();
     updatePreview();
   };
   img.src = URL.createObjectURL(file);
@@ -763,26 +940,32 @@ btnDownloadBin.addEventListener("click", async () => {
 btnUploadImage.addEventListener("click", async () => {
   if (!generatePicture.getOriginalImage()) return;
 
+  if (bleInterface.isConnected) {
+    applyDisplayProfile(bleInterface.isPaperL, true);
+  }
+
   try {
     btnUploadImage.disabled = true;
     setStatus("Generiere volle Auflösung für Upload...", "text-blue-500");
     await generateFullBuffer(generatePicture.getCurrentDitherOptions());
   } catch (err) {
     setStatus("Fehler beim Generieren: " + err.message, "text-red-500");
-    btnUploadImage.disabled = false;
+    syncUploadButtonState();
     return;
   }
 
   try {
     btnUploadImage.disabled = true;
+    progressBar.classList.remove("bg-red-500");
     progressContainer.classList.remove("hidden");
     progressBar.style.width = "0%";
 
     await bleInterface.uploadImage(generatePicture.getProcessedImageBuffer());
+    expandImageSettings();
   } catch (error) {
     progressBar.classList.add("bg-red-500");
   } finally {
-    btnUploadImage.disabled = false;
+    syncUploadButtonState();
     btnDownloadBin.disabled = false;
   }
 });
@@ -1176,14 +1359,11 @@ btnFetchOriginalFw.addEventListener("click", () => {
             setStatus("Bitte zuerst mit dem E-Paper verbinden.", "text-red-500");
             return;
         }
-        
-        if (bleInterface.bleDevice && bleInterface.bleDevice.name && bleInterface.bleDevice.name.startsWith("epd13-")) {
-            otaDeviceSelect.value = "epd13";
-        } else {
-            otaDeviceSelect.value = "epd7";
-        }
+        otaDeviceSelect.value = bleInterface.isPaperL ? "epd13" : "epd7";
+        otaDeviceSelect.disabled = true;
     } else {
-        otaDeviceSelect.value = "epd7"; // Default in serial mode
+        otaDeviceSelect.disabled = false;
+        otaDeviceSelect.value = (bleInterface.isConnected ? bleInterface.isPaperL : displaySizeSelect?.value === "13") ? "epd13" : "epd7";
     }
     
     otaDialog.showModal();
@@ -1217,6 +1397,7 @@ btnConfirmOta.addEventListener("click", async () => {
         
         const arrayBuffer = await res.arrayBuffer();
         const buffer = new Uint8Array(arrayBuffer);
+        await validateEsp32FirmwareBinary(buffer);
         
         if (otaMethod === "ble") {
             await uploadFirmwareBle(buffer);
@@ -1236,14 +1417,11 @@ if (btnUpdateOfflineFw) {
                 setStatus("Bitte zuerst mit dem E-Paper verbinden.", "text-red-500");
                 return;
             }
-            
-            if (bleInterface.bleDevice && bleInterface.bleDevice.name && bleInterface.bleDevice.name.startsWith("epd13-")) {
-                offlineOtaDeviceSelect.value = "epd13";
-            } else {
-                offlineOtaDeviceSelect.value = "epd7";
-            }
+            offlineOtaDeviceSelect.value = bleInterface.isPaperL ? "epd13" : "epd7";
+            offlineOtaDeviceSelect.disabled = true;
         } else {
-            offlineOtaDeviceSelect.value = "epd7"; // Default in serial mode
+            offlineOtaDeviceSelect.disabled = false;
+            offlineOtaDeviceSelect.value = (bleInterface.isConnected ? bleInterface.isPaperL : displaySizeSelect?.value === "13") ? "epd13" : "epd7";
         }
         
         otaOfflineDialog.showModal();
@@ -1288,6 +1466,7 @@ if (btnConfirmOfflineOta) {
             
             const arrayBuffer = await res.arrayBuffer();
             const buffer = new Uint8Array(arrayBuffer);
+            await validateEsp32FirmwareBinary(buffer);
             
             if (otaMethod === "ble") {
                 await uploadFirmwareBle(buffer);
@@ -1320,11 +1499,17 @@ fwInput.addEventListener("change", (e) => {
   const reader = new FileReader();
   reader.onload = async (evt) => {
     const buffer = new Uint8Array(evt.target.result);
-    if (otaMethod === "ble") {
-      await uploadFirmwareBle(buffer);
-    } else {
-      const sizeKb = (file.size / 1024).toFixed(1) + " KB";
-      openUsbFlashDialog(buffer, file.name, sizeKb, "0x10000", "Firmware");
+    try {
+      await validateEsp32FirmwareBinary(buffer);
+      if (otaMethod === "ble") {
+        await uploadFirmwareBle(buffer);
+      } else {
+        const sizeKb = (file.size / 1024).toFixed(1) + " KB";
+        openUsbFlashDialog(buffer, file.name, sizeKb, "0x10000", "Firmware");
+      }
+    } catch (err) {
+      console.error(err);
+      setStatus("Ungültige Firmware-Datei: " + err.message, "text-red-500");
     }
     fwInput.value = "";
   };

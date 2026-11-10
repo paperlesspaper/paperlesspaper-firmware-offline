@@ -2,16 +2,21 @@
 #include <Arduino.h>
 
 // ==========================================
-// DISPLAY SELECTION
+// DISPLAY SELECTION (configured via platformio.ini)
 // ==========================================
-#define EPD_TYPE_13INCH
-// #define EPD_TYPE_7INCH
+#if !defined(EPD_TYPE_13INCH) && !defined(EPD_TYPE_7INCH)
+#define EPD_TYPE_7INCH
+#endif
 // ==========================================
 
-#define SOFTWARE_VERSION "0.0.0"
+#ifndef SOFTWARE_VERSION
+#define SOFTWARE_VERSION "0.1.0"
+#endif
+#define MAX_OTA_FW_SIZE 0x1D0000UL
 #define DEBUG 1
 
 #define DISPLAY_SPI_SPEED 20000000
+#define FLASH_SPI_SPEED 8000000
 #define QR_VERSION 3
 #define QR_QUIET_ZONE 4
 

@@ -287,6 +287,7 @@ int setImageFromFS_7inch(String fileName) {
    saveFile = SerialFlash.open(fileName.c_str());
    if (!saveFile) {
       Serial.println("[BMP] File missing");
+      epaperIsUpdating = false;
       return -1;
    }
 
@@ -295,8 +296,8 @@ int setImageFromFS_7inch(String fileName) {
    int offsetData = 0;
 
    // Check if the file is a standard BMP (starts with 'BM')
-   uint8_t magic[2];
-   if (saveFile.read(magic, 2) == 2) {
+   uint8_t magic[2] = {0xFF, 0xFF};
+   if (saveFile.read(magic, 2) == 2 && !(magic[0] == 0xFF && magic[1] == 0xFF)) {
       if (magic[0] == 'B' && magic[1] == 'M') {
          // It's a standard BMP file. Read the pixel data offset at byte 0x0A
          saveFile.seek(0x0A);
@@ -309,11 +310,20 @@ int setImageFromFS_7inch(String fileName) {
          Serial.println("[BMP] Detected RAW payload (no BM magic). Reading from byte 0.");
       }
    }
+   else {
+      Serial.println("[BMP] Image slot is empty/erased");
+      saveFile.close();
+      epaperIsUpdating = false;
+      return -1;
+   }
 
    Serial.printf("[BMP] Loading Image H: %d W: %d\n", height, width);
 
-   if (width > EPD_WIDTH || height > EPD_HEIGHT) {
-      Serial.printf("[BMP] Image too wide or tall!");
+   if (width > EPD_WIDTH || height > EPD_HEIGHT || offsetData < 0 ||
+       saveFile.size() < (uint32_t)offsetData + (EPD_WIDTH * EPD_HEIGHT / 2)) {
+      Serial.printf("[BMP] Image invalid or smaller than required payload!\n");
+      saveFile.close();
+      epaperIsUpdating = false;
       return -1;
    }
 
@@ -325,6 +335,11 @@ int setImageFromFS_7inch(String fileName) {
 
    int bufferSize = width / 2;
    uint8_t *lineBuffer = (uint8_t *)malloc(bufferSize);
+   if (!lineBuffer) {
+      saveFile.close();
+      epaperIsUpdating = false;
+      return -1;
+   }
 
    display.firstPage();
    do {
@@ -345,6 +360,7 @@ int setImageFromFS_7inch(String fileName) {
    while (display.nextPage());
 
    free(lineBuffer);
+   saveFile.close();
    Serial.println("[EPD] End Draw...");
    epaperIsUpdating = false;
    return 0;
@@ -355,6 +371,7 @@ int setImageFromFS_13inch(String fileName, bool doRefresh) {
    saveFile = SerialFlash.open(fileName.c_str());
    if (!saveFile) {
       Serial.println("[BMP] File missing");
+      epaperIsUpdating = false;
       return -1;
    }
 
@@ -363,9 +380,9 @@ int setImageFromFS_13inch(String fileName, bool doRefresh) {
    int offsetData = 0;
 
    // Check if the file is a standard BMP (starts with 'BM')
-   uint8_t magic[2];
+   uint8_t magic[2] = {0xFF, 0xFF};
    saveFile.seek(0);
-   if (saveFile.read(magic, 2) == 2) {
+   if (saveFile.read(magic, 2) == 2 && !(magic[0] == 0xFF && magic[1] == 0xFF)) {
       if (magic[0] == 'B' && magic[1] == 'M') {
          // It's a standard BMP file. Read the pixel data offset at byte 0x0A
          saveFile.seek(0x0A);
@@ -379,11 +396,20 @@ int setImageFromFS_13inch(String fileName, bool doRefresh) {
          offsetData = 0;
       }
    }
+   else {
+      Serial.println("[BMP] Image slot is empty/erased");
+      saveFile.close();
+      epaperIsUpdating = false;
+      return -1;
+   }
 
    Serial.printf("[BMP] Loading Image H: %d W: %d\n", height, width);
 
-   if (width > EPD_WIDTH || height > EPD_HEIGHT) {
-      Serial.printf("[BMP] Image too wide or tall!");
+   if (width > EPD_WIDTH || height > EPD_HEIGHT || offsetData < 0 ||
+       saveFile.size() < (uint32_t)offsetData + (EPD_WIDTH * EPD_HEIGHT / 2)) {
+      Serial.printf("[BMP] Image invalid or smaller than required payload!\n");
+      saveFile.close();
+      epaperIsUpdating = false;
       return -1;
    }
 
@@ -414,12 +440,15 @@ int setImageFromFS_13inch(String fileName, bool doRefresh) {
 
          if (!chunkBuffer) {
             Serial.println("[BMP] Malloc for 64 chunks failed! Aborting.");
+            saveFile.close();
+            epaperIsUpdating = false;
             return -1;
          }
       }
    }
 
    Serial.println("[EPD] Streaming Partial Image to Display... ");
+   const bool rotate180 = (displaySettings.rotationPicture > 0);
 
    for (int half = 0; half < 2; half++) {
       int csPin = (half == 0) ? CS_EPD_PIN : EPD_CS_S;
@@ -434,8 +463,6 @@ int setImageFromFS_13inch(String fileName, bool doRefresh) {
          uint16_t VRST = yImageStart / 2;
          uint16_t VRED = (yImageStart + linesPerChunk) / 2 - 1;
 
-         bool rotate180 = (displaySettings.rotationPicture > 0);
-
          for (int i = 0; i < linesPerChunk; i++) {
             int lineOnDisplay = yImageStart + i;
             int lineInImage = rotate180 ? (physHeight - 1 - lineOnDisplay) : lineOnDisplay;
@@ -446,7 +473,12 @@ int setImageFromFS_13inch(String fileName, bool doRefresh) {
 
             if (rotate180) {
                uint8_t tempLine[300];
-               saveFile.read(tempLine, bytesPerHalfLine);
+               if (saveFile.read(tempLine, bytesPerHalfLine) != (uint32_t)bytesPerHalfLine) {
+                  free(chunkBuffer);
+                  saveFile.close();
+                  epaperIsUpdating = false;
+                  return -1;
+               }
                for (int b = 0; b < bytesPerHalfLine; b++) {
                   uint8_t origByte = tempLine[bytesPerHalfLine - 1 - b];
                   // swap nibbles: left pixel becomes right pixel, right pixel becomes left pixel
@@ -454,10 +486,14 @@ int setImageFromFS_13inch(String fileName, bool doRefresh) {
                }
             }
             else {
-               saveFile.read(chunkBuffer + i * bytesPerHalfLine, bytesPerHalfLine);
+               if (saveFile.read(chunkBuffer + i * bytesPerHalfLine, bytesPerHalfLine) != (uint32_t)bytesPerHalfLine) {
+                  free(chunkBuffer);
+                  saveFile.close();
+                  epaperIsUpdating = false;
+                  return -1;
+               }
             }
          }
-         SPI.endTransaction();
          SPI.beginTransaction(SPISettings(DISPLAY_SPI_SPEED, MSBFIRST, SPI_MODE0));
 
          // PTLW (Partial Window) Command Setting 0x83
@@ -503,6 +539,7 @@ int setImageFromFS_13inch(String fileName, bool doRefresh) {
 
    // PTLW (Partial Window) für beide Controller wieder deaktivieren,
    // damit der nachfolgende Refresh (DRF) den gesamten Bildschirm erfasst!
+   SPI.beginTransaction(SPISettings(DISPLAY_SPI_SPEED, MSBFIRST, SPI_MODE0));
    digitalWrite(CS_EPD_PIN, LOW);
    SPI.transfer(0x83);
    for (int i = 0; i < 9; i++)
@@ -514,6 +551,7 @@ int setImageFromFS_13inch(String fileName, bool doRefresh) {
    for (int i = 0; i < 9; i++)
       SPI.transfer(0x00);
    digitalWrite(EPD_CS_S, HIGH);
+   SPI.endTransaction();
 
    if (doRefresh) {
       display.refresh();
