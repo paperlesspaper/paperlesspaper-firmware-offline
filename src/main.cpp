@@ -205,6 +205,9 @@ volatile bool forceExitSetup = false;
 volatile bool isBleClientConnected = false;
 bool buttonWake = false; // true if wakeup via reset button
 volatile bool fwUpdateInProgress = false;
+volatile bool fwRebootPending = false;
+unsigned long fwRebootScheduledAt = 0;
+uint32_t bleExpectedFwBytes = 0;
 bool stopAccRecheck = false;
 bool isOrientUpdate = false;
 uint32_t lastDownloadedBytes = 0;
@@ -1214,6 +1217,7 @@ class ServerCallbacks : public NimBLEServerCallbacks
       }
       bleWriteBufferPos = 0;
       bleExpectedSeq = 0;
+      bleExpectedFwBytes = 0;
       bleSeqError = false;
       bleUploadError = false;
       bleProtocolV2 = false;
@@ -1359,6 +1363,7 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
             bleUploadError = false;
             bleSeqError = false;
             bleExpectedSeq = 0;
+            bleExpectedFwBytes = 0;
             bleBytesReceived = 0;
             bleWriteBufferPos = 0;
             bleRunningCrc = 0;
@@ -1388,10 +1393,26 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
                return;
             }
             if (fwUpdateInProgress && bleWriteBufferPos > 0) {
+               if (bleBytesReceived == 0 && bleWriteBuffer[0] != 0xE9) {
+                  Serial.printf("[BLE] ERROR: Invalid ESP32 firmware magic byte 0x%02X!\n", bleWriteBuffer[0]);
+                  Update.abort();
+                  fwUpdateInProgress = false;
+                  bleUploadError = true;
+                  return;
+               }
+               if (bleExpectedFwBytes > 0 && (bleBytesReceived + bleWriteBufferPos) > bleExpectedFwBytes) {
+                  Serial.println("[BLE] ERROR: Firmware write exceeds declared FW_SIZE!");
+                  Update.abort();
+                  fwUpdateInProgress = false;
+                  bleUploadError = true;
+                  return;
+               }
                size_t written = Update.write(bleWriteBuffer, bleWriteBufferPos);
                if (written != bleWriteBufferPos) {
                   Serial.println("[BLE] ERROR: Update.write failed during FLUSH!");
                   Update.printError(Serial);
+                  Update.abort();
+                  fwUpdateInProgress = false;
                   bleUploadError = true;
                   return;
                }
@@ -1489,7 +1510,7 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
             resetAll(true);
             ESP.restart();
          }
-         else if (cmd == "START_FW") {
+         else if (cmd == "START_FW" || cmd.startsWith("START_FW:")) {
             if (bleFile) {
                discardFlashSlot(bleFile);
             }
@@ -1497,14 +1518,24 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
                Update.abort();
                fwUpdateInProgress = false;
             }
+            fwRebootPending = false;
             bleUploadError = false;
             bleSeqError = false;
             bleExpectedSeq = 0;
+            bleExpectedFwBytes = (cmd.startsWith("START_FW:") && cmd.length() > 9)
+                                    ? (uint32_t)strtoul(cmd.c_str() + 9, nullptr, 10)
+                                    : 0;
             bleBytesReceived = 0;
             bleWriteBufferPos = 0;
             bleRunningCrc = 0;
             bleFinalFlashCrc = 0;
             bleProtocolV2 = false;
+
+            if (cmd.startsWith("START_FW:") && (bleExpectedFwBytes < 65536 || bleExpectedFwBytes > MAX_OTA_FW_SIZE)) {
+               Serial.printf("[BLE] ERROR: Invalid firmware size %u (max %lu)!\n", bleExpectedFwBytes, (unsigned long)MAX_OTA_FW_SIZE);
+               bleUploadError = true;
+               return;
+            }
 
             if (bleWriteBuffer == nullptr) {
                bleWriteBuffer = (uint8_t *)malloc(BLE_BUFFER_SIZE);
@@ -1515,7 +1546,8 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
                return;
             }
             tickerFailsave.detach();
-            if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+            size_t beginSize = (bleExpectedFwBytes > 0) ? (size_t)bleExpectedFwBytes : (size_t)UPDATE_SIZE_UNKNOWN;
+            if (!Update.begin(beginSize)) {
                Update.printError(Serial);
                free(bleWriteBuffer);
                bleWriteBuffer = nullptr;
@@ -1526,12 +1558,42 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
                Serial.println("[BLE] Firmware Update STARTED.");
             }
          }
+         else if (cmd.startsWith("FW_SIZE:")) {
+            uint32_t fwSize = (cmd.length() > 8) ? (uint32_t)strtoul(cmd.c_str() + 8, nullptr, 10) : 0;
+            if (!fwUpdateInProgress || bleBytesReceived > 0 || fwSize < 65536 || fwSize > MAX_OTA_FW_SIZE) {
+               Serial.printf("[BLE] ERROR: Rejected FW_SIZE %u (max %lu)!\n", fwSize, (unsigned long)MAX_OTA_FW_SIZE);
+               if (fwUpdateInProgress) {
+                  Update.abort();
+                  fwUpdateInProgress = false;
+               }
+               bleUploadError = true;
+               return;
+            }
+            Update.abort();
+            if (!Update.begin(fwSize)) {
+               Update.printError(Serial);
+               fwUpdateInProgress = false;
+               bleUploadError = true;
+               return;
+            }
+            bleExpectedFwBytes = fwSize;
+            Serial.printf("[BLE] Firmware target size set to %u bytes.\n", bleExpectedFwBytes);
+         }
          else if (cmd == "END_FW" || cmd.startsWith("END_FW:")) {
             bool hasExpectedCrc = cmd.startsWith("END_FW:") && cmd.length() > 7;
             uint32_t expectedTotalCrc = hasExpectedCrc ? (uint32_t)strtoul(cmd.c_str() + 7, nullptr, 16) : 0;
 
+            if (!fwUpdateInProgress) {
+               bleUploadError = true;
+            }
             if (fwUpdateInProgress && !bleUploadError && !bleSeqError && bleWriteBufferPos > 0) {
-               if (Update.write(bleWriteBuffer, bleWriteBufferPos) != bleWriteBufferPos) {
+               if (bleBytesReceived == 0 && bleWriteBuffer[0] != 0xE9) {
+                  bleUploadError = true;
+               }
+               else if (bleExpectedFwBytes > 0 && (bleBytesReceived + bleWriteBufferPos) > bleExpectedFwBytes) {
+                  bleUploadError = true;
+               }
+               else if (Update.write(bleWriteBuffer, bleWriteBufferPos) != bleWriteBufferPos) {
                   bleUploadError = true;
                }
                else {
@@ -1540,22 +1602,31 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
                }
                bleWriteBufferPos = 0;
             }
+            if (bleExpectedFwBytes > 0 && bleBytesReceived != bleExpectedFwBytes) {
+               Serial.printf("[BLE] ERROR: Firmware size mismatch! Received=%u, Expected=%u\n",
+                             bleBytesReceived, bleExpectedFwBytes);
+               bleUploadError = true;
+            }
             if (hasExpectedCrc && bleRunningCrc != expectedTotalCrc) {
                Serial.printf("[BLE] ERROR: Firmware CRC mismatch! Device=0x%08X, Client=0x%08X\n",
                              bleRunningCrc, expectedTotalCrc);
                bleUploadError = true;
             }
+            bool updateEndOk = (!bleUploadError && !bleSeqError && bleBytesReceived >= 65536)
+                                  ? Update.end(bleExpectedFwBytes == 0)
+                                  : false;
             fwUpdateInProgress = false;
             if (bleWriteBuffer != nullptr) {
                free(bleWriteBuffer);
                bleWriteBuffer = nullptr;
             }
-            if (!bleUploadError && !bleSeqError && Update.end(true)) {
+            if (updateEndOk) {
                bleFinalFlashCrc = bleRunningCrc;
-               Serial.println("[BLE] Firmware Update SUCCESS. Rebooting...");
-               delay(500);
-               resetAll(true);
-               ESP.restart();
+               bleWriteBufferPos = 0;
+               fwRebootScheduledAt = millis();
+               fwRebootPending = true;
+               Serial.printf("[BLE] Firmware Update SUCCESS (Bytes: %u, CRC: 0x%08X). Rebooting shortly...\n",
+                             bleBytesReceived, bleFinalFlashCrc);
             }
             else {
                Update.printError(Serial);
@@ -1716,6 +1787,7 @@ bool BleInit(String deviceId, bool enable) {
    NimBLECharacteristic *motionWakeupCharacteristic = epaperSettingsService->createCharacteristic("10000009-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
    NimBLECharacteristic *chargerModeCharacteristic = epaperSettingsService->createCharacteristic("1000000a-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
    NimBLECharacteristic *autoRotationCharacteristic = epaperSettingsService->createCharacteristic("1000000c-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+   NimBLECharacteristic *fwVersionCharacteristic = epaperSettingsService->createCharacteristic("1000000d-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ);
 
    wifiSsidCharacteristic->setCallbacks(&chrCallbacks);
    wifiPwCharacteristic->setCallbacks(&chrCallbacks);
@@ -1749,6 +1821,13 @@ bool BleInit(String deviceId, bool enable) {
       isChargingInit = chargeMode(settings.chargerMode);
    }
    sysDoc["charging"] = isChargingInit;
+   sysDoc["version"] = SOFTWARE_VERSION;
+   sysDoc["fw"] = "offline";
+#ifdef EPD_TYPE_13INCH
+   sysDoc["display"] = "13";
+#else
+   sysDoc["display"] = "7";
+#endif
    String sysOut;
    serializeJson(sysDoc, sysOut);
    systemInfoCharacteristic->setValue(sysOut.c_str());
@@ -1768,6 +1847,7 @@ bool BleInit(String deviceId, bool enable) {
    motionWakeupCharacteristic->setValue(settings.motionWakeup ? "1" : "0");
    chargerModeCharacteristic->setValue(settings.chargerMode ? "1" : "0");
    autoRotationCharacteristic->setValue(settings.autoRotation ? "1" : "0");
+   fwVersionCharacteristic->setValue(SOFTWARE_VERSION);
 
    pAdvertising = NimBLEDevice::getAdvertising();
    pAdvertising->setName(deviceId.c_str());
@@ -2726,6 +2806,14 @@ void runSetupMode() {
          setImageFromFS("tmp.bmp");
       }
 
+      if (fwRebootPending && (millis() - fwRebootScheduledAt >= 1200)) {
+         fwRebootPending = false;
+         Serial.println("[BLE] Rebooting into updated firmware now...");
+         Serial.flush();
+         delay(50);
+         ESP.restart();
+      }
+
       if (forceExitSetup) {
          Serial.println("[MAIN] Manual exit requested via Web UI. Switching to fetch/refresh mode.");
          break;
@@ -2755,6 +2843,13 @@ void runSetupMode() {
          sysDoc["voltage"] = systemData.vddValue;
          sysDoc["usb"] = systemData.usbConnected;
          sysDoc["charging"] = isCharging;
+         sysDoc["version"] = SOFTWARE_VERSION;
+         sysDoc["fw"] = "offline";
+#ifdef EPD_TYPE_13INCH
+         sysDoc["display"] = "13";
+#else
+         sysDoc["display"] = "7";
+#endif
          String sysOut;
          serializeJson(sysDoc, sysOut);
 

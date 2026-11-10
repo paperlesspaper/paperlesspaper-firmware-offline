@@ -95,9 +95,25 @@ function ditherTestImagesPlugin() {
   };
 }
 
+function readExpectedFirmwareVersion() {
+  try {
+    const typesHeader = fs.readFileSync(path.resolve(__dirname, "../src/types.h"), "utf-8");
+    const match = typesHeader.match(/#define\s+SOFTWARE_VERSION\s+"([^"]+)"/);
+    if (match && match[1]) {
+      return match[1].trim();
+    }
+  } catch (e) {
+    console.warn("[fw-version] Could not read SOFTWARE_VERSION from ../src/types.h:", e.message);
+  }
+  return "0.1.0";
+}
+
 export default defineConfig({
   root: "src",
   base: "./",
+  define: {
+    __EXPECTED_FW_VERSION__: JSON.stringify(readExpectedFirmwareVersion()),
+  },
   plugins: [colorProfilesPlugin(), ditherTestImagesPlugin(), viteSingleFile()],
   build: {
     outDir: "../dist",
