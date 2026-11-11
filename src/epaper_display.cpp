@@ -564,10 +564,13 @@ int setImageFromFS_13inch(String fileName, bool doRefresh) {
 
 int setImageFromFS(String fileName, bool doRefresh) {
 #ifdef EPD_TYPE_13INCH
-   return setImageFromFS_13inch(fileName, doRefresh);
+   int result = setImageFromFS_13inch(fileName, doRefresh);
 #else
-   return setImageFromFS_7inch(fileName);
+   int result = setImageFromFS_7inch(fileName);
 #endif
+   // Stable marker line for the HIL testbench (0 = image shown, <0 = error)
+   Serial.printf("[EPD] Set Image Done: %d\n", result);
+   return result;
 }
 
 void displayWipe(bool quick) {

@@ -1,0 +1,278 @@
+name: "HIL Hardware Test"
+run-name: "HIL Test 0.1.${{ github.run_number }} (${{ github.ref_name }})"
+
+# Runs on the self-hosted hardware runner. This repository is public:
+# never add a pull_request trigger here, it would run foreign code on that machine.
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Test hardware"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - epd7
+          - epd13
+  workflow_call:
+
+permissions:
+  contents: read
+
+# One run at a time. Never cancel a run: it may be flashing a device over BLE.
+concurrency:
+  group: hil-offline
+  cancel-in-progress: false
+
+env:
+  FW_VERSION: "0.1.${{ github.run_number }}"
+  # Branch of paperlesspaper-firmware that provides the shared hardware layer (testbench/)
+  CLOUD_TESTBENCH_REF: ${{ vars.CLOUD_TESTBENCH_REF || 'paper-l' }}
+
+jobs:
+  pre_flight:
+    name: "Pre-Flight & Risk Analysis"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      # Compares against the state before the push, so every commit of the push is covered.
+      # A HIGH rating stops the run before anything is flashed.
+      - name: AI Firmware Risk Analysis
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          DIFF_BASE: ${{ github.event.before }}
+        run: python tools/ai_risk_analysis.py --base "$DIFF_BASE" --output risk_report.md
+
+      - name: Upload risk report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hil_risk_report
+          path: risk_report.md
+          if-no-files-found: ignore
+
+  build:
+    name: "Build ${{ matrix.target }}"
+    runs-on: ubuntu-latest
+    needs: pre_flight
+    strategy:
+      matrix:
+        target: [epd7, epd13]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.platformio
+            .pio
+          key: ${{ runner.os }}-pio-${{ hashFiles('**/platformio.ini') }}-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-pio-${{ hashFiles('**/platformio.ini') }}-
+            ${{ runner.os }}-pio-
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install --upgrade pip
+          pip install platformio
+
+      - name: Set version
+        run: |
+          cp deploy/platformio.ini platformio.ini
+          sed -i -e 's/#define SOFTWARE_VERSION "0.1.0"/#define SOFTWARE_VERSION "${{ env.FW_VERSION }}"/' src/types.h
+          grep -q '"${{ env.FW_VERSION }}"' src/types.h
+
+      - name: Build firmware
+        run: |
+          if ! pio run -e ${{ matrix.target }}; then
+            echo "::warning::Build with cache failed. Retrying clean build..."
+            rm -rf .pio
+            pio run -e ${{ matrix.target }}
+          fi
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: hil_firmware_${{ matrix.target }}
+          path: .pio/build/${{ matrix.target }}/firmware.bin
+          if-no-files-found: error
+
+  hil_epd7:
+    name: "HIL Test: EPD7"
+    runs-on: [self-hosted, Windows, hil-testbench]
+    needs: build
+    if: github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'epd7'
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Checkout cloud testbench (hardware layer)
+        uses: actions/checkout@v7
+        with:
+          repository: paperlesspaper/paperlesspaper-firmware
+          ref: ${{ env.CLOUD_TESTBENCH_REF }}
+          path: _cloud
+          sparse-checkout: testbench
+
+      - name: Install dependencies
+        run: pip install -r hil/requirements.txt
+
+      - name: Download firmware
+        uses: actions/download-artifact@v8
+        with:
+          name: hil_firmware_epd7
+          path: build_artifact_epd7
+
+      - name: Run EPD7 HIL test
+        env:
+          CLOUD_TESTBENCH_ROOT: "${{ github.workspace }}/_cloud"
+          HIL_WIFI_SSID: ${{ secrets.HIL_WIFI_SSID }}
+          HIL_WIFI_PASSWORD: ${{ secrets.HIL_WIFI_PASSWORD }}
+        run: >
+          python -m hil.run --target epd7
+          --candidate-bin build_artifact_epd7/firmware.bin
+          --candidate-version ${{ env.FW_VERSION }}
+          --junitxml junit_epd7.xml -v
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hil_junit_epd7
+          path: junit_epd7.xml
+          if-no-files-found: ignore
+
+  hil_epd13:
+    name: "HIL Test: EPD13"
+    runs-on: [self-hosted, Windows, hil-testbench]
+    # Strictly after EPD7: both devices share the host's COM ports, relays and Bluetooth.
+    needs: [build, hil_epd7]
+    if: >
+      always() && needs.build.result == 'success' &&
+      (needs.hil_epd7.result == 'success' || needs.hil_epd7.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'epd13')
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Checkout cloud testbench (hardware layer)
+        uses: actions/checkout@v7
+        with:
+          repository: paperlesspaper/paperlesspaper-firmware
+          ref: ${{ env.CLOUD_TESTBENCH_REF }}
+          path: _cloud
+          sparse-checkout: testbench
+
+      - name: Install dependencies
+        run: pip install -r hil/requirements.txt
+
+      - name: Download firmware
+        uses: actions/download-artifact@v8
+        with:
+          name: hil_firmware_epd13
+          path: build_artifact_epd13
+
+      - name: Run EPD13 HIL test
+        env:
+          CLOUD_TESTBENCH_ROOT: "${{ github.workspace }}/_cloud"
+          HIL_WIFI_SSID: ${{ secrets.HIL_WIFI_SSID }}
+          HIL_WIFI_PASSWORD: ${{ secrets.HIL_WIFI_PASSWORD }}
+        run: >
+          python -m hil.run --target epd13
+          --candidate-bin build_artifact_epd13/firmware.bin
+          --candidate-version ${{ env.FW_VERSION }}
+          --junitxml junit_epd13.xml -v
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hil_junit_epd13
+          path: junit_epd13.xml
+          if-no-files-found: ignore
+
+  report:
+    name: "Test protocol"
+    runs-on: ubuntu-latest
+    needs: [pre_flight, build, hil_epd7, hil_epd13]
+    if: always()
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Download results
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: hil_junit_*
+          path: results
+          merge-multiple: true
+
+      - name: Download risk report
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: hil_risk_report
+          path: results
+
+      # The WiFi secrets are only set so that they are masked before a log excerpt goes to the AI.
+      - name: Generate test protocol
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          HIL_WIFI_SSID: ${{ secrets.HIL_WIFI_SSID }}
+          HIL_WIFI_PASSWORD: ${{ secrets.HIL_WIFI_PASSWORD }}
+        run: >
+          python hil/report.py results/junit_epd7.xml results/junit_epd13.xml
+          --risk-report results/risk_report.md
+          --fw-version "$FW_VERSION" --commit "$GITHUB_SHA"
+          --output-md hil_test_protocol.md --output-json hil_test_protocol.json
+          >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test protocol
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hil_test_protocol
+          path: |
+            hil_test_protocol.md
+            hil_test_protocol.json
+          if-no-files-found: ignore
+
+      - name: Enforce result
+        if: always()
+        run: |
+          for result in "${{ needs.pre_flight.result }}" "${{ needs.build.result }}" "${{ needs.hil_epd7.result }}" "${{ needs.hil_epd13.result }}"; do
+            if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
+              echo "::error::Risk analysis, build or hardware test did not pass ($result)."
+              exit 1
+            fi
+          done
