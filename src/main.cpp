@@ -77,9 +77,6 @@
 #define CHG_EN_PIN 22
 #define CHG_STAT_PIN 23
 
-#define MAX_EPD_WIDTH 1600
-#define MAX_EPD_HEIGHT 1200
-
 #ifdef EPD_TYPE_13INCH
 #define EPD_TYPE_IDENTIFIER "epd13-" // Type of device (screen type)
 #define VDD_CORRECTION_FACTOR 6.68
@@ -186,11 +183,6 @@ int periodicLedTimeout = 0;
 int httpFileSize = 0;
 String tempLastModified = "";
 int StartCounter = 0;
-int strip_y_start = 0;
-int strip_height = 0;
-int decodedWidth = 0;
-int decodedHeight = 0;
-int current_out_y = 0;
 uint16_t bleWriteBufferPos = 0;
 uint32_t bleBytesReceived = 0;
 uint32_t bleRunningCrc = 0;
@@ -219,9 +211,8 @@ uint32_t lastDownloadedBytes = 0;
 int serverSleepSeconds = 0;
 uint32_t serverSleepReceivedMs = 0;
 constexpr uint32_t IMAGE_SLOT_SIZE = (EPD_WIDTH * EPD_HEIGHT / 2) + 4096;
-uint8_t *strip_buffer = nullptr;
-int16_t err_curr[MAX_EPD_WIDTH * 3];
-int16_t err_next[MAX_EPD_WIDTH * 3];
+int16_t err_curr[IMG_WIDTH * 3];
+int16_t err_next[IMG_WIDTH * 3];
 char CLIENT_ID[20];
 uint8_t *bleWriteBuffer = nullptr;
 
@@ -334,118 +325,6 @@ int32_t myRead(JPEGFILE *pFile, uint8_t *pBuf, int32_t iLen) { return jpgInFile.
 int32_t mySeek(JPEGFILE *pFile, int32_t iPosition) {
    jpgInFile.seek(iPosition);
    return iPosition;
-}
-
-void flushStripBuffer() {
-   if (strip_height == 0 || !strip_buffer)
-      return;
-
-   uint8_t out_row[MAX_EPD_WIDTH / 2];
-   for (int y = 0; y < strip_height; y++) {
-      int abs_y = strip_y_start + y;
-
-      while (current_out_y < EPD_HEIGHT && (current_out_y * decodedHeight / EPD_HEIGHT) == abs_y) {
-         memset(out_row, 0x66, sizeof(out_row));
-
-         for (int out_x = 0; out_x < EPD_WIDTH; out_x++) {
-            int in_x = out_x * decodedWidth / EPD_WIDTH;
-            if (in_x >= decodedWidth)
-               in_x = decodedWidth - 1;
-
-            int idx = (y * decodedWidth + in_x) * 3;
-
-            int orig_r = strip_buffer[idx];
-            int orig_g = strip_buffer[idx + 1];
-            int orig_b = strip_buffer[idx + 2];
-
-            // Clean white & black threshold to prevent noise from JPEG artifacts
-            snapColor(orig_r, orig_g, orig_b);
-
-            int r = orig_r + err_curr[out_x * 3];
-            int g = orig_g + err_curr[out_x * 3 + 1];
-            int b = orig_b + err_curr[out_x * 3 + 2];
-
-            r = (r < 0) ? 0 : (r > 255) ? 255
-                                        : r;
-            g = (g < 0) ? 0 : (g > 255) ? 255
-                                        : g;
-            b = (b < 0) ? 0 : (b > 255) ? 255
-                                        : b;
-
-            uint8_t best = findClosestColor(r, g, b);
-            int pr = (acep_palette[best] >> 16) & 0xFF;
-            int pg = (acep_palette[best] >> 8) & 0xFF;
-            int pb = acep_palette[best] & 0xFF;
-
-            int err_r = r - pr;
-            int err_g = g - pg;
-            int err_b = b - pb;
-
-            if (out_x < EPD_WIDTH - 1) {
-               err_curr[(out_x + 1) * 3] += (err_r * 7) >> 4;
-               err_curr[(out_x + 1) * 3 + 1] += (err_g * 7) >> 4;
-               err_curr[(out_x + 1) * 3 + 2] += (err_b * 7) >> 4;
-            }
-            if (out_x > 0) {
-               err_next[(out_x - 1) * 3] += (err_r * 3) >> 4;
-               err_next[(out_x - 1) * 3 + 1] += (err_g * 3) >> 4;
-               err_next[(out_x - 1) * 3 + 2] += (err_b * 3) >> 4;
-            }
-            err_next[out_x * 3] += (err_r * 5) >> 4;
-            err_next[out_x * 3 + 1] += (err_g * 5) >> 4;
-            err_next[out_x * 3 + 2] += (err_b * 5) >> 4;
-
-            if (out_x < EPD_WIDTH - 1) {
-               err_next[(out_x + 1) * 3] += (err_r * 1) >> 4;
-               err_next[(out_x + 1) * 3 + 1] += (err_g * 1) >> 4;
-               err_next[(out_x + 1) * 3 + 2] += (err_b * 1) >> 4;
-            }
-
-            if (out_x % 2 == 0)
-               out_row[out_x / 2] = (out_row[out_x / 2] & 0x0F) | (best << 4);
-            else
-               out_row[out_x / 2] = (out_row[out_x / 2] & 0xF0) | (best & 0x0F);
-         }
-         rawOutFile.write(out_row, EPD_WIDTH / 2);
-         memcpy(err_curr, err_next, sizeof(err_curr));
-         memset(err_next, 0, sizeof(err_next));
-
-         current_out_y++;
-      }
-   }
-   strip_height = 0;
-}
-
-int JPEGDraw(JPEGDRAW *pDraw) {
-   if (pDraw->y != strip_y_start && strip_height > 0) {
-      flushStripBuffer();
-      strip_y_start = pDraw->y;
-   }
-   int x0 = pDraw->x;
-   int w = pDraw->iWidth;
-   int h = pDraw->iHeight;
-   uint16_t *pPixels = pDraw->pPixels;
-
-   strip_height = h;
-   for (int y = 0; y < h; y++) {
-      for (int x = 0; x < w; x++) {
-         int abs_in_x = x0 + x;
-         if (abs_in_x >= decodedWidth)
-            break;
-
-         uint16_t c = pPixels[y * w + x];
-         // Extracting RGB565:
-         int r = (c & 0xF800) >> 8;
-         int g = (c & 0x07E0) >> 3;
-         int b = (c & 0x001F) << 3;
-
-         int idx = (y * decodedWidth + abs_in_x) * 3;
-         strip_buffer[idx] = r;
-         strip_buffer[idx + 1] = g;
-         strip_buffer[idx + 2] = b;
-      }
-   }
-   return 1;
 }
 
 void prepareSpiBusForFlash() {
@@ -689,6 +568,418 @@ bool hasValidFlashImage(const char *name = "tmp.bmp") {
           f.read(magic, 2) == 2 && !(magic[0] == 0xFF && magic[1] == 0xFF);
 }
 
+// ---------------------------------------------------------------------------
+// Image conversion
+//
+// Turns a downloaded picture into the display raster (IMG_WIDTH x IMG_HEIGHT,
+// 4 bit per pixel, row by row) and dithers it to the display colours.
+// A picture larger than the display is scaled down to fit, the aspect ratio is
+// kept. A smaller picture keeps its size. The picture is centred, the rest of
+// the display stays white.
+// ---------------------------------------------------------------------------
+
+struct ImageConversion
+{
+   int outW = 0;              // size of the picture on the display
+   int outH = 0;
+   int offX = 0;              // left margin (the top margin is written as white rows)
+   int rowsWritten = 0;       // display rows written so far
+   uint8_t *rowRgb = nullptr; // one picture row: outW pixels, 3 bytes (R, G, B) each
+};
+ImageConversion conv;
+
+// Writes white display rows until rowsWritten reaches untilRow.
+static void convWriteWhiteRows(int untilRow) {
+   uint8_t row[IMG_WIDTH / 2];
+   memset(row, 0x66, sizeof(row));
+   while (conv.rowsWritten < untilRow && conv.rowsWritten < IMG_HEIGHT) {
+      rawOutFile.write(row, sizeof(row));
+      conv.rowsWritten++;
+   }
+}
+
+static void convRelease() {
+   free(conv.rowRgb);
+   conv.rowRgb = nullptr;
+}
+
+// Places a picture of the given size on the display and writes the white rows above it.
+static bool convBegin(int pictureW, int pictureH) {
+   if (pictureW <= 0 || pictureH <= 0)
+      return false;
+
+   int outW = pictureW;
+   int outH = pictureH;
+   if (outW > IMG_WIDTH || outH > IMG_HEIGHT) {
+      // too large: scale down to fit, keep the aspect ratio
+      if ((int64_t)pictureW * IMG_HEIGHT >= (int64_t)pictureH * IMG_WIDTH) {
+         outW = IMG_WIDTH;
+         outH = (int)((int64_t)pictureH * IMG_WIDTH / pictureW);
+      }
+      else {
+         outH = IMG_HEIGHT;
+         outW = (int)((int64_t)pictureW * IMG_HEIGHT / pictureH);
+      }
+      if (outW < 1)
+         outW = 1;
+      if (outH < 1)
+         outH = 1;
+   }
+
+   convRelease();
+   conv.rowRgb = (uint8_t *)malloc(outW * 3);
+   if (!conv.rowRgb) {
+      Serial.println("[IMAGE] OOM allocating row buffer");
+      return false;
+   }
+   conv.outW = outW;
+   conv.outH = outH;
+   conv.offX = (IMG_WIDTH - outW) / 2;
+   conv.rowsWritten = 0;
+   memset(err_curr, 0, sizeof(err_curr));
+   memset(err_next, 0, sizeof(err_next));
+   Serial.printf("[IMAGE] Picture %dx%d -> %dx%d on the %dx%d display\n", pictureW, pictureH, outW, outH, IMG_WIDTH, IMG_HEIGHT);
+
+   convWriteWhiteRows((IMG_HEIGHT - outH) / 2);
+   return true;
+}
+
+// Dithers the picture row in conv.rowRgb (Floyd-Steinberg) and writes it as one display row.
+// The error is only spread inside the picture, so the white margin stays clean.
+static void convWriteRow() {
+   if (conv.rowsWritten >= IMG_HEIGHT)
+      return;
+
+   uint8_t out_row[IMG_WIDTH / 2];
+   memset(out_row, 0x66, sizeof(out_row));
+   const uint8_t *rgb = conv.rowRgb;
+   const int lastX = conv.outW - 1;
+
+   for (int x = 0; x <= lastX; x++) {
+      int orig_r = rgb[x * 3];
+      int orig_g = rgb[x * 3 + 1];
+      int orig_b = rgb[x * 3 + 2];
+
+      // Clean white & black threshold to prevent noise from JPEG artifacts
+      snapColor(orig_r, orig_g, orig_b);
+
+      int r = orig_r + err_curr[x * 3];
+      int g = orig_g + err_curr[x * 3 + 1];
+      int b = orig_b + err_curr[x * 3 + 2];
+
+      r = (r < 0) ? 0 : (r > 255) ? 255
+                                  : r;
+      g = (g < 0) ? 0 : (g > 255) ? 255
+                                  : g;
+      b = (b < 0) ? 0 : (b > 255) ? 255
+                                  : b;
+
+      uint8_t best = findClosestColor(r, g, b);
+      int err_r = r - (int)((acep_palette[best] >> 16) & 0xFF);
+      int err_g = g - (int)((acep_palette[best] >> 8) & 0xFF);
+      int err_b = b - (int)(acep_palette[best] & 0xFF);
+
+      if (x < lastX) {
+         err_curr[(x + 1) * 3] += (err_r * 7) >> 4;
+         err_curr[(x + 1) * 3 + 1] += (err_g * 7) >> 4;
+         err_curr[(x + 1) * 3 + 2] += (err_b * 7) >> 4;
+      }
+      if (x > 0) {
+         err_next[(x - 1) * 3] += (err_r * 3) >> 4;
+         err_next[(x - 1) * 3 + 1] += (err_g * 3) >> 4;
+         err_next[(x - 1) * 3 + 2] += (err_b * 3) >> 4;
+      }
+      err_next[x * 3] += (err_r * 5) >> 4;
+      err_next[x * 3 + 1] += (err_g * 5) >> 4;
+      err_next[x * 3 + 2] += (err_b * 5) >> 4;
+
+      if (x < lastX) {
+         err_next[(x + 1) * 3] += (err_r * 1) >> 4;
+         err_next[(x + 1) * 3 + 1] += (err_g * 1) >> 4;
+         err_next[(x + 1) * 3 + 2] += (err_b * 1) >> 4;
+      }
+
+      const int px = conv.offX + x;
+      if (px % 2 == 0)
+         out_row[px / 2] = (out_row[px / 2] & 0x0F) | (best << 4);
+      else
+         out_row[px / 2] = (out_row[px / 2] & 0xF0) | (best & 0x0F);
+   }
+
+   rawOutFile.write(out_row, sizeof(out_row));
+   memcpy(err_curr, err_next, sizeof(err_curr));
+   memset(err_next, 0, sizeof(err_next));
+   conv.rowsWritten++;
+}
+
+// Writes the white rows below the picture and closes the display image.
+static void convFinish() {
+   convWriteWhiteRows(IMG_HEIGHT);
+   convRelease();
+   waitFlashReady();
+   rawOutFile.close();
+}
+
+// --- JPEG ---
+
+// The decoder delivers the picture in strips of one MCU row (up to 16 pixel rows). A strip is
+// kept already scaled to conv.outW pixels per row, so its size does not depend on the JPEG.
+uint16_t *jpgStrip = nullptr; // RGB565
+int jpgStripRows = 0;         // rows the strip buffer holds
+int jpgStripY = 0;            // decoded row of the first strip row
+int jpgStripH = 0;            // strip rows in use
+int jpgDecW = 0;              // size the decoder delivers (after its own 1/2, 1/4 or 1/8 scaling)
+int jpgDecH = 0;
+int jpgNextRow = 0; // next picture row to write
+
+void jpgFlushStrip() {
+   for (int y = 0; y < jpgStripH; y++) {
+      const int decY = jpgStripY + y;
+      // every picture row that takes its pixels from this decoded row
+      while (jpgNextRow < conv.outH && (int)((int64_t)jpgNextRow * jpgDecH / conv.outH) <= decY) {
+         const uint16_t *src = jpgStrip + y * conv.outW;
+         uint8_t *dst = conv.rowRgb;
+         for (int x = 0; x < conv.outW; x++) {
+            const uint16_t c = src[x];
+            *dst++ = (c & 0xF800) >> 8;
+            *dst++ = (c & 0x07E0) >> 3;
+            *dst++ = (c & 0x001F) << 3;
+         }
+         convWriteRow();
+         jpgNextRow++;
+      }
+   }
+   jpgStripH = 0;
+}
+
+int JPEGDraw(JPEGDRAW *pDraw) {
+   if (pDraw->y != jpgStripY && jpgStripH > 0) {
+      jpgFlushStrip();
+   }
+   jpgStripY = pDraw->y;
+
+   const int x0 = pDraw->x;
+   int w = pDraw->iWidthUsed;
+   if (x0 + w > jpgDecW)
+      w = jpgDecW - x0;
+   const int h = (pDraw->iHeight < jpgStripRows) ? pDraw->iHeight : jpgStripRows;
+   if (x0 < 0 || w <= 0 || h <= 0)
+      return 1;
+   jpgStripH = h;
+
+   // picture columns that take their pixel from this block (decoded columns x0 .. x0 + w - 1)
+   int ox = (int)(((int64_t)x0 * conv.outW + jpgDecW - 1) / jpgDecW);
+   for (; ox < conv.outW; ox++) {
+      const int sx = (int)((int64_t)ox * jpgDecW / conv.outW);
+      if (sx >= x0 + w)
+         break;
+      if (sx < x0)
+         continue;
+      const uint16_t *src = pDraw->pPixels + (sx - x0);
+      uint16_t *dst = jpgStrip + ox;
+      for (int y = 0; y < h; y++) {
+         dst[y * conv.outW] = src[y * pDraw->iWidth];
+      }
+   }
+   return 1;
+}
+
+static bool convertJpeg(const char *rawFileName, const char *outFileName) {
+   if (!prepareFlashSlot(outFileName, IMAGE_SLOT_SIZE, rawOutFile))
+      return false;
+   if (!jpeg.open(rawFileName, myOpen, myClose, myRead, mySeek, JPEGDraw)) {
+      Serial.printf("[IMAGE] JPEG not readable (decoder error %d)\n", jpeg.getLastError());
+      discardFlashSlot(rawOutFile);
+      return false;
+   }
+
+   const int w = jpeg.getWidth();
+   const int h = jpeg.getHeight();
+   bool ok = convBegin(w, h);
+   int shift = 0; // the decoder can deliver 1/2, 1/4 or 1/8 of the size
+
+   if (ok) {
+      if (jpeg.getJPEGType() == JPEG_MODE_PROGRESSIVE) {
+         // JPEGDEC only decodes the first scan of a progressive JPEG: 1/8 of the resolution
+         Serial.println("[IMAGE] Progressive JPEG: decoded at 1/8 resolution, use a baseline JPEG for full quality");
+         shift = 3;
+      }
+      else {
+         // as small as possible, but not smaller than the picture on the display
+         while (shift < 3 && (w >> (shift + 1)) >= conv.outW && (h >> (shift + 1)) >= conv.outH) {
+            shift++;
+         }
+      }
+      jpgDecW = (w + (1 << shift) - 1) >> shift;
+      jpgDecH = (h + (1 << shift) - 1) >> shift;
+      // an MCU row is 16 pixel rows high if the colour is subsampled vertically, otherwise 8
+      const int mcuRows = ((jpeg.getSubSample() & 0x0F) == 2) ? 16 : 8;
+      jpgStripRows = mcuRows >> shift;
+      jpgStrip = (uint16_t *)malloc((size_t)jpgStripRows * conv.outW * sizeof(uint16_t));
+      if (!jpgStrip) {
+         Serial.println("[IMAGE] OOM allocating JPEG strip buffer");
+         ok = false;
+      }
+   }
+
+   if (ok) {
+      static const int scaleOptions[4] = {0, JPEG_SCALE_HALF, JPEG_SCALE_QUARTER, JPEG_SCALE_EIGHTH};
+      jpgStripY = 0;
+      jpgStripH = 0;
+      jpgNextRow = 0;
+      ok = (jpeg.decode(0, 0, scaleOptions[shift]) == 1);
+      if (ok)
+         jpgFlushStrip();
+      else
+         Serial.printf("[IMAGE] JPEG decoding failed (decoder error %d)\n", jpeg.getLastError());
+   }
+
+   jpeg.close();
+   free(jpgStrip);
+   jpgStrip = nullptr;
+
+   if (!ok) {
+      convRelease();
+      discardFlashSlot(rawOutFile);
+      return false;
+   }
+   convFinish();
+   return true;
+}
+
+// --- BMP and raw display images ---
+
+// Copies a file that already is a display image (pre-dithered BMP of the display size, raw payload).
+static bool copyDisplayImage(SerialFlashFile &inFile, const char *outFileName) {
+   if (!prepareFlashSlot(outFileName, IMAGE_SLOT_SIZE, rawOutFile))
+      return false;
+   inFile.seek(0);
+   uint8_t buf[2048];
+   int bytesRead;
+   while ((bytesRead = inFile.read(buf, sizeof(buf))) > 0) {
+      rawOutFile.write(buf, bytesRead);
+   }
+   waitFlashReady();
+   rawOutFile.close();
+   return true;
+}
+
+static uint16_t readLe16(const uint8_t *p) {
+   return (uint16_t)(p[0] | (p[1] << 8));
+}
+
+static uint32_t readLe32(const uint8_t *p) {
+   return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+// Uncompressed BMP with 4, 24 or 32 bit per pixel, any size, stored top-down or bottom-up.
+static bool convertBmp(SerialFlashFile &inFile, const char *outFileName) {
+   uint8_t header[54];
+   inFile.seek(0);
+   if (inFile.read(header, sizeof(header)) != sizeof(header))
+      return false;
+
+   const uint32_t pixelOffset = readLe32(header + 10);
+   const uint32_t dibSize = readLe32(header + 14);
+   const int32_t width = (int32_t)readLe32(header + 18);
+   const int32_t rawHeight = (int32_t)readLe32(header + 22);
+   const uint16_t bpp = readLe16(header + 28);
+   const uint32_t compression = readLe32(header + 30);
+   const uint32_t colorsUsed = readLe32(header + 46);
+   const bool topDown = rawHeight < 0;
+   const int32_t height = topDown ? -rawHeight : rawHeight;
+
+   const bool formatOk = (bpp == 4 || bpp == 24 || bpp == 32) && (compression == 0 || (compression == 3 && bpp == 32));
+   if (dibSize < 40 || !formatOk || width <= 0 || height <= 0 || width > 16384 || height > 16384) {
+      Serial.printf("[IMAGE] Unsupported BMP (%ldx%ld, %u bit, compression %lu)\n", (long)width, (long)rawHeight, bpp, (unsigned long)compression);
+      return false;
+   }
+
+   const uint32_t stride = (((uint32_t)width * bpp + 31) / 32) * 4; // rows are padded to 4 bytes
+   const uint32_t fileLen = (lastDownloadedBytes > 0 && lastDownloadedBytes <= inFile.size()) ? lastDownloadedBytes : inFile.size();
+   if ((uint64_t)pixelOffset + (uint64_t)stride * height > fileLen) {
+      Serial.println("[IMAGE] BMP is incomplete");
+      return false;
+   }
+
+   if (bpp == 4 && topDown && width == IMG_WIDTH && height == IMG_HEIGHT) {
+      Serial.println("[IMAGE] 4-bit BMP detected. Already dithered.");
+      return copyDisplayImage(inFile, outFileName);
+   }
+
+   Serial.printf("[IMAGE] %u-bit BMP detected. Dithering...\n", bpp);
+
+   // colour table of a 4-bit BMP (blue, green, red, reserved)
+   uint8_t palette[16][3];
+   memset(palette, 0, sizeof(palette));
+   if (bpp == 4) {
+      const uint32_t colors = (colorsUsed > 0 && colorsUsed < 16) ? colorsUsed : 16;
+      uint8_t entry[4];
+      inFile.seek(14 + dibSize);
+      for (uint32_t i = 0; i < colors; i++) {
+         if (inFile.read(entry, 4) != 4)
+            return false;
+         palette[i][0] = entry[2];
+         palette[i][1] = entry[1];
+         palette[i][2] = entry[0];
+      }
+   }
+
+   uint8_t *srcRow = (uint8_t *)malloc(stride);
+   if (!srcRow) {
+      Serial.println("[IMAGE] OOM allocating BMP row buffer");
+      return false;
+   }
+   if (!prepareFlashSlot(outFileName, IMAGE_SLOT_SIZE, rawOutFile)) {
+      free(srcRow);
+      return false;
+   }
+   if (!convBegin(width, height)) {
+      free(srcRow);
+      discardFlashSlot(rawOutFile);
+      return false;
+   }
+
+   const int bytesPerPixel = bpp / 8;
+   bool ok = true;
+   for (int oy = 0; oy < conv.outH && ok; oy++) {
+      const int sy = (int)((int64_t)oy * height / conv.outH);
+      const uint32_t fileRow = topDown ? (uint32_t)sy : (uint32_t)(height - 1 - sy);
+      inFile.seek(pixelOffset + fileRow * stride);
+      if (inFile.read(srcRow, stride) != stride) {
+         ok = false;
+         break;
+      }
+
+      uint8_t *dst = conv.rowRgb;
+      for (int ox = 0; ox < conv.outW; ox++) {
+         const int sx = (int)((int64_t)ox * width / conv.outW);
+         if (bpp == 4) {
+            const uint8_t index = (sx % 2 == 0) ? (srcRow[sx / 2] >> 4) : (srcRow[sx / 2] & 0x0F);
+            *dst++ = palette[index][0];
+            *dst++ = palette[index][1];
+            *dst++ = palette[index][2];
+         }
+         else {
+            const uint8_t *p = srcRow + sx * bytesPerPixel; // blue, green, red
+            *dst++ = p[2];
+            *dst++ = p[1];
+            *dst++ = p[0];
+         }
+      }
+      convWriteRow();
+   }
+   free(srcRow);
+
+   if (!ok) {
+      convRelease();
+      discardFlashSlot(rawOutFile);
+      return false;
+   }
+   convFinish();
+   return true;
+}
+
 bool processImageFile(const char *rawFileName, const char *outFileName) {
    SerialFlashFile inFile = SerialFlash.open(rawFileName);
    if (!inFile)
@@ -696,195 +987,23 @@ bool processImageFile(const char *rawFileName, const char *outFileName) {
    uint8_t magic[2] = {0, 0};
    inFile.read(magic, 2);
    Serial.printf("[IMAGE] Read magic: 0x%02X 0x%02X from file '%s'\n", magic[0], magic[1], rawFileName);
-   inFile.seek(0);
 
+   bool ok = false;
    if (magic[0] == 0xFF && magic[1] == 0xD8) {
       Serial.println("[IMAGE] JPEG detected. Dithering on-device...");
-      inFile.close();
-      if (!prepareFlashSlot(outFileName, IMAGE_SLOT_SIZE, rawOutFile))
-         return false;
-
-      memset(err_curr, 0, sizeof(err_curr));
-      memset(err_next, 0, sizeof(err_next));
-      strip_y_start = 0;
-      strip_height = 0;
-
-      if (!jpeg.open(rawFileName, myOpen, myClose, myRead, mySeek, JPEGDraw)) {
-         discardFlashSlot(rawOutFile);
-         return false;
-      }
-      int scale = 0;
-      if (jpeg.getWidth() > 3200) {
-         scale = JPEG_SCALE_EIGHTH;
-      }
-      else if (jpeg.getWidth() > 1600) {
-         scale = JPEG_SCALE_QUARTER;
-      }
-      else if (jpeg.getWidth() > 800) {
-         scale = JPEG_SCALE_HALF;
-      }
-
-      decodedWidth = jpeg.getWidth() >> scale;
-      decodedHeight = jpeg.getHeight() >> scale;
-
-      strip_buffer = (uint8_t *)malloc(16 * decodedWidth * 3);
-      if (!strip_buffer) {
-         Serial.println("[IMAGE] OOM allocating strip_buffer");
-         jpeg.close();
-         discardFlashSlot(rawOutFile);
-         return false;
-      }
-      current_out_y = 0;
-
-      bool decodeOk = (jpeg.decode(0, 0, scale) == 1);
-      if (decodeOk)
-         flushStripBuffer();
-      jpeg.close();
-      free(strip_buffer);
-      strip_buffer = nullptr;
-      if (!decodeOk) {
-         discardFlashSlot(rawOutFile);
-         return false;
-      }
-
-      while (current_out_y < EPD_HEIGHT) {
-         uint8_t whiteLine[MAX_EPD_WIDTH / 2];
-         memset(whiteLine, 0x66, EPD_WIDTH / 2);
-         rawOutFile.write(whiteLine, EPD_WIDTH / 2);
-         current_out_y++;
-      }
-
-      waitFlashReady();
-      rawOutFile.close();
-      return true;
+      inFile.close(); // the decoder opens the file itself
+      return convertJpeg(rawFileName, outFileName);
    }
    else if (magic[0] == 'B' && magic[1] == 'M') {
-      inFile.seek(0x1C);
-      uint16_t bpp = 0;
-      inFile.read((uint8_t *)&bpp, 2);
-      if (bpp == 4) {
-         Serial.println("[IMAGE] 4-bit BMP detected. Already dithered.");
-         if (!prepareFlashSlot(outFileName, IMAGE_SLOT_SIZE, rawOutFile)) {
-            inFile.close();
-            return false;
-         }
-         inFile.seek(0);
-         uint8_t buf[2048];
-         int bytesRead;
-         while ((bytesRead = inFile.read(buf, 2048)) > 0) {
-            rawOutFile.write(buf, bytesRead);
-         }
-         waitFlashReady();
-         rawOutFile.close();
-         inFile.close();
-         return true;
-      }
-      else {
-         Serial.println("[IMAGE] 24-bit BMP detected. Dithering...");
-         if (!prepareFlashSlot(outFileName, IMAGE_SLOT_SIZE, rawOutFile)) {
-            inFile.close();
-            return false;
-         }
-
-         inFile.seek(0x0A);
-         uint32_t offset = 0;
-         inFile.read((uint8_t *)&offset, 4);
-         inFile.seek(offset);
-
-         memset(err_curr, 0, sizeof(err_curr));
-         memset(err_next, 0, sizeof(err_next));
-
-         uint8_t out_row[MAX_EPD_WIDTH / 2];
-         uint8_t in_row[MAX_EPD_WIDTH * 3];
-
-         for (int y = 0; y < EPD_HEIGHT; y++) {
-            memset(out_row, 0x66, sizeof(out_row));
-            int readBytes = inFile.read(in_row, EPD_WIDTH * 3);
-            if (readBytes <= 0)
-               break;
-
-            for (int x = 0; x < EPD_WIDTH; x++) {
-               int orig_b = in_row[x * 3];
-               int orig_g = in_row[x * 3 + 1];
-               int orig_r = in_row[x * 3 + 2];
-
-               snapColor(orig_r, orig_g, orig_b);
-
-               int b = orig_b + err_curr[x * 3 + 2];
-               int g = orig_g + err_curr[x * 3 + 1];
-               int r = orig_r + err_curr[x * 3];
-
-               r = (r < 0) ? 0 : (r > 255) ? 255
-                                           : r;
-               g = (g < 0) ? 0 : (g > 255) ? 255
-                                           : g;
-               b = (b < 0) ? 0 : (b > 255) ? 255
-                                           : b;
-
-               uint8_t best = findClosestColor(r, g, b);
-               int pr = (acep_palette[best] >> 16) & 0xFF;
-               int pg = (acep_palette[best] >> 8) & 0xFF;
-               int pb = acep_palette[best] & 0xFF;
-
-               int err_r = r - pr;
-               int err_g = g - pg;
-               int err_b = b - pb;
-
-               if (x < EPD_WIDTH - 1) {
-                  err_curr[(x + 1) * 3] += (err_r * 7) >> 4;
-                  err_curr[(x + 1) * 3 + 1] += (err_g * 7) >> 4;
-                  err_curr[(x + 1) * 3 + 2] += (err_b * 7) >> 4;
-               }
-               if (x > 0) {
-                  err_next[(x - 1) * 3] += (err_r * 3) >> 4;
-                  err_next[(x - 1) * 3 + 1] += (err_g * 3) >> 4;
-                  err_next[(x - 1) * 3 + 2] += (err_b * 3) >> 4;
-               }
-               err_next[x * 3] += (err_r * 5) >> 4;
-               err_next[x * 3 + 1] += (err_g * 5) >> 4;
-               err_next[x * 3 + 2] += (err_b * 5) >> 4;
-
-               if (x < EPD_WIDTH - 1) {
-                  err_next[(x + 1) * 3] += (err_r * 1) >> 4;
-                  err_next[(x + 1) * 3 + 1] += (err_g * 1) >> 4;
-                  err_next[(x + 1) * 3 + 2] += (err_b * 1) >> 4;
-               }
-
-               if (x % 2 == 0)
-                  out_row[x / 2] = (out_row[x / 2] & 0x0F) | (best << 4);
-               else
-                  out_row[x / 2] = (out_row[x / 2] & 0xF0) | (best & 0x0F);
-            }
-            rawOutFile.write(out_row, EPD_WIDTH / 2);
-            memcpy(err_curr, err_next, sizeof(err_curr));
-            memset(err_next, 0, sizeof(err_next));
-         }
-         waitFlashReady();
-         rawOutFile.close();
-         inFile.close();
-         return true;
-      }
+      ok = convertBmp(inFile, outFileName);
    }
    else if (magic[0] == 0x66 && magic[1] == 0x66) {
       Serial.println("[IMAGE] Raw dithered payload detected.");
-      if (!prepareFlashSlot(outFileName, IMAGE_SLOT_SIZE, rawOutFile)) {
-         inFile.close();
-         return false;
-      }
-      inFile.seek(0);
-      uint8_t buf[2048];
-      int bytesRead;
-      while ((bytesRead = inFile.read(buf, 2048)) > 0) {
-         rawOutFile.write(buf, bytesRead);
-      }
-      waitFlashReady();
-      rawOutFile.close();
-      inFile.close();
-      return true;
+      ok = copyDisplayImage(inFile, outFileName);
    }
 
    inFile.close();
-   return false;
+   return ok;
 }
 
 // Power supply display

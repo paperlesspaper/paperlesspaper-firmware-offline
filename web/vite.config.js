@@ -96,7 +96,15 @@ function ditherTestImagesPlugin() {
   };
 }
 
+/**
+ * Firmware version the web UI expects on the device. The deploy workflow passes the version of
+ * the firmware it publishes together with this UI (FW_VERSION); local builds read src/types.h.
+ */
 function readExpectedFirmwareVersion() {
+  const fromEnv = String(process.env.FW_VERSION || "").trim();
+  if (fromEnv) {
+    return fromEnv;
+  }
   try {
     const typesHeader = fs.readFileSync(path.resolve(__dirname, "../src/types.h"), "utf-8");
     const match = typesHeader.match(/#define\s+SOFTWARE_VERSION\s+"([^"]+)"/);

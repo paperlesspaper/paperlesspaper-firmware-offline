@@ -44,6 +44,16 @@ using DisplayType = GxEPD2_7C<GxEPD2_1330c_EL133UF3, GxEPD2_1330c_EL133UF3::HEIG
 using DisplayType = GxEPD2_7C<GxEPD2_730c_GDEP073E01, GxEPD2_730c_GDEP073E01::HEIGHT / 4>;
 #endif
 
+// Raster of a stored image as setImageFromFS() reads it: 4 bit per pixel, row by row.
+// The 13.3" panel is 1200 x 1600 (portrait), so its image rows are 1200 pixels wide.
+#ifdef EPD_TYPE_13INCH
+#define IMG_WIDTH 1200
+#define IMG_HEIGHT 1600
+#else
+#define IMG_WIDTH 800
+#define IMG_HEIGHT 480
+#endif
+
 extern DisplayType display;
 extern U8G2_FOR_ADAFRUIT_GFX u8g2_for_adafruit_gfx;
 extern bool epaperIsUpdating;

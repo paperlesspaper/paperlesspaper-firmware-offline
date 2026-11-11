@@ -19,11 +19,17 @@ on:
           - epd7
           - epd13
   # Called by deploy.yml: main and dev are only deployed after the hardware test passed.
+  # deploy.yml publishes the firmware built here (artifacts hil_firmware_epd7 / hil_firmware_epd13),
+  # so the files that are tested are the files that are released.
   workflow_call:
     inputs:
       target:
         type: string
         default: "all"
+      fw_version:
+        description: "Version to build into the firmware. Empty: 0.1.<run number>."
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -35,7 +41,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  FW_VERSION: "0.1.${{ github.run_number }}"
+  # deploy.yml passes the version of its run; a manual run of this workflow numbers itself.
+  FW_VERSION: ${{ inputs.fw_version || format('0.1.{0}', github.run_number) }}
   # Branch of paperlesspaper-firmware that provides the shared hardware layer (testbench/)
   CLOUD_TESTBENCH_REF: ${{ vars.CLOUD_TESTBENCH_REF || 'paper-l' }}
 
