@@ -369,9 +369,12 @@
                         <form id="settingsForm" class="form" novalidate>
                             <div class="field">
                                 <label class="form-label" for="settingUrl">Download-URL</label>
-                                <input type="url" id="settingUrl" class="neu-input" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="http://mein-server.de/bild.bmp" aria-describedby="settingUrlError urlValidationStatus" />
+                                <div class="input-group">
+                                    <input type="url" id="settingUrl" class="neu-input" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="http://mein-server.de/bild.bmp" aria-describedby="settingUrlError urlValidationStatus" />
+                                    <button type="button" id="btnCheckImageUrl" class="btn-neu btn-small btn-neu-info">Prüfen</button>
+                                </div>
                                 <p class="field-error" id="settingUrlError" role="alert" hidden></p>
-                                <p class="field-note" id="urlValidationStatus" hidden></p>
+                                <p class="field-note" id="urlValidationStatus" role="status" hidden></p>
                             </div>
 
                             <div class="field">
@@ -756,7 +759,7 @@
                                         <span class="step-num">2</span>
                                         <div>
                                             <strong>Download-URL und Intervall speichern</strong>
-                                            <span class="step-desc">Die URL zeigt auf ein Bild auf deinem Server (http oder https). Das Gerät lädt es im eingestellten Abstand, von 60 Sekunden bis 30 Tage.</span>
+                                            <span class="step-desc">Die URL zeigt auf ein Bild auf deinem Server (http oder https). Das Gerät lädt es im eingestellten Abstand, von 60 Sekunden bis 30 Tage. „Prüfen“ zeigt, ob das Gerät das Bild anzeigen kann.</span>
                                         </div>
                                     </li>
                                     <li class="step-item">
@@ -774,13 +777,17 @@
                                     </div>
                                     <div class="def-row">
                                         <dt>JPEG</dt>
-                                        <dd>Wird auf dem Gerät auf die volle Displayfläche skaliert und in die Display-Farben umgerechnet. Nutze das Seitenverhältnis deines Displays.</dd>
+                                        <dd>Wird auf dem Gerät in die Display-Farben umgerechnet. Nutze normale (Baseline-)JPEGs: progressive JPEGs werden nur grob dargestellt.</dd>
                                     </div>
                                     <div class="def-row">
-                                        <dt>24-Bit-BMP</dt>
-                                        <dd>Wird auf dem Gerät umgerechnet, aber nicht skaliert. Die Auflösung muss genau passen: 800×480 (7.3") oder 1200×1600 (13.3").</dd>
+                                        <dt>Anderes BMP</dt>
+                                        <dd>BMPs mit 24 oder 32 Bit werden auf dem Gerät in die Display-Farben umgerechnet.</dd>
                                     </div>
                                 </dl>
+                                <p class="callout callout-info">
+                                    <span class="callout-caption">Größe und Ausrichtung</span>
+                                    Größere Bilder werden passend verkleinert, das Seitenverhältnis bleibt erhalten. Kleinere Bilder erscheinen in Originalgröße in der Mitte, der Rest bleibt weiß. Das Gerät dreht Bilder nicht zwischen Quer- und Hochformat: 800×480 im Querformat (7.3") oder 1200×1600 im Hochformat (13.3") füllt das Display ganz aus.
+                                </p>
                                 <p class="callout">
                                     <span class="callout-caption">Download fehlgeschlagen?</span>
                                     Das Display zeigt eine Fehlermeldung und das Gerät versucht es nach 1 bis 5 Minuten erneut.

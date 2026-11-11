@@ -1,14 +1,21 @@
 name: Build and Deploy
 
 # Publishes two release channels to GitHub Pages:
-#   main -> site root   (stable web UI + offline firmware built from main)
-#   dev  -> ./dev/      (preview web UI + offline firmware built from dev)
-# The web UI switches between them (Firmware tab), so there is one entry URL.
+#   main -> site root   (stable web UI + offline firmware of main)
+#   dev  -> ./dev/      (preview web UI + offline firmware of dev)
+# The web UI switches between them (version button in the header), so there is one entry URL.
 #
-# GitHub Pages holds one site per repository and every deployment replaces all of it. Each run
-# therefore publishes both channels: the branch that triggered the run is built from its new
-# commit, the other channel is rebuilt from the commit of its last successful deployment. That
-# way a channel only ever changes through its own run and its own hardware test.
+# What a run does:
+#   * Only the branch that triggered the run is built.
+#   * Its firmware is built once, by the hardware test (hil-test.yml). The files that passed the
+#     test are the files that get published - there is no second, untested build.
+#   * Every run has its own firmware version (0.1.<run number>). The web UI of the run expects
+#     exactly that version.
+#   * GitHub Pages holds one site per repository and every deployment replaces all of it, so the
+#     other channel is taken over unchanged from the last deployment (its "site_<channel>"
+#     artifact). A channel therefore only changes through its own run and its own hardware test.
+#     Fallback if that artifact is missing or expired: the other channel is rebuilt from the
+#     commit and with the version of its last successful deployment.
 #
 # One-time repository setting: Settings -> Environments -> github-pages -> Deployment branches
 # must allow "dev" in addition to "main", otherwise the deploy job of a dev run is rejected.
@@ -31,29 +38,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Gate: nothing is published unless risk analysis and hardware test pass for this commit.
-  hil:
-    name: "HIL gate"
-    uses: ./.github/workflows/hil-test.yml
-    secrets: inherit
-
-  # Decides which commit each channel is built from.
+  # Decides the firmware version of this run and where the other channel comes from.
   plan:
     name: "Plan channels"
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions: read # look up the last successful deployment of the other branch
+      actions: read # look up the last deployment and its artifacts
     outputs:
-      sites: ${{ steps.resolve.outputs.sites }}
-      firmware: ${{ steps.resolve.outputs.firmware }}
+      fw_version: ${{ steps.resolve.outputs.fw_version }} # version of the firmware built and tested in this run
+      web: ${{ steps.resolve.outputs.web }} # web UIs to build: this channel (+ the other one in the fallback case)
+      rebuild_firmware: ${{ steps.resolve.outputs.rebuild_firmware }} # fallback only, otherwise []
+      reuse_run: ${{ steps.resolve.outputs.reuse_run }} # run id that holds the other channel, or empty
+      other_channel: ${{ steps.resolve.outputs.other_channel }}
     steps:
-      - name: Resolve the commit of each channel
+      - name: Resolve version and channels
         id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
           THIS_BRANCH: ${{ github.ref_name }}
           THIS_SHA: ${{ github.sha }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
           set -euo pipefail
 
@@ -66,44 +71,159 @@ jobs:
               ;;
           esac
 
-          # Commit of the last run of this workflow on the other branch that deployed successfully.
-          other_sha=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow deploy.yml \
-            --branch "$other" --status success --limit 1 --json headSha --jq '.[0].headSha // empty')
+          # One version per run, shared by main and dev: it grows with every deployment.
+          fw_version="0.1.$RUN_NUMBER"
 
-          if [ -z "$other_sha" ] && [ "$other" = "main" ]; then
-            # The site root must never be empty: fall back to the head of main.
-            other_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
-            echo "::warning::No successful deployment of main found, using its head ($other_sha)."
+          # Preferred: take the other channel over from the last deployment. Every successful run
+          # keeps both channels as artifacts (site_main, site_dev), whatever branch it ran on.
+          reuse_run=""
+          other_sha=""
+          other_version=""
+          last_run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow deploy.yml \
+            --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -n "$last_run" ]; then
+            artifact_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$last_run/artifacts?per_page=100" \
+              --jq "[.artifacts[] | select(.name == \"site_$other\" and (.expired | not))][0].id // empty")
+            if [ -n "$artifact_id" ]; then
+              reuse_run=$last_run
+              echo "::notice::'$other' is taken over from the last deployment (run $last_run), not rebuilt."
+            fi
           fi
-          if [ -z "$other_sha" ]; then
-            echo "::notice::No successful deployment of '$other' yet: publishing '$THIS_BRANCH' only."
+
+          if [ -z "$reuse_run" ]; then
+            # Fallback: rebuild the other channel from the commit of its last successful deployment,
+            # with the version that deployment had.
+            other_sha=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow deploy.yml \
+              --branch "$other" --status success --limit 1 --json headSha --jq '.[0].headSha // empty')
+            other_number=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow deploy.yml \
+              --branch "$other" --status success --limit 1 --json number --jq '.[0].number // empty')
+            if [ -n "$other_number" ]; then
+              other_version="0.1.$other_number"
+            fi
+
+            if [ -z "$other_sha" ] && [ "$other" = "main" ]; then
+              # The site root must never be empty: fall back to the head of main (version of src/types.h).
+              other_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+              echo "::warning::No successful deployment of main found, using its head ($other_sha)."
+            fi
+            if [ -z "$other_sha" ]; then
+              echo "::notice::No successful deployment of '$other' yet: publishing '$THIS_BRANCH' only."
+            else
+              echo "::notice::No reusable artifact of '$other': rebuilding it from $other_sha."
+            fi
           fi
 
-          if [ "$THIS_BRANCH" = "main" ]; then
-            main_sha=$THIS_SHA; dev_sha=$other_sha
-          else
-            main_sha=$other_sha; dev_sha=$THIS_SHA
+          web=$(jq -cn --arg channel "$THIS_BRANCH" --arg ref "$THIS_SHA" --arg version "$fw_version" \
+            '[{channel: $channel, ref: $ref, version: $version}]')
+          rebuild_firmware='[]'
+          if [ -n "$other_sha" ]; then
+            web=$(jq -cn --argjson web "$web" --arg channel "$other" --arg ref "$other_sha" --arg version "$other_version" \
+              '$web + [{channel: $channel, ref: $ref, version: $version}]')
+            rebuild_firmware=$(jq -cn --arg channel "$other" --arg ref "$other_sha" --arg version "$other_version" \
+              '[("epd13", "epd7") as $target | {channel: $channel, ref: $ref, version: $version, target: $target}]')
           fi
 
-          sites=$(jq -cn --arg main "$main_sha" --arg dev "$dev_sha" \
-            '[{channel: "main", ref: $main}, {channel: "dev", ref: $dev}] | map(select(.ref != ""))')
-          firmware=$(jq -cn --argjson sites "$sites" \
-            '[$sites[] as $s | ("epd13", "epd7") as $t | {channel: $s.channel, ref: $s.ref, target: $t}]')
-
-          echo "sites=$sites" >> "$GITHUB_OUTPUT"
-          echo "firmware=$firmware" >> "$GITHUB_OUTPUT"
+          {
+            echo "fw_version=$fw_version"
+            echo "web=$web"
+            echo "rebuild_firmware=$rebuild_firmware"
+            echo "reuse_run=$reuse_run"
+            echo "other_channel=$other"
+          } >> "$GITHUB_OUTPUT"
           {
             echo "### Channels in this deployment"
-            echo "$sites" | jq -r '.[] | "- **\(.channel)**: `\(.ref)`"'
+            echo "- **$THIS_BRANCH**: built from \`$THIS_SHA\`, firmware **v$fw_version** (the files the hardware test ran with)"
+            if [ -n "$reuse_run" ]; then
+              echo "- **$other**: taken over unchanged from run $reuse_run"
+            elif [ -n "$other_sha" ]; then
+              echo "- **$other**: rebuilt from \`$other_sha\` (no reusable artifact)"
+            else
+              echo "- **$other**: not deployed yet"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-  build_firmware:
-    name: "Firmware ${{ matrix.channel }}/${{ matrix.target }}"
+  # Gate: nothing is published unless risk analysis and hardware test pass for this commit.
+  # It also builds the firmware of this run (artifacts hil_firmware_epd7 / hil_firmware_epd13).
+  hil:
+    name: "HIL gate"
+    needs: plan
+    uses: ./.github/workflows/hil-test.yml
+    with:
+      fw_version: ${{ needs.plan.outputs.fw_version }}
+    secrets: inherit
+
+  # Web UI per channel. Runs next to the hardware test; the firmware is added in "publish".
+  build_web:
+    name: "Web UI ${{ matrix.channel }}"
     runs-on: ubuntu-latest
     needs: plan
     strategy:
       matrix:
-        include: ${{ fromJson(needs.plan.outputs.firmware) }}
+        include: ${{ fromJson(needs.plan.outputs.web) }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache Node Modules
+        uses: actions/cache@v4
+        with:
+          path: web/node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('web/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Install Node Dependencies
+        working-directory: web
+        run: npm ci  # only the versions of package-lock.json, no fallback that ignores it
+
+      - name: Build Web UI
+        working-directory: web
+        env:
+          RELEASE_CHANNEL: ${{ matrix.channel }} # see web/vite.config.js
+          BUILD_COMMIT: ${{ matrix.ref }}
+          FW_VERSION: ${{ matrix.version }} # firmware version this UI expects; empty = src/types.h
+        run: npm run build
+
+      # Read by the web UI of the other channel: is this channel deployed, and which build is it?
+      - name: Write channel.json
+        env:
+          CHANNEL: ${{ matrix.channel }}
+          COMMIT: ${{ matrix.ref }}
+          FW_VERSION: ${{ matrix.version }}
+        run: |
+          set -euo pipefail
+          fw_version="$FW_VERSION"
+          if [ -z "$fw_version" ]; then
+            fw_version=$(sed -nE 's/^#define[[:space:]]+SOFTWARE_VERSION[[:space:]]+"([^"]+)".*/\1/p' src/types.h | head -n 1)
+          fi
+          jq -n --arg channel "$CHANNEL" --arg commit "$COMMIT" --arg fwVersion "$fw_version" \
+            --arg builtAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{channel: $channel, commit: $commit, fwVersion: $fwVersion, builtAt: $builtAt}' > web/dist/channel.json
+          cat web/dist/channel.json
+
+      - name: Upload Web UI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web_${{ matrix.channel }}
+          path: web/dist
+
+  # Fallback only (see "plan"): rebuilds the firmware of the other channel when its site could
+  # not be taken over. Normally this job is skipped.
+  build_firmware:
+    name: "Firmware ${{ matrix.channel }}/${{ matrix.target }} (rebuild)"
+    runs-on: ubuntu-latest
+    needs: plan
+    if: needs.plan.outputs.rebuild_firmware != '[]'
+    strategy:
+      matrix:
+        include: ${{ fromJson(needs.plan.outputs.rebuild_firmware) }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -117,6 +237,15 @@ jobs:
 
       - name: Prepare Deployment Config
         run: cp deploy/platformio.ini platformio.ini
+
+      - name: Set version
+        if: matrix.version != ''
+        env:
+          FW_VERSION: ${{ matrix.version }}
+        run: |
+          set -euo pipefail
+          sed -i -E "s/^(#define[[:space:]]+SOFTWARE_VERSION[[:space:]]+)\"[^\"]*\"/\1\"$FW_VERSION\"/" src/types.h
+          grep -q "\"$FW_VERSION\"" src/types.h
 
       - name: Cache PlatformIO
         uses: actions/cache@v4
@@ -158,93 +287,132 @@ jobs:
           name: offline_firmware_${{ matrix.channel }}_${{ matrix.target }}
           path: .pio/build/${{ matrix.target }}/firmware.bin
 
-  # One complete site per channel: web UI of that branch + the firmware built from the same commit.
-  build_site:
-    name: "Web UI ${{ matrix.channel }}"
-    runs-on: ubuntu-latest
-    needs: [plan, build_firmware]
-    strategy:
-      matrix:
-        include: ${{ fromJson(needs.plan.outputs.sites) }}
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ matrix.ref }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Cache Node Modules
-        uses: actions/cache@v4
-        with:
-          path: web/node_modules
-          key: ${{ runner.os }}-node-${{ hashFiles('web/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-
-
-      - name: Install Node Dependencies
-        working-directory: web
-        run: npm ci  # only the versions of package-lock.json, no fallback that ignores it
-
-      - name: Build Web UI
-        working-directory: web
-        env:
-          RELEASE_CHANNEL: ${{ matrix.channel }} # see web/vite.config.js
-          BUILD_COMMIT: ${{ matrix.ref }}
-        run: npm run build
-
-      - name: Download Offline Firmwares
-        uses: actions/download-artifact@v4
-        with:
-          pattern: offline_firmware_${{ matrix.channel }}_*
-          path: downloaded_offline
-
-      - name: Move Offline Firmwares to Dist
-        run: |
-          mv downloaded_offline/offline_firmware_${{ matrix.channel }}_epd13/firmware.bin web/dist/firmware_offline_epd13.bin
-          mv downloaded_offline/offline_firmware_${{ matrix.channel }}_epd7/firmware.bin web/dist/firmware_offline_epd7.bin
-          rm -rf downloaded_offline
-
-      # Read by the web UI of the other channel: is this channel deployed, and which build is it?
-      - name: Write channel.json
-        env:
-          CHANNEL: ${{ matrix.channel }}
-          COMMIT: ${{ matrix.ref }}
-        run: |
-          fw_version=$(sed -nE 's/^#define[[:space:]]+SOFTWARE_VERSION[[:space:]]+"([^"]+)".*/\1/p' src/types.h | head -n 1)
-          jq -n --arg channel "$CHANNEL" --arg commit "$COMMIT" --arg fwVersion "$fw_version" \
-            --arg builtAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            '{channel: $channel, commit: $commit, fwVersion: $fwVersion, builtAt: $builtAt}' > web/dist/channel.json
-          cat web/dist/channel.json
-
-      - name: Upload Site Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: site_${{ matrix.channel }}
-          path: web/dist
-
-  # Assembles main (root) and dev (./dev/) into the one site that GitHub Pages serves.
+  # Puts web UI and tested firmware together and assembles main (root) and dev (./dev/) into
+  # the one site that GitHub Pages serves.
   publish:
     name: "Assemble site"
     runs-on: ubuntu-latest
-    needs: [hil, build_site]
+    needs: [plan, hil, build_web, build_firmware]
+    # Explicit conditions: build_firmware is normally skipped, and a skipped dependency would
+    # otherwise skip this job as well. The hardware test must have passed.
+    if: >-
+      ${{ !cancelled()
+      && needs.plan.result == 'success'
+      && needs.hil.result == 'success'
+      && needs.build_web.result == 'success'
+      && (needs.build_firmware.result == 'success' || needs.build_firmware.result == 'skipped') }}
+    permissions:
+      actions: read # download the other channel from the last deployment
     steps:
-      - name: Download main site
+      # -> built/web_main and/or built/web_dev
+      - name: Download the web UIs built in this run
         uses: actions/download-artifact@v4
+        with:
+          pattern: web_*
+          path: built
+
+      # -> fw/hil_firmware_epd7/firmware.bin, fw/hil_firmware_epd13/firmware.bin
+      - name: Download the firmware the hardware test ran with
+        uses: actions/download-artifact@v8
+        with:
+          pattern: hil_firmware_*
+          path: fw
+
+      # -> fw/offline_firmware_<channel>_<target>/firmware.bin
+      - name: Download the rebuilt firmware of the other channel (fallback)
+        if: needs.plan.outputs.rebuild_firmware != '[]'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: offline_firmware_*
+          path: fw
+
+      - name: Put web UI and firmware together
+        env:
+          THIS_CHANNEL: ${{ github.ref_name }}
+          OTHER_CHANNEL: ${{ needs.plan.outputs.other_channel }}
+        run: |
+          set -euo pipefail
+
+          # Guard: should a single artifact ever be extracted without its own folder, restore it.
+          if [ -f built/index.html ]; then
+            mkdir -p "built/web_$THIS_CHANNEL"
+            find built -mindepth 1 -maxdepth 1 ! -name 'web_*' ! -name 'site_*' -exec mv {} "built/web_$THIS_CHANNEL/" \;
+          fi
+
+          # This channel: the web UI of this commit plus exactly the files that passed the test.
+          if [ ! -f "built/web_$THIS_CHANNEL/index.html" ]; then
+            echo "::error::Web UI of '$THIS_CHANNEL' is missing."
+            exit 1
+          fi
+          mv "built/web_$THIS_CHANNEL" "built/site_$THIS_CHANNEL"
+          for target in epd7 epd13; do
+            tested="fw/hil_firmware_$target/firmware.bin"
+            if [ ! -s "$tested" ]; then
+              echo "::error::Tested firmware for $target is missing ($tested)."
+              exit 1
+            fi
+            cp "$tested" "built/site_$THIS_CHANNEL/firmware_offline_$target.bin"
+          done
+
+          # Fallback: the other channel was rebuilt in this run.
+          if [ -f "built/web_$OTHER_CHANNEL/index.html" ]; then
+            mv "built/web_$OTHER_CHANNEL" "built/site_$OTHER_CHANNEL"
+            for target in epd7 epd13; do
+              rebuilt="fw/offline_firmware_${OTHER_CHANNEL}_$target/firmware.bin"
+              if [ ! -s "$rebuilt" ]; then
+                echo "::error::Rebuilt firmware for $OTHER_CHANNEL/$target is missing ($rebuilt)."
+                exit 1
+              fi
+              cp "$rebuilt" "built/site_$OTHER_CHANNEL/firmware_offline_$target.bin"
+            done
+          fi
+
+          ls -la built built/site_*
+
+      - name: Take over the other channel from the last deployment
+        if: needs.plan.outputs.reuse_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ needs.plan.outputs.reuse_run }}
+          CHANNEL: ${{ needs.plan.outputs.other_channel }}
+        run: |
+          set -euo pipefail
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name "site_$CHANNEL" --dir "built/site_$CHANNEL"
+          if [ ! -f "built/site_$CHANNEL/index.html" ]; then
+            echo "::error::Artifact site_$CHANNEL of run $RUN_ID has no index.html."
+            exit 1
+          fi
+          echo "Taken over from run $RUN_ID:"
+          cat "built/site_$CHANNEL/channel.json" || true
+
+      # Every successful run holds both complete channels, so the next run can take over from it.
+      - name: Keep the main site for the next run
+        uses: actions/upload-artifact@v4
         with:
           name: site_main
-          path: site
+          path: built/site_main
+          if-no-files-found: error # the site root must exist
+          overwrite: true # a re-run of this job uploads it again
 
-      # A pattern (unlike a name) does not fail when dev has never been deployed.
-      - name: Download dev site
-        uses: actions/download-artifact@v4
+      - name: Keep the dev site for the next run
+        uses: actions/upload-artifact@v4
         with:
-          pattern: site_dev
-          path: site/dev
-          merge-multiple: true
+          name: site_dev
+          path: built/site_dev
+          if-no-files-found: ignore # dev may not be deployed yet
+          overwrite: true
+
+      - name: Assemble main (root) and dev (./dev/)
+        run: |
+          set -euo pipefail
+          if [ ! -f built/site_main/index.html ]; then
+            echo "::error::The main site is missing: the site root would be empty."
+            exit 1
+          fi
+          mv built/site_main site
+          if [ -f built/site_dev/index.html ]; then
+            mv built/site_dev site/dev
+          fi
 
       - name: Download Original Firmware from S3
         run: |
@@ -277,6 +445,8 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     needs: publish
+    # Explicit, because a skipped job further up (build_firmware) would otherwise skip this one too.
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
     permissions:
       pages: write
       id-token: write

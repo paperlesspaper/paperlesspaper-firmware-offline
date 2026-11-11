@@ -76,14 +76,21 @@ Enter WiFi credentials, a download URL and an update interval in the Web UI (**G
 | Format | What the frame does |
 | :--- | :--- |
 | **4-bit BMP** from the Web UI (**BMP herunterladen**) | Shown as it is. Best quality, recommended. |
-| **JPEG** | Scaled to the full display and dithered on the device (Floyd-Steinberg). The aspect ratio is not kept, so use the aspect ratio of your display. |
-| **24-bit BMP** | Dithered on the device, but not scaled. It must have exactly the display resolution and top-down row order. |
+| **JPEG** | Dithered on the device (Floyd-Steinberg). Use baseline RGB JPEGs with standard Huffman tables: progressive JPEGs are only decoded at 1/8 of their resolution, and JPEGs saved with "optimized" Huffman tables can be rejected. |
+| **BMP** with 24 or 32 bit, or 4 bit in another size | Dithered on the device. Compressed and 8-bit BMPs are not supported. |
 
-Display resolution: 800×480 (7.3") or 1200×1600 (13.3").
+Pictures that are dithered on the device are fitted to the display:
+
+- **Larger** than the display: scaled down to fit. The aspect ratio is kept.
+- **Smaller** than the display: shown in their original size.
+- The picture is centered, the rest of the display stays white.
+
+Display resolution: 800×480 (7.3", landscape) or 1200×1600 (13.3", portrait). The frame does not turn a landscape picture into portrait or the other way round, so provide pictures in this orientation.
 
 Details:
 
 - **URL:** `http://` or `https://`, up to 128 characters. HTTPS certificates are not verified.
+- **Check:** the button **Prüfen** next to the download URL in the Web UI tells you whether the frame can show the picture and how it will be placed.
 - **Login:** optional HTTP Basic Auth for the image download.
 - **Caching:** if the server sends an `ETag` (preferred) or `Last-Modified` header, an unchanged image is neither written to flash nor refreshed on the display.
 - **Server-controlled interval:** the response header `X-OpenPaper-Sleep-Seconds` (60–86400) sets the time until the next wake-up.
