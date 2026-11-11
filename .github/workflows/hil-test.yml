@@ -3,10 +3,10 @@ run-name: "HIL Test 0.1.${{ github.run_number }} (${{ github.ref_name }})"
 
 # Runs on the self-hosted hardware runner. This repository is public:
 # never add a pull_request trigger here, it would run foreign code on that machine.
+#
+# No push trigger of its own: deploy.yml runs on every push to main and dev and calls this
+# workflow as its gate. A second trigger here would run the hardware test twice per dev push.
 on:
-  push:
-    branches:
-      - dev
   workflow_dispatch:
     inputs:
       target:
@@ -18,14 +18,20 @@ on:
           - all
           - epd7
           - epd13
+  # Called by deploy.yml: main and dev are only deployed after the hardware test passed.
   workflow_call:
+    inputs:
+      target:
+        type: string
+        default: "all"
 
 permissions:
   contents: read
 
 # One run at a time. Never cancel a run: it may be flashing a device over BLE.
+# The group is per calling workflow: a queued deployment must not be replaced by a dev run.
 concurrency:
-  group: hil-offline
+  group: hil-offline-${{ github.workflow }}
   cancel-in-progress: false
 
 env:
@@ -127,6 +133,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Checkout cloud testbench (hardware layer)
         uses: actions/checkout@v7
@@ -135,6 +143,7 @@ jobs:
           ref: ${{ env.CLOUD_TESTBENCH_REF }}
           path: _cloud
           sparse-checkout: testbench
+          persist-credentials: false
 
       - name: Install dependencies
         run: pip install -r hil/requirements.txt
@@ -154,14 +163,15 @@ jobs:
           python -m hil.run --target epd7
           --candidate-bin build_artifact_epd7/firmware.bin
           --candidate-version ${{ env.FW_VERSION }}
-          --junitxml junit_epd7.xml -v
+          --results hil_result_epd7.json -v
 
+      # Only the masked result file is uploaded, never the raw JUnit file (see hil/results.py).
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: hil_junit_epd7
-          path: junit_epd7.xml
+          name: hil_result_epd7
+          path: hil_result_epd7.json
           if-no-files-found: ignore
 
   hil_epd13:
@@ -177,6 +187,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Checkout cloud testbench (hardware layer)
         uses: actions/checkout@v7
@@ -185,6 +197,7 @@ jobs:
           ref: ${{ env.CLOUD_TESTBENCH_REF }}
           path: _cloud
           sparse-checkout: testbench
+          persist-credentials: false
 
       - name: Install dependencies
         run: pip install -r hil/requirements.txt
@@ -204,14 +217,14 @@ jobs:
           python -m hil.run --target epd13
           --candidate-bin build_artifact_epd13/firmware.bin
           --candidate-version ${{ env.FW_VERSION }}
-          --junitxml junit_epd13.xml -v
+          --results hil_result_epd13.json -v
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: hil_junit_epd13
-          path: junit_epd13.xml
+          name: hil_result_epd13
+          path: hil_result_epd13.json
           if-no-files-found: ignore
 
   report:
@@ -232,7 +245,7 @@ jobs:
         uses: actions/download-artifact@v8
         continue-on-error: true
         with:
-          pattern: hil_junit_*
+          pattern: hil_result_*
           path: results
           merge-multiple: true
 
@@ -243,15 +256,12 @@ jobs:
           name: hil_risk_report
           path: results
 
-      # The WiFi secrets are only set so that they are masked before a log excerpt goes to the AI.
       - name: Generate test protocol
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
-          HIL_WIFI_SSID: ${{ secrets.HIL_WIFI_SSID }}
-          HIL_WIFI_PASSWORD: ${{ secrets.HIL_WIFI_PASSWORD }}
         run: >
-          python hil/report.py results/junit_epd7.xml results/junit_epd13.xml
+          python hil/report.py results/hil_result_epd7.json results/hil_result_epd13.json
           --risk-report results/risk_report.md
           --fw-version "$FW_VERSION" --commit "$GITHUB_SHA"
           --output-md hil_test_protocol.md --output-json hil_test_protocol.json

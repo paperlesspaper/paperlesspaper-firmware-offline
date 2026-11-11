@@ -2,10 +2,11 @@
 """Builds the test protocol of a HIL run: test results, AI risk analysis and,
 for failed tests, an AI root cause analysis.
 
-    python hil/report.py junit_epd7.xml junit_epd13.xml --risk-report risk_report.md \
+    python hil/report.py hil_result_epd7.json hil_result_epd13.json --risk-report risk_report.md \
         --output-md hil_test_protocol.md --output-json hil_test_protocol.json >> $GITHUB_STEP_SUMMARY
 
-The protocol goes to stdout, notes go to stderr.
+The inputs are the result files written by `hil.run --results`; their failure
+texts are already masked (hil/results.py). The protocol goes to stdout, notes go to stderr.
 Exits with 1 if a test failed, no result file was found or the risk analysis blocks.
 """
 
@@ -13,7 +14,6 @@ import argparse
 import json
 import os
 import sys
-import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
@@ -41,27 +41,21 @@ def title_of(test_name):
     return next((title for key, title in TEST_TITLES.items() if test_name.startswith(key)), test_name)
 
 
-def read_cases(path):
+def read_result(path):
+    """Returns (device name, test cases) of a result file."""
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
     cases = []
-    for case in ET.parse(path).getroot().iter("testcase"):
-        problem = case.find("failure")
-        if problem is None:
-            problem = case.find("error")
-        if problem is not None:
-            outcome = "failed"
-            details = f"{problem.get('message', '')}\n{problem.text or ''}".strip()
-        elif case.find("skipped") is not None:
-            outcome, details = "skipped", ""
-        else:
-            outcome, details = "passed", ""
+    for case in data.get("cases", []):
+        outcome = case.get("outcome")
         cases.append({
-            "name": case.get("name"),
-            "title": title_of(case.get("name", "")),
-            "outcome": outcome,
-            "seconds": round(float(case.get("time", 0)), 1),
-            "details": details,
+            "name": str(case.get("name", "")),
+            "title": title_of(str(case.get("name", ""))),
+            "outcome": outcome if outcome in ICONS else "failed",
+            "seconds": round(float(case.get("seconds", 0)), 1),
+            "details": str(case.get("details", "")),
         })
-    return cases
+    return str(data.get("target", "?")).upper(), cases
 
 
 def load_risk(path):
@@ -151,7 +145,7 @@ def build(targets, risk, fw_version, commit):
 
 def main():
     parser = argparse.ArgumentParser(description="Erzeugt das HIL-Testprotokoll")
-    parser.add_argument("junit", nargs="*", help="JUnit-Dateien der Hardware-Tests (junit_<gerät>.xml)")
+    parser.add_argument("results", nargs="*", help="Ergebnisdateien der Hardware-Tests (hil_result_<gerät>.json)")
     parser.add_argument("--risk-report", help="Bericht der KI-Risikoanalyse (risk_report.md)")
     parser.add_argument("--fw-version", default=os.environ.get("FW_VERSION", "?"))
     parser.add_argument("--commit", default=os.environ.get("GITHUB_SHA", "HEAD"))
@@ -160,10 +154,10 @@ def main():
     args = parser.parse_args()
 
     targets = {}
-    for path in args.junit:
+    for path in args.results:
         if os.path.isfile(path):
-            name = os.path.splitext(os.path.basename(path))[0].replace("junit_", "").upper()
-            targets[name] = read_cases(path)
+            name, cases = read_result(path)
+            targets[name] = cases
     risk = load_risk(args.risk_report)
 
     markdown, ok = build(targets, risk, args.fw_version, args.commit)

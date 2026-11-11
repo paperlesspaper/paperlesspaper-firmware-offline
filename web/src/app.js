@@ -1,9 +1,31 @@
 import { GeneratePicture } from "./GeneratePicture.js";
 import { DeviceBleInterface, validateEsp32FirmwareBinary } from "./DeviceBleInterface.js";
 import { ESPLoader, Transport } from "esptool-js";
+import { $, setStatus, onStatus, currentStatus, setProgress, onProgress, setLed, initNavigation, navigate, getCurrentView, initDialogs, openDialog, closeDialog, showMessage, initCollapsibles, setCollapsible, nextFrame, byteLength, setFieldError, formatDuration, downloadBlob } from "./ui.js";
 
-const EXPECTED_FW_VERSION =
-  typeof __EXPECTED_FW_VERSION__ !== "undefined" ? __EXPECTED_FW_VERSION__ : "0.1.0";
+const EXPECTED_FW_VERSION = typeof __EXPECTED_FW_VERSION__ !== "undefined" ? __EXPECTED_FW_VERSION__ : "0.1.0";
+
+// Release channel of this build: "main" (stable, site root), "dev" (preview, ./dev/) or "local".
+// Each channel is a complete build that flashes the offline firmware of its own branch.
+const RELEASE_CHANNEL = typeof __RELEASE_CHANNEL__ !== "undefined" ? __RELEASE_CHANNEL__ : "local";
+const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== "undefined" ? __BUILD_COMMIT__ : "";
+const IS_DEV_CHANNEL = RELEASE_CHANNEL === "dev";
+const PUBLIC_SITE_URL = "https://paperlesspaper.github.io/paperlesspaper-firmware-offline/";
+
+// Limits enforced by the firmware (src/main.cpp). Values outside are silently ignored by the
+// device, so they are validated here before writing.
+const DEVICE_LIMITS = {
+  wifiSsidBytes: 32, // MAX_WIFI_SSID_LEN
+  wifiPassBytes: 64, // MAX_WIFI_PASS_LEN
+  settingStringBytes: 128, // MAX_SETTING_STRING_LEN
+  timeoutMin: 60, // MIN_SLEEP_TIMEOUT
+  timeoutMax: 2592000, // MAX_SLEEP_TIMEOUT (30 days)
+};
+
+// Flash layout (part.csv)
+const APP_ADDRESS = 0x10000;
+const SPIFFS_ADDRESS = 0x3b0000;
+const SPIFFS_SIZE = 0x40000; // 256 KB
 
 function compareSemver(vA, vB) {
   const clean = (v) =>
@@ -23,21 +45,49 @@ function compareSemver(vA, vB) {
   return 0;
 }
 
-const expectedOfflineFwBadge = document.getElementById("expectedOfflineFwBadge");
-if (expectedOfflineFwBadge) {
-  expectedOfflineFwBadge.innerText = `v${EXPECTED_FW_VERSION}`;
-}
-
 const generatePicture = new GeneratePicture();
 const bleInterface = new DeviceBleInterface();
+const bluetoothAvailable = DeviceBleInterface.isSupported();
+const serialAvailable = "serial" in navigator;
+
+/** Central UI state – every enabled/disabled/visible decision is derived from it in syncUi(). */
+const state = {
+  conn: "disconnected", // "disconnected" | "connecting" | "connected" | "reconnecting"
+  busy: false, // a transfer (upload / flash / backup) is running
+  hasImage: false,
+  otaMethod: "ble", // "ble" | "serial"
+  wifiScanning: false,
+};
+
+// ---------------------------------------------------------------------------
+// Network helper
+// ---------------------------------------------------------------------------
+
+/** Hosts a public CORS proxy can never reach – sending them there would only leak the URL. */
+function isPrivateUrl(url) {
+  try {
+    const host = new URL(url, location.href).hostname.toLowerCase();
+    if (host === location.hostname) return true;
+    if (host === "localhost" || host.startsWith("[") || !host.includes(".")) return true;
+    if (/\.(local|lan|home|internal|intranet|fritz\.box|home\.arpa)$/.test(host)) return true;
+    return /^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host);
+  } catch (e) {
+    return true;
+  }
+}
 
 async function fetchWithProxy(url, options = {}) {
+  let directError = null;
   try {
-    const res = await fetch(url, options);
-    return res;
+    return await fetch(url, options);
   } catch (err) {
-    console.warn("Direct fetch failed (likely CORS). Trying Proxy 1 (corsproxy.io)...", err);
+    directError = err;
   }
+
+  if (isPrivateUrl(url)) {
+    throw directError;
+  }
+  console.warn("Direct fetch failed (likely CORS). Trying Proxy 1 (corsproxy.io)...", directError);
 
   try {
     const res = await fetch("https://corsproxy.io/?" + encodeURIComponent(url), options);
@@ -50,344 +100,405 @@ async function fetchWithProxy(url, options = {}) {
   return await fetch("https://api.allorigins.win/raw?url=" + encodeURIComponent(url), options);
 }
 
-let EPD_WIDTH = 800;
-let EPD_HEIGHT = 480;
+// ---------------------------------------------------------------------------
+// Elements
+// ---------------------------------------------------------------------------
 
-const btnConnect = document.getElementById("btnConnect");
-const btnDisconnect = document.getElementById("btnDisconnect");
-const statusText = document.getElementById("statusText");
-const controls = document.getElementById("controls");
-const controlsOta = document.getElementById("controlsOta");
+const btnConnect = $("btnConnect");
+const btnDisconnect = $("btnDisconnect");
+const connLed = $("connLed");
+const systemStatusBar = $("systemStatusBar");
+const notConnectedState = $("notConnectedState");
+const controls = $("controls");
 
-const btnSaveWifi = document.getElementById("btnSaveWifi");
-const wifiSsid = document.getElementById("wifiSsid");
-const btnScanWifi = document.getElementById("btnScanWifi");
-const wifiList = document.getElementById("wifiList");
-const wifiPass = document.getElementById("wifiPass");
-const btnTogglePass = document.getElementById("btnTogglePass");
-const eyeIconOpen = document.getElementById("eyeIconOpen");
-const eyeIconClosed = document.getElementById("eyeIconClosed");
+const wifiInputMask = $("wifiInputMask");
+const btnSaveWifi = $("btnSaveWifi");
+const wifiSsid = $("wifiSsid");
+const btnScanWifi = $("btnScanWifi");
+const wifiListBox = $("wifiListBox");
+const wifiList = $("wifiList");
+const wifiPass = $("wifiPass");
+const wifiConnectedInfo = $("wifiConnectedInfo");
+const btnEditWifi = $("btnEditWifi");
+const infoSsid = $("infoSsid");
+const infoIp = $("infoIp");
+const infoRssi = $("infoRssi");
+const infoQuality = $("infoQuality");
+const syncBadgeWifi = $("syncBadgeWifi");
+const syncBadgeSettings = $("syncBadgeSettings");
 
-const btnSaveSettings = document.getElementById("btnSaveSettings");
-const btnFactoryReset = document.getElementById("btnFactoryReset");
-const settingTimeout = document.getElementById("settingTimeout");
-const settingUrl = document.getElementById("settingUrl");
-const settingSettingsUrl = document.getElementById("settingSettingsUrl");
-const settingHttpAuthUser = document.getElementById("settingHttpAuthUser");
-const settingHttpAuthPassword = document.getElementById("settingHttpAuthPassword");
-const settingMotionWakeup = document.getElementById("settingMotionWakeup");
-const settingChargerMode = document.getElementById("settingChargerMode");
-const settingAutoRotation = document.getElementById("settingAutoRotation");
-const btnToggleHttpAuthPass = document.getElementById("btnToggleHttpAuthPass");
-const eyeHttpAuthIconOpen = document.getElementById("eyeHttpAuthIconOpen");
-const eyeHttpAuthIconClosed = document.getElementById("eyeHttpAuthIconClosed");
+const settingsForm = $("settingsForm");
+const settingsSaveZone = $("settingsSaveZone");
+const btnSaveSettings = $("btnSaveSettings");
+const btnFactoryReset = $("btnFactoryReset");
+const btnPreviewJson = $("btnPreviewJson");
+const settingTimeout = $("settingTimeout");
+const settingTimeoutHint = $("settingTimeoutHint");
+const settingUrl = $("settingUrl");
+const urlValidationStatus = $("urlValidationStatus");
+const settingSettingsUrl = $("settingSettingsUrl");
+const settingHttpAuthUser = $("settingHttpAuthUser");
+const settingHttpAuthPassword = $("settingHttpAuthPassword");
+const settingMotionWakeup = $("settingMotionWakeup");
+const settingChargerMode = $("settingChargerMode");
+const settingAutoRotation = $("settingAutoRotation");
 
-const fileInput = document.getElementById("fileInput");
-const btnUploadImage = document.getElementById("btnUploadImage");
-const btnDownloadBin = document.getElementById("btnDownloadBin");
-const canvas = document.getElementById("previewCanvas");
-canvas.width = EPD_WIDTH;
-canvas.height = EPD_HEIGHT;
-const ctx = canvas.getContext("2d", { willReadFrequently: true });
-const progressContainer = document.getElementById("progressContainer");
-const progressBar = document.getElementById("progressBar");
+const fileInput = $("fileInput");
+const btnPickImage = $("btnPickImage");
+const btnUploadImage = $("btnUploadImage");
+const btnDownloadBin = $("btnDownloadBin");
+const canvas = $("previewCanvas");
+const previewHoverCanvas = $("previewHoverCanvas");
+const previewContainer = $("previewContainer");
+const previewEmpty = $("previewEmpty");
+const previewStage = $("previewStage");
+const previewModeRow = $("previewModeRow");
+const btnPreviewRaw = $("btnPreviewRaw");
+const displayBadge = $("displayBadge");
+const displayAutoBadge = $("displayAutoBadge");
+const displaySizeSelect = $("displaySizeSelect");
+const imageSettingsDetails = $("imageSettingsDetails");
+const errorDiffusionMatrix = $("errorDiffusionMatrix");
+const serpentine = $("serpentine");
+const paletteSelect = $("paletteSelect");
+const paletteEditor = $("paletteEditor");
+const processingBrightness = $("processingBrightness");
+const processingContrast = $("processingContrast");
+const processingSaturation = $("processingSaturation");
+const btnResetProcessing = $("btnResetProcessing");
+const btnAutoDither = $("btnAutoDither");
+const btnRotate = $("btnRotate");
 
-const btnFetchOriginalFw = document.getElementById("btnFetchOriginalFw");
-const btnUpdateOfflineFw = document.getElementById("btnUpdateOfflineFw");
-const otaDialog = document.getElementById("otaDialog");
-const otaDeviceSelect = document.getElementById("otaDeviceSelect");
-const otaVersion = document.getElementById("otaVersion");
-const btnCancelOta = document.getElementById("btnCancelOta");
-const btnConfirmOta = document.getElementById("btnConfirmOta");
-const otaOfflineDialog = document.getElementById("otaOfflineDialog");
-const offlineOtaDeviceSelect = document.getElementById("offlineOtaDeviceSelect");
-const btnCancelOfflineOta = document.getElementById("btnCancelOfflineOta");
-const btnConfirmOfflineOta = document.getElementById("btnConfirmOfflineOta");
-const fwInput = document.getElementById("fwInput");
-const btnSelectFw = document.getElementById("btnSelectFw");
-const btnSelectSpiffs = document.getElementById("btnSelectSpiffs");
-const btnBackupSpiffs = document.getElementById("btnBackupSpiffs");
-const spiffsInput = document.getElementById("spiffsInput");
-const spiffsBleNotice = document.getElementById("spiffsBleNotice");
-const spiffsUsbTools = document.getElementById("spiffsUsbTools");
-const btnSwitchToUsb = document.getElementById("btnSwitchToUsb");
-const activeOtaModeBadge = document.getElementById("activeOtaModeBadge");
-const bleModeNotice = document.getElementById("bleModeNotice");
-const usbBackupDialog = document.getElementById("usbBackupDialog");
-const btnCancelUsbBackup = document.getElementById("btnCancelUsbBackup");
-const btnConfirmUsbBackup = document.getElementById("btnConfirmUsbBackup");
-const fwProgressContainer = document.getElementById("fwProgressContainer");
-const fwProgressBar = document.getElementById("fwProgressBar");
+const btnOtaBle = $("btnOtaBle");
+const btnOtaSerial = $("btnOtaSerial");
+const activeOtaModeBadge = $("activeOtaModeBadge");
+const bleModeNotice = $("bleModeNotice");
+const serialModeNotice = $("serialModeNotice");
+const serialUnsupportedNotice = $("serialUnsupportedNotice");
+const btnFetchOriginalFw = $("btnFetchOriginalFw");
+const btnUpdateOfflineFw = $("btnUpdateOfflineFw");
+const otaDialog = $("otaDialog");
+const otaDeviceSelect = $("otaDeviceSelect");
+const otaVersion = $("otaVersion");
+const btnCancelOta = $("btnCancelOta");
+const btnConfirmOta = $("btnConfirmOta");
+const otaOfflineDialog = $("otaOfflineDialog");
+const offlineOtaDeviceSelect = $("offlineOtaDeviceSelect");
+const btnCancelOfflineOta = $("btnCancelOfflineOta");
+const btnConfirmOfflineOta = $("btnConfirmOfflineOta");
+const fwInput = $("fwInput");
+const btnSelectFw = $("btnSelectFw");
+const btnSelectSpiffs = $("btnSelectSpiffs");
+const btnBackupSpiffs = $("btnBackupSpiffs");
+const spiffsInput = $("spiffsInput");
+const spiffsBleNotice = $("spiffsBleNotice");
+const spiffsUsbTools = $("spiffsUsbTools");
+const btnSwitchToUsb = $("btnSwitchToUsb");
+const usbBackupDialog = $("usbBackupDialog");
+const btnCancelUsbBackup = $("btnCancelUsbBackup");
+const btnConfirmUsbBackup = $("btnConfirmUsbBackup");
+const usbFlashDialog = $("usbFlashDialog");
+const usbFlashTitle = $("usbFlashTitle");
+const usbFlashDescription = $("usbFlashDescription");
+const usbFlashFileName = $("usbFlashFileName");
+const usbFlashFileSize = $("usbFlashFileSize");
+const usbFlashTargetAddress = $("usbFlashTargetAddress");
+const btnCancelUsbFlash = $("btnCancelUsbFlash");
+const btnConfirmUsbFlash = $("btnConfirmUsbFlash");
 
-const syncBadgeWifi = document.getElementById("syncBadgeWifi");
-const syncBadgeSettings = document.getElementById("syncBadgeSettings");
+const serialMonitorContainer = $("serialMonitorContainer");
+const btnToggleSerialMonitor = $("btnToggleSerialMonitor");
+const btnClearSerialLog = $("btnClearSerialLog");
+const serialLogBox = $("serialLogBox");
+const serialLogOutput = $("serialLogOutput");
 
-const wifiConnectedInfo = document.getElementById("wifiConnectedInfo");
-const btnEditWifi = document.getElementById("btnEditWifi");
-const wifiInputMask = document.getElementById("wifiInputMask");
-const infoSsid = document.getElementById("infoSsid");
-const infoIp = document.getElementById("infoIp");
-const infoRssi = document.getElementById("infoRssi");
-const infoQuality = document.getElementById("infoQuality");
+const firmwareVersionWarning = $("firmwareVersionWarning");
+const firmwareVersionWarningTitle = $("firmwareVersionWarningTitle");
+const firmwareVersionWarningText = $("firmwareVersionWarningText");
+const btnJumpToOta = $("btnJumpToOta");
 
-if (btnEditWifi) {
-  btnEditWifi.addEventListener("click", () => {
-    wifiConnectedInfo.classList.add("hidden");
-    wifiInputMask.classList.remove("hidden");
+const jsonPreviewModal = $("jsonPreviewModal");
+const jsonPreviewContent = $("jsonPreviewContent");
+
+const transferDialog = $("transferDialog");
+const transferSpinner = $("transferSpinner");
+const transferResultLed = $("transferResultLed");
+const transferTitle = $("transferTitle");
+const transferText = $("transferText");
+const transferProgress = $("transferProgress");
+const transferFill = $("transferFill");
+const transferPct = $("transferPct");
+const transferWarn = $("transferWarn");
+const btnTransferAbort = $("btnTransferAbort");
+const btnTransferOk = $("btnTransferOk");
+
+$("expectedOfflineFwBadge").textContent = `v${EXPECTED_FW_VERSION}`;
+
+// ---------------------------------------------------------------------------
+// Central UI sync
+// ---------------------------------------------------------------------------
+
+const CONN_LABEL = {
+  disconnected: "Nicht verbunden",
+  connecting: "Verbindung wird aufgebaut",
+  reconnecting: "Verbindung wird wiederhergestellt",
+  connected: "Verbunden",
+};
+
+function syncUi() {
+  const connected = state.conn === "connected";
+  const pending = state.conn === "connecting" || state.conn === "reconnecting";
+  const busy = state.busy;
+
+  // App bar: one button whose meaning follows the connection state
+  btnConnect.hidden = connected || pending;
+  btnConnect.disabled = !bluetoothAvailable;
+  btnDisconnect.hidden = !(connected || pending);
+  btnDisconnect.textContent = connected ? "Trennen" : "Abbrechen";
+  setLed(connLed, connected ? "ok" : pending ? "busy" : "idle");
+  connLed.setAttribute("aria-label", CONN_LABEL[state.conn] || CONN_LABEL.disconnected);
+  document.querySelectorAll('[data-action="connect"]').forEach((btn) => {
+    btn.disabled = !bluetoothAvailable || pending;
+    btn.textContent = pending ? "Verbinde…" : "Mit E-Paper verbinden";
+  });
+
+  systemStatusBar.hidden = !connected;
+  notConnectedState.hidden = connected;
+  controls.hidden = !connected;
+
+  // Editor
+  btnPickImage.classList.toggle("btn-neu-signal", !state.hasImage);
+  btnPickImage.classList.toggle("btn-neu-primary", state.hasImage);
+  btnPickImage.textContent = state.hasImage ? "Anderes Bild" : "Bild wählen";
+  btnRotate.disabled = !state.hasImage || busy;
+  btnAutoDither.disabled = !state.hasImage || busy;
+  btnDownloadBin.disabled = !state.hasImage || busy;
+  btnUploadImage.disabled = !state.hasImage || !connected || busy;
+  // A disabled button says why it is disabled.
+  btnUploadImage.textContent = !state.hasImage ? "Senden – kein Bild" : !connected ? "Senden – nicht verbunden" : "An Gerät senden";
+
+  // Device settings
+  btnSaveWifi.disabled = busy;
+  btnSaveSettings.disabled = busy;
+  btnScanWifi.disabled = busy || state.wifiScanning;
+  btnScanWifi.textContent = state.wifiScanning ? "Suche…" : "Scan";
+  btnFactoryReset.disabled = busy;
+  btnPreviewJson.disabled = busy;
+
+  // Firmware
+  const usbBlocked = state.otaMethod === "serial" && !serialAvailable;
+  [btnFetchOriginalFw, btnUpdateOfflineFw, btnSelectFw, btnBackupSpiffs, btnSelectSpiffs, btnToggleSerialMonitor].forEach((btn) => {
+    btn.disabled = busy || usbBlocked;
   });
 }
 
-const errorDiffusionMatrix = document.getElementById("errorDiffusionMatrix");
-const serpentine = document.getElementById("serpentine");
+// ---------------------------------------------------------------------------
+// Blocking transfer screen (upload / flashing / backup)
+// ---------------------------------------------------------------------------
 
-const paletteSelect = document.getElementById("paletteSelect");
-const paletteEditor = document.getElementById("paletteEditor");
-const processingBrightness = document.getElementById("processingBrightness");
-const processingContrast = document.getElementById("processingContrast");
-const processingSaturation = document.getElementById("processingSaturation");
-const btnAutoDither = document.getElementById("btnAutoDither");
-const btnRotate = document.getElementById("btnRotate");
-const displaySizeSelect = document.getElementById("displaySizeSelect");
-const displayAutoBadge = document.getElementById("displayAutoBadge");
-const imageSettingsDetails = document.getElementById("imageSettingsDetails");
+const transfer = { active: false, aborted: false };
 
-function expandImageSettings() {
-  if (imageSettingsDetails) {
-    imageSettingsDetails.open = true;
-  }
+function openTransfer(title, abortable) {
+  transfer.active = true;
+  transfer.aborted = false;
+  transferTitle.textContent = title;
+  transferTitle.classList.remove("is-err");
+  transferText.textContent = "Bitte warten…";
+  transferText.classList.remove("is-result");
+  transferSpinner.hidden = false;
+  transferResultLed.hidden = true;
+  transferProgress.hidden = false;
+  transferFill.classList.add("indeterminate");
+  transferPct.textContent = "…";
+  transferWarn.hidden = false;
+  btnTransferAbort.hidden = !abortable;
+  btnTransferAbort.disabled = false;
+  btnTransferOk.hidden = true;
+  openDialog(transferDialog);
 }
 
-function syncUploadButtonState() {
-  if (!btnUploadImage) return;
-  const hasImage = Boolean(generatePicture.getOriginalImage());
-  if (bleInterface.isConnected) {
-    btnUploadImage.disabled = !hasImage;
-    btnUploadImage.classList.remove("bg-gray-500", "hover:bg-gray-600", "bg-gray-400");
-    btnUploadImage.classList.add("bg-green-600", "hover:bg-green-700");
-    btnUploadImage.innerText = "SENDEN";
-  } else {
-    btnUploadImage.disabled = true;
-    btnUploadImage.classList.remove("bg-green-600", "hover:bg-green-700", "bg-green-500");
-    btnUploadImage.classList.add("bg-gray-500", "hover:bg-gray-600");
-    btnUploadImage.innerText = "SENDEN";
+function finishTransfer({ ok = true, title = "", message = "", sticky = false } = {}) {
+  transfer.active = false;
+  if (!sticky) {
+    closeDialog(transferDialog);
+    return;
   }
+  transferSpinner.hidden = true;
+  transferResultLed.hidden = false;
+  setLed(transferResultLed, ok ? "ok" : "err");
+  transferTitle.textContent = title;
+  transferTitle.classList.toggle("is-err", !ok);
+  transferText.textContent = message;
+  transferText.classList.add("is-result");
+  transferProgress.hidden = true;
+  transferWarn.hidden = true;
+  btnTransferAbort.hidden = true;
+  btnTransferOk.hidden = false;
+  openDialog(transferDialog);
+  btnTransferOk.focus();
 }
 
-function applyDisplayProfile(isPaperL, lockToDevice = false) {
-  const nextWidth = isPaperL ? 1200 : 800;
-  const nextHeight = isPaperL ? 1600 : 480;
-  const dimsChanged = EPD_WIDTH !== nextWidth || EPD_HEIGHT !== nextHeight;
-
-  EPD_WIDTH = nextWidth;
-  EPD_HEIGHT = nextHeight;
-  canvas.width = EPD_WIDTH;
-  canvas.height = EPD_HEIGHT;
-
-  if (displaySizeSelect) {
-    displaySizeSelect.value = isPaperL ? "13" : "7";
-    displaySizeSelect.disabled = lockToDevice;
-    displaySizeSelect.title = lockToDevice
-      ? `Automatisch an verbundenes Gerät angepasst (${isPaperL ? '13.3"' : '7.3"'})`
-      : "";
-  }
-  if (displayAutoBadge) {
-    displayAutoBadge.classList.toggle("hidden", !lockToDevice);
-  }
-
-  const deviceCode = isPaperL ? "epd13" : "epd7";
-  if (otaDeviceSelect) {
-    otaDeviceSelect.value = deviceCode;
-  }
-  if (offlineOtaDeviceSelect) {
-    offlineOtaDeviceSelect.value = deviceCode;
-  }
-
-  const img = generatePicture.getOriginalImage();
-  if (img && dimsChanged) {
-    if ((img.height > img.width && EPD_WIDTH > EPD_HEIGHT) || (img.width > img.height && EPD_HEIGHT > EPD_WIDTH)) {
-      generatePicture.setImageRotation(270);
-    } else {
-      generatePicture.setImageRotation(0);
-    }
-    updatePreview();
-  }
-}
-
-if (displaySizeSelect) {
-  displaySizeSelect.addEventListener("change", (e) => {
-    if (bleInterface.isConnected) {
-      applyDisplayProfile(bleInterface.isPaperL, true);
-      return;
-    }
-    applyDisplayProfile(e.target.value === "13", false);
-  });
-}
-
-let updateTimeout = null;
-let lastUpdate = 0;
-function throttledUpdatePreview() {
-  if (!generatePicture.getOriginalImage()) return;
-  const now = Date.now();
-  if (now - lastUpdate >= 500) {
-    updatePreview();
-    lastUpdate = now;
-  } else {
-    clearTimeout(updateTimeout);
-    updateTimeout = setTimeout(
-      () => {
-        if (generatePicture.getOriginalImage()) updatePreview();
-        lastUpdate = Date.now();
-      },
-      500 - (now - lastUpdate),
-    );
-  }
-}
-[errorDiffusionMatrix, paletteSelect, serpentine].forEach((el) => {
-  if (el)
-    el.addEventListener("change", () => {
-      if (generatePicture.getOriginalImage()) updatePreview();
-    });
+onStatus((text) => {
+  if (transfer.active) transferText.textContent = text;
 });
-[processingBrightness, processingContrast, processingSaturation].forEach((el) => {
-  if (el) el.addEventListener("input", throttledUpdatePreview);
+
+onProgress((value) => {
+  if (!transfer.active) return;
+  if (value === null) {
+    transferFill.classList.add("indeterminate");
+    transferPct.textContent = "…";
+  } else {
+    transferFill.classList.remove("indeterminate");
+    transferFill.style.width = value + "%";
+    transferPct.textContent = value + "%";
+  }
 });
 
-if (btnTogglePass) {
-  btnTogglePass.addEventListener("click", () => {
-    if (wifiPass.type === "password") {
-      wifiPass.type = "text";
-      eyeIconOpen.classList.remove("hidden");
-      eyeIconClosed.classList.add("hidden");
+// A running transfer must not be dismissed with Escape.
+transferDialog.addEventListener("cancel", (e) => {
+  if (transfer.active) e.preventDefault();
+});
+transferDialog.addEventListener("close", () => {
+  if (transfer.active) openDialog(transferDialog);
+});
+btnTransferOk.addEventListener("click", () => closeDialog(transferDialog));
+btnTransferAbort.addEventListener("click", () => {
+  transfer.aborted = true;
+  btnTransferAbort.disabled = true;
+  transferText.textContent = "Breche ab…";
+  bleInterface.disconnect();
+});
+
+/**
+ * Runs a long transfer behind the blocking transfer screen.
+ * `task` reports via setStatus()/setProgress() and throws an Error with a user-readable message.
+ */
+async function runTransfer({ title, abortable = false, successTitle = "Fertig", failTitle = "Fehlgeschlagen", stickySuccess = false }, task) {
+  if (state.busy) return false;
+  state.busy = true;
+  syncUi();
+  setProgress(null);
+  openTransfer(title, abortable);
+  let ok = false;
+  try {
+    await nextFrame();
+    await task();
+    ok = true;
+    finishTransfer({ ok: true, title: successTitle, message: currentStatus.text, sticky: stickySuccess });
+  } catch (err) {
+    console.error(err);
+    if (transfer.aborted) {
+      setStatus("Übertragung abgebrochen.", "warn");
+      finishTransfer();
     } else {
-      wifiPass.type = "password";
-      eyeIconOpen.classList.add("hidden");
-      eyeIconClosed.classList.remove("hidden");
+      const message = err?.message || String(err);
+      if (!err?.reported) setStatus(`${failTitle}: ${message}`, "err");
+      finishTransfer({ ok: false, title: failTitle, message, sticky: true });
     }
-  });
-}
-
-if (btnToggleHttpAuthPass) {
-  btnToggleHttpAuthPass.addEventListener("click", () => {
-    if (settingHttpAuthPassword.type === "password") {
-      settingHttpAuthPassword.type = "text";
-      eyeHttpAuthIconOpen.classList.remove("hidden");
-      eyeHttpAuthIconClosed.classList.add("hidden");
-    } else {
-      settingHttpAuthPassword.type = "password";
-      eyeHttpAuthIconOpen.classList.add("hidden");
-      eyeHttpAuthIconClosed.classList.remove("hidden");
-    }
-  });
-}
-
-function setStatus(text, colorClass = "text-gray-500") {
-  if (statusText) {
-    statusText.className = `mt-3 text-sm font-semibold ${colorClass}`;
-    statusText.innerText = text;
+  } finally {
+    state.busy = false;
+    setProgress(null);
+    syncUi();
   }
-  const statusFooter = document.getElementById("status");
-  if (statusFooter) {
-    statusFooter.className = `fixed bottom-0 left-0 right-0 bg-white shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] py-3 px-4 text-center font-medium text-sm transition-colors z-50 ${colorClass}`;
-    statusFooter.innerText = text;
-  }
+  return ok;
 }
 
-function updateWifiStatusUI(isConnected) {
-  if (isConnected) {
-    wifiInputMask.classList.add("hidden");
-    wifiConnectedInfo.classList.remove("hidden");
-  } else {
-    wifiInputMask.classList.remove("hidden");
-    wifiConnectedInfo.classList.add("hidden");
+window.addEventListener("beforeunload", (e) => {
+  if (state.busy) {
+    e.preventDefault();
+    e.returnValue = "";
   }
+});
+
+// ---------------------------------------------------------------------------
+// Connection
+// ---------------------------------------------------------------------------
+
+function setChip(valueId, text, tone = "neutral") {
+  const valueEl = $(valueId);
+  if (!valueEl) return;
+  valueEl.textContent = text;
+  valueEl.parentElement.dataset.tone = tone;
 }
 
-bleInterface.onStatusChange = (text, colorClass) => {
-  setStatus(text, colorClass);
+bleInterface.onStatusChange = (text, level) => {
+  setStatus(text, level);
+};
+
+bleInterface.onConnectionStateChange = (connectionState) => {
+  state.conn = connectionState;
+  syncUi();
 };
 
 bleInterface.onConnected = (isPaperL) => {
   const is13Inch = Boolean(isPaperL);
   applyDisplayProfile(is13Inch, true);
 
-  const headerTitle = document.querySelector("h1");
-  if (is13Inch) {
-    document.title = 'paper L Setup (13.3")';
-    if (headerTitle) headerTitle.innerText = 'Paperlesspaper Offline (13.3")';
-  } else {
-    document.title = 'paper 7 Setup (7.3")';
-    if (headerTitle) headerTitle.innerText = 'Paperlesspaper Offline (7.3")';
-  }
+  document.title = is13Inch ? 'paper L Setup (13.3")' : 'paper 7 Setup (7.3")';
+  setChip("systemDeviceName", `${bleInterface.bleDevice?.name || "E-Paper"} · ${is13Inch ? '13.3"' : '7.3"'}`);
 
-  btnConnect.classList.add("hidden");
-  btnDisconnect.classList.remove("hidden");
-
-  // controlsOta is always visible in viewOta
-  syncUploadButtonState();
-
-  controls.classList.remove("hidden");
-  setTimeout(() => controls.classList.remove("opacity-0"), 100);
+  state.conn = "connected";
+  syncUi();
 };
 
-const firmwareVersionWarning = document.getElementById("firmwareVersionWarning");
-const firmwareVersionWarningTitle = document.getElementById("firmwareVersionWarningTitle");
-const firmwareVersionWarningText = document.getElementById("firmwareVersionWarningText");
-const btnJumpToOta = document.getElementById("btnJumpToOta");
+bleInterface.onDisconnected = () => {
+  document.title = "E-Paper Konfiguration";
 
-if (btnJumpToOta) {
-  btnJumpToOta.addEventListener("click", () => {
-    document.getElementById("tabOta")?.click();
-    if (typeof setOtaMode === "function") {
-      setOtaMode("ble");
-    }
-    const offlineCard = document.getElementById("offlineFirmwareCard");
-    if (offlineCard) {
-      offlineCard.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-  });
+  displaySizeSelect.disabled = false;
+  displaySizeSelect.title = "";
+  displayAutoBadge.hidden = true;
+  displayLockedToDevice = false;
+  otaDeviceSelect.disabled = false;
+  offlineOtaDeviceSelect.disabled = false;
+
+  firmwareVersionWarning.hidden = true;
+  setChip("systemFwVersion", "--");
+  setChip("systemVoltage", "-- V");
+  setChip("systemChargerStatus", "Prüfe…");
+
+  finishWifiScan();
+  wifiList.replaceChildren();
+  wifiListBox.hidden = true;
+
+  syncUi();
+};
+
+btnConnect.addEventListener("click", () => bleInterface.connect());
+document.querySelectorAll('[data-action="connect"]').forEach((btn) => btn.addEventListener("click", () => bleInterface.connect()));
+btnDisconnect.addEventListener("click", () => bleInterface.disconnect());
+
+if (!bluetoothAvailable) {
+  $("bluetoothUnsupported").hidden = false;
+  if (!window.isSecureContext) {
+    $("bluetoothUnsupportedText").textContent = "Web Bluetooth funktioniert nur über eine sichere Verbindung (HTTPS oder localhost). Bild-Editor und BMP-Download funktionieren trotzdem.";
+  }
+  setStatus("Bluetooth ist in diesem Browser nicht verfügbar – Bild-Editor und Download funktionieren trotzdem.", "warn");
+} else {
+  setStatus("Warte auf Verbindung…", "idle");
 }
 
+// ---------------------------------------------------------------------------
+// Firmware version of the connected device
+// ---------------------------------------------------------------------------
+
 function updateFirmwareVersionUI(versionInfo) {
-  const fwVersionEl = document.getElementById("systemFwVersion");
-  const fwIconBg = document.getElementById("fwVersionIconBg");
-  const fwIcon = document.getElementById("fwVersionIcon");
   const devVer = versionInfo?.version ? String(versionInfo.version).trim() : null;
 
   if (devVer && compareSemver(devVer, EXPECTED_FW_VERSION) >= 0) {
-    if (firmwareVersionWarning) firmwareVersionWarning.classList.add("hidden");
-    if (fwVersionEl) {
-      fwVersionEl.innerText = `v${devVer} ✓`;
-      fwVersionEl.className = "text-sm font-bold text-green-600";
-    }
-    if (fwIconBg) fwIconBg.setAttribute("class", "bg-green-100 p-2 rounded-full transition-colors");
-    if (fwIcon) fwIcon.setAttribute("class", "w-5 h-5 text-green-600 transition-colors");
+    firmwareVersionWarning.hidden = true;
+    setChip("systemFwVersion", `v${devVer} ✓`, "ok");
+    return;
+  }
+
+  firmwareVersionWarning.hidden = false;
+  if (devVer) {
+    firmwareVersionWarningTitle.textContent = `⚠️ Firmware-Update verfügbar (v${devVer} → v${EXPECTED_FW_VERSION})`;
+    firmwareVersionWarningText.textContent = `Auf deinem E-Paper läuft Version v${devVer} (aktuell ist v${EXPECTED_FW_VERSION}). Bitte aktualisiere die Firmware für maximale Stabilität und Fehlerkorrektur.`;
+    setChip("systemFwVersion", `v${devVer} ⚠`, "warn");
   } else {
-    if (firmwareVersionWarning) firmwareVersionWarning.classList.remove("hidden");
-    if (devVer) {
-      if (firmwareVersionWarningTitle) {
-        firmwareVersionWarningTitle.innerText = `Firmware-Update verfügbar (v${devVer} → v${EXPECTED_FW_VERSION})`;
-      }
-      if (firmwareVersionWarningText) {
-        firmwareVersionWarningText.innerText = `Auf deinem E-Paper läuft Version v${devVer} (aktuell ist v${EXPECTED_FW_VERSION}). Bitte aktualisiere die Firmware für maximale Stabilität und Fehlerkorrektur.`;
-      }
-      if (fwVersionEl) {
-        fwVersionEl.innerText = `v${devVer} ⚠`;
-        fwVersionEl.className = "text-sm font-bold text-amber-600";
-      }
-    } else {
-      if (firmwareVersionWarningTitle) {
-        firmwareVersionWarningTitle.innerText = "Veraltete oder abweichende Firmware erkannt";
-      }
-      if (firmwareVersionWarningText) {
-        firmwareVersionWarningText.innerText = `Auf deinem E-Paper ist nicht die aktuelle Offline-Firmware v${EXPECTED_FW_VERSION} installiert. Ein Update wird empfohlen.`;
-      }
-      if (fwVersionEl) {
-        fwVersionEl.innerText = "Veraltet ⚠";
-        fwVersionEl.className = "text-sm font-bold text-amber-600";
-      }
-    }
-    if (fwIconBg) fwIconBg.setAttribute("class", "bg-amber-100 p-2 rounded-full transition-colors");
-    if (fwIcon) fwIcon.setAttribute("class", "w-5 h-5 text-amber-600 transition-colors");
+    firmwareVersionWarningTitle.textContent = "⚠️ Veraltete oder abweichende Firmware erkannt";
+    firmwareVersionWarningText.textContent = `Auf deinem E-Paper ist nicht die aktuelle Offline-Firmware v${EXPECTED_FW_VERSION} installiert. Ein Update wird empfohlen.`;
+    setChip("systemFwVersion", "Veraltet ⚠", "warn");
   }
 }
 
@@ -395,147 +506,38 @@ bleInterface.onFirmwareVersionCheck = (versionInfo) => {
   updateFirmwareVersionUI(versionInfo);
 };
 
-bleInterface.onDisconnected = () => {
-  controls.classList.add("hidden", "opacity-0");
-  // controlsOta is always visible in viewOta
+btnJumpToOta.addEventListener("click", () => {
+  navigate("firmware");
+  setOtaMode("ble");
+  $("offlineFirmwareCard").scrollIntoView({ behavior: "smooth", block: "center" });
+});
 
-  document.title = "E-Paper Konfiguration";
-  const headerTitle = document.querySelector("h1");
-  if (headerTitle) headerTitle.innerText = "Paperlesspaper Offline";
-
-  if (displaySizeSelect) {
-    displaySizeSelect.disabled = false;
-    displaySizeSelect.title = "";
-  }
-  if (displayAutoBadge) {
-    displayAutoBadge.classList.add("hidden");
-  }
-  if (otaDeviceSelect) {
-    otaDeviceSelect.disabled = false;
-  }
-  if (offlineOtaDeviceSelect) {
-    offlineOtaDeviceSelect.disabled = false;
-  }
-
-  if (firmwareVersionWarning) {
-    firmwareVersionWarning.classList.add("hidden");
-  }
-  const fwVersionEl = document.getElementById("systemFwVersion");
-  if (fwVersionEl) {
-    fwVersionEl.innerText = "--";
-    fwVersionEl.className = "text-sm font-bold text-gray-800";
-  }
-
-  const statusBar = document.getElementById("systemStatusBar");
-  if (statusBar) {
-    statusBar.classList.add("opacity-0", "scale-95");
-    setTimeout(() => statusBar.classList.add("hidden"), 500);
-  }
-
-  syncUploadButtonState();
-
-  wifiList.innerHTML = "";
-
-  btnConnect.classList.remove("hidden");
-  btnDisconnect.classList.add("hidden");
-};
-
-bleInterface.onWifiStatusChange = (isConnected) => {
-  updateWifiStatusUI(isConnected);
-};
-
-bleInterface.onWifiInfoChange = (info) => {
-  if (info.ip) {
-    if (typeof infoIp !== "undefined" && infoIp) infoIp.innerText = info.ip;
-    if (typeof infoRssi !== "undefined" && infoRssi) infoRssi.innerText = info.rssi + " dBm";
-    if (typeof infoSsid !== "undefined" && infoSsid) infoSsid.innerText = info.ssid || "Netzwerk";
-    if (typeof infoQuality !== "undefined" && infoQuality) {
-      if (info.rssi > -60) infoQuality.innerText = "Ausgezeichnet";
-      else if (info.rssi > -75) infoQuality.innerText = "Gut";
-      else infoQuality.innerText = "Schwach";
-    }
-  }
-};
-
-bleInterface.onWifiScanResult = (networks) => {
-  wifiList.innerHTML = "";
-  let foundNetworks = false;
-  networks.forEach((net) => {
-    const option = document.createElement("option");
-    option.value = net.ssid;
-    if (net.rssi) {
-      option.text = `${net.ssid} (Signal: ${net.rssi} dBm)`;
-    }
-    wifiList.appendChild(option);
-    foundNetworks = true;
-  });
-
-  if (btnScanWifi && btnScanWifi.innerText === "Suche...") {
-    btnScanWifi.innerText = "Scan";
-    btnScanWifi.disabled = false;
-    btnScanWifi.classList.remove("opacity-50", "cursor-wait");
-  }
-};
+// ---------------------------------------------------------------------------
+// Telemetry
+// ---------------------------------------------------------------------------
 
 bleInterface.onSystemStatusChange = (info) => {
-  const statusBar = document.getElementById("systemStatusBar");
-  const voltageEl = document.getElementById("systemVoltage");
-  const chargerEl = document.getElementById("systemChargerStatus");
-  const chargerIconBg = document.getElementById("chargerIconBg");
-  const chargerIcon = document.getElementById("chargerIcon");
-  const batteryIconBg = document.getElementById("batteryIconBg");
-  const batteryIcon = document.getElementById("batteryIcon");
-
-  if (!statusBar) return;
-
-  statusBar.classList.remove("hidden");
-  setTimeout(() => statusBar.classList.remove("scale-95", "opacity-0"), 50);
-
   const hasVoltage = typeof info.voltage === "number" && info.voltage > 500;
   const v = hasVoltage ? (info.voltage / 1000).toFixed(2) : null;
 
-  if (hasVoltage) {
-    if (info.charging) {
-      voltageEl.innerText = `${v} V (Lädt)`;
-      batteryIconBg.setAttribute("class", "bg-green-100 p-2 rounded-full");
-      batteryIcon.setAttribute("class", "w-5 h-5 text-green-600");
-    } else if (info.voltage > 3300) {
-      voltageEl.innerText = `${v} V`;
-      batteryIconBg.setAttribute("class", "bg-green-100 p-2 rounded-full");
-      batteryIcon.setAttribute("class", "w-5 h-5 text-green-600");
-    } else if (info.voltage > 2800) {
-      voltageEl.innerText = `${v} V`;
-      batteryIconBg.setAttribute("class", "bg-yellow-100 p-2 rounded-full");
-      batteryIcon.setAttribute("class", "w-5 h-5 text-yellow-600");
-    } else {
-      voltageEl.innerText = `${v} V (Schwach)`;
-      batteryIconBg.setAttribute("class", "bg-red-100 p-2 rounded-full");
-      batteryIcon.setAttribute("class", "w-5 h-5 text-red-600");
-    }
+  if (!hasVoltage) {
+    setChip("systemVoltage", "Keine Batterie", "warn");
+  } else if (info.charging) {
+    setChip("systemVoltage", `${v} V · lädt`, "ok");
+  } else if (info.voltage > 3300) {
+    setChip("systemVoltage", `${v} V`, "ok");
+  } else if (info.voltage > 2800) {
+    setChip("systemVoltage", `${v} V`, "warn");
   } else {
-    voltageEl.innerText = "Keine Batterie";
-    batteryIconBg.setAttribute("class", "bg-red-100 p-2 rounded-full");
-    batteryIcon.setAttribute("class", "w-5 h-5 text-red-600");
+    setChip("systemVoltage", `${v} V · schwach`, "err");
   }
 
   if (info.usb) {
-    if (info.charging) {
-      chargerEl.innerText = hasVoltage ? `Verbunden (Lädt - ${v} V)` : "Verbunden (Lädt)";
-      chargerEl.className = "text-sm font-bold text-green-600";
-      chargerIconBg.setAttribute("class", "bg-green-100 p-2 rounded-full transition-colors");
-      chargerIcon.setAttribute("class", "w-5 h-5 text-green-600 transition-colors");
-    } else {
-      chargerEl.innerText = "Verbunden";
-      chargerEl.className = "text-sm font-bold text-blue-600";
-      chargerIconBg.setAttribute("class", "bg-blue-100 p-2 rounded-full transition-colors");
-      chargerIcon.setAttribute("class", "w-5 h-5 text-blue-600 transition-colors");
-    }
+    setChip("systemChargerStatus", info.charging ? "Verbunden · lädt" : "Verbunden", info.charging ? "ok" : "info");
   } else {
-    chargerEl.innerText = "Nicht verbunden";
-    chargerEl.className = "text-sm font-bold text-gray-500";
-    chargerIconBg.setAttribute("class", "bg-gray-100 p-2 rounded-full transition-colors");
-    chargerIcon.setAttribute("class", "w-5 h-5 text-gray-500 transition-colors");
+    setChip("systemChargerStatus", "Nicht verbunden");
   }
+
   if (info.display === "13" || info.display === 13 || info.display === "epd13") {
     applyDisplayProfile(true, true);
   } else if (info.display === "7" || info.display === 7 || info.display === "epd7") {
@@ -546,335 +548,842 @@ bleInterface.onSystemStatusChange = (info) => {
   }
 };
 
+// ---------------------------------------------------------------------------
+// Wi-Fi
+// ---------------------------------------------------------------------------
+
+function updateWifiStatusUI(isConnected) {
+  wifiInputMask.hidden = isConnected;
+  wifiConnectedInfo.hidden = !isConnected;
+}
+
+bleInterface.onWifiStatusChange = (isConnected) => {
+  updateWifiStatusUI(isConnected);
+};
+
+bleInterface.onWifiInfoChange = (info) => {
+  if (!info.ip) return;
+  infoIp.textContent = info.ip;
+  infoRssi.textContent = info.rssi + " dBm";
+  infoSsid.textContent = info.ssid || "Netzwerk";
+  if (info.rssi > -60) infoQuality.textContent = "Ausgezeichnet";
+  else if (info.rssi > -75) infoQuality.textContent = "Gut";
+  else infoQuality.textContent = "Schwach";
+};
+
+btnEditWifi.addEventListener("click", () => {
+  updateWifiStatusUI(false);
+  wifiSsid.focus();
+});
+
+let wifiScanTimer = null;
+
+function finishWifiScan() {
+  clearTimeout(wifiScanTimer);
+  wifiScanTimer = null;
+  if (!state.wifiScanning) return;
+  state.wifiScanning = false;
+  syncUi();
+}
+
+function signalBars(rssi) {
+  const level = rssi > -55 ? 4 : rssi > -67 ? 3 : rssi > -78 ? 2 : 1;
+  const bars = document.createElement("span");
+  bars.className = "signal-bars";
+  bars.setAttribute("aria-hidden", "true");
+  for (let i = 1; i <= 4; i++) {
+    const bar = document.createElement("i");
+    if (i <= level) bar.className = "on";
+    bars.appendChild(bar);
+  }
+  return bars;
+}
+
+function renderWifiList(networks) {
+  // strongest access point per SSID, strongest network first
+  const bySsid = new Map();
+  networks.forEach((net) => {
+    const rssi = parseInt(net.rssi, 10);
+    const entry = { ssid: net.ssid, rssi: Number.isFinite(rssi) ? rssi : null };
+    const known = bySsid.get(net.ssid);
+    if (!known || (entry.rssi ?? -999) > (known.rssi ?? -999)) bySsid.set(net.ssid, entry);
+  });
+  const sorted = [...bySsid.values()].sort((a, b) => (b.rssi ?? -999) - (a.rssi ?? -999));
+
+  wifiList.replaceChildren();
+  sorted.forEach((net) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "wifi-item";
+    if (net.ssid === wifiSsid.value) item.classList.add("is-selected");
+
+    const name = document.createElement("span");
+    name.className = "wifi-ssid";
+    name.textContent = net.ssid;
+    item.appendChild(name);
+
+    if (net.rssi !== null) {
+      const signal = document.createElement("span");
+      signal.className = "wifi-signal";
+      signal.append(`${net.rssi} dBm`, signalBars(net.rssi));
+      item.appendChild(signal);
+    }
+
+    item.addEventListener("click", () => {
+      wifiSsid.value = net.ssid;
+      setFieldError(wifiSsid, "");
+      wifiList.querySelectorAll(".is-selected").forEach((el) => el.classList.remove("is-selected"));
+      item.classList.add("is-selected");
+      wifiPass.focus();
+    });
+    wifiList.appendChild(item);
+  });
+  wifiListBox.hidden = sorted.length === 0;
+}
+
+bleInterface.onWifiScanResult = (networks) => {
+  renderWifiList(networks);
+  finishWifiScan();
+};
+
+btnScanWifi.addEventListener("click", async () => {
+  if (state.wifiScanning) return;
+  state.wifiScanning = true;
+  syncUi();
+  // The device answers with a notification. Without one (no network in range, old firmware)
+  // the button must not stay locked forever.
+  wifiScanTimer = setTimeout(() => {
+    if (!state.wifiScanning) return;
+    finishWifiScan();
+    setStatus("Keine WLAN-Netze gefunden. Du kannst den Namen auch von Hand eingeben.", "warn");
+  }, 15000);
+  try {
+    const started = await bleInterface.scanWifi();
+    if (!started) finishWifiScan();
+  } catch (e) {
+    finishWifiScan();
+    setStatus("WLAN-Scan konnte nicht gestartet werden.", "err");
+  }
+});
+
+wifiSsid.addEventListener("input", () => setFieldError(wifiSsid, ""));
+wifiPass.addEventListener("input", () => setFieldError(wifiPass, ""));
+
+wifiInputMask.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (state.busy) return;
+
+  const ssid = wifiSsid.value;
+  let valid = true;
+  if (!ssid.trim()) {
+    setFieldError(wifiSsid, "Bitte einen WLAN-Namen eingeben oder aus der Liste wählen.");
+    valid = false;
+  } else if (byteLength(ssid) > DEVICE_LIMITS.wifiSsidBytes) {
+    setFieldError(wifiSsid, `Der WLAN-Name ist zu lang (maximal ${DEVICE_LIMITS.wifiSsidBytes} Zeichen).`);
+    valid = false;
+  } else {
+    setFieldError(wifiSsid, "");
+  }
+  if (byteLength(wifiPass.value) > DEVICE_LIMITS.wifiPassBytes) {
+    setFieldError(wifiPass, `Das Passwort ist zu lang (maximal ${DEVICE_LIMITS.wifiPassBytes} Zeichen).`);
+    valid = false;
+  } else {
+    setFieldError(wifiPass, "");
+  }
+  if (!valid) {
+    wifiInputMask.querySelector('[aria-invalid="true"]')?.focus();
+    return;
+  }
+
+  const originalText = btnSaveWifi.textContent;
+  btnSaveWifi.textContent = "Verbinde…";
+  btnSaveWifi.disabled = true;
+  try {
+    await bleInterface.saveWifi(ssid, wifiPass.value);
+  } finally {
+    btnSaveWifi.textContent = originalText;
+    syncUi();
+  }
+});
+
+// Password reveal buttons
+document.querySelectorAll("[data-reveal]").forEach((btn) => {
+  const input = $(btn.dataset.reveal);
+  if (!input) return;
+  btn.addEventListener("click", () => {
+    const reveal = input.type === "password";
+    input.type = reveal ? "text" : "password";
+    btn.setAttribute("aria-pressed", String(reveal));
+    btn.setAttribute("aria-label", reveal ? "Passwort verbergen" : "Passwort anzeigen");
+    btn.querySelector("use")?.setAttribute("href", reveal ? "#i-eye-off" : "#i-eye");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Device settings
+// ---------------------------------------------------------------------------
+
+function markSettingsDirty(dirty) {
+  settingsSaveZone.classList.toggle("settings-dirty", dirty);
+}
+
+function updateTimeoutHint() {
+  const seconds = parseInt(settingTimeout.value, 10);
+  const readable = formatDuration(seconds);
+  settingTimeoutHint.textContent = readable ? `= ${readable} · erlaubt sind 60 Sekunden bis 30 Tage.` : "60 Sekunden bis 30 Tage.";
+}
+
 bleInterface.onSettingsLoaded = (settings) => {
   if (settings.url !== undefined) {
     settingUrl.value = settings.url;
-    syncBadgeSettings.classList.remove("hidden");
+    syncBadgeSettings.hidden = false;
   }
   if (settings.timeout !== undefined) {
     settingTimeout.value = settings.timeout;
-    syncBadgeSettings.classList.remove("hidden");
+    syncBadgeSettings.hidden = false;
   }
   if (settings.httpAuthUser !== undefined) settingHttpAuthUser.value = settings.httpAuthUser;
-  if (settings.httpAuthPassword !== undefined) settingHttpAuthPassword.value = settings.httpAuthPassword;
   if (settings.motionWakeup !== undefined) settingMotionWakeup.checked = settings.motionWakeup;
   if (settings.chargerMode !== undefined) settingChargerMode.checked = settings.chargerMode;
   if (settings.autoRotation !== undefined) settingAutoRotation.checked = settings.autoRotation;
   if (settings.settingsUrl !== undefined) settingSettingsUrl.value = settings.settingsUrl;
   if (settings.wifiSsid !== undefined) {
     wifiSsid.value = settings.wifiSsid;
-    syncBadgeWifi.classList.remove("hidden");
+    syncBadgeWifi.hidden = false;
   }
+
+  [settingUrl, settingTimeout, settingSettingsUrl, settingHttpAuthUser, settingHttpAuthPassword].forEach((el) => setFieldError(el, ""));
+  urlValidationStatus.hidden = true;
+  updateTimeoutHint();
+  markSettingsDirty(false);
 };
 
-bleInterface.onUploadProgress = (type, percent) => {
-  if (type === "image") {
-    progressBar.style.width = percent + "%";
-  } else {
-    fwProgressBar.style.width = percent + "%";
+[settingUrl, settingTimeout, settingSettingsUrl, settingHttpAuthUser, settingHttpAuthPassword].forEach((el) => {
+  el.addEventListener("input", () => {
+    setFieldError(el, "");
+    markSettingsDirty(true);
+  });
+});
+settingTimeout.addEventListener("input", updateTimeoutHint);
+
+function validateUrlField(input) {
+  const value = input.value.trim();
+  input.value = value;
+  if (!value) {
+    setFieldError(input, "");
+    return true;
   }
-};
-
-btnConnect.addEventListener("click", async () => {
-  await bleInterface.connect();
-});
-
-btnDisconnect.addEventListener("click", async () => {
-  await bleInterface.disconnect();
-});
-
-btnScanWifi.addEventListener("click", async () => {
-  btnScanWifi.innerText = "Suche...";
-  btnScanWifi.disabled = true;
-  btnScanWifi.classList.add("opacity-50", "cursor-wait");
-  try {
-    await bleInterface.scanWifi();
-  } catch (e) {
-    btnScanWifi.innerText = "Scan";
-    btnScanWifi.disabled = false;
-    btnScanWifi.classList.remove("opacity-50", "cursor-wait");
+  if (!/^https?:\/\/\S+$/i.test(value)) {
+    setFieldError(input, "Die URL muss mit http:// oder https:// beginnen und darf keine Leerzeichen enthalten.");
+    return false;
   }
-});
-
-btnSaveWifi.addEventListener("click", async () => {
-  const originalText = btnSaveWifi.innerText;
-  btnSaveWifi.innerText = "Verbinde...";
-  btnSaveWifi.disabled = true;
-  btnSaveWifi.classList.add("opacity-50", "cursor-wait");
-
-  await bleInterface.saveWifi(wifiSsid.value, wifiPass.value);
-
-  btnSaveWifi.innerText = originalText;
-  btnSaveWifi.disabled = false;
-  btnSaveWifi.classList.remove("opacity-50", "cursor-wait");
-});
-
-btnSaveSettings.addEventListener("click", async () => {
-  const urlValidationStatus = document.getElementById("urlValidationStatus");
-  if (urlValidationStatus) {
-    urlValidationStatus.classList.add("hidden");
+  if (byteLength(value) > DEVICE_LIMITS.settingStringBytes) {
+    setFieldError(input, `Die URL ist zu lang (${byteLength(value)} von maximal ${DEVICE_LIMITS.settingStringBytes} Zeichen).`);
+    return false;
   }
+  setFieldError(input, "");
+  return true;
+}
 
-  if (settingUrl.value && urlValidationStatus) {
-    urlValidationStatus.classList.remove("hidden");
-    urlValidationStatus.className = "text-sm font-medium mb-4 text-purple-500";
-    urlValidationStatus.innerText = "Prüfe URL...";
+function validateLengthField(input, label) {
+  if (byteLength(input.value) > DEVICE_LIMITS.settingStringBytes) {
+    setFieldError(input, `${label} ist zu lang (maximal ${DEVICE_LIMITS.settingStringBytes} Zeichen).`);
+    return false;
+  }
+  setFieldError(input, "");
+  return true;
+}
 
-    try {
-      await new Promise((resolve, reject) => {
-        const img = new Image();
-        const timeout = setTimeout(() => reject(new Error("Timeout")), 5000);
-        img.onload = () => {
-          clearTimeout(timeout);
-          resolve();
-        };
-        img.onerror = () => {
-          clearTimeout(timeout);
-          reject(new Error("Invalid"));
-        };
-        img.src = settingUrl.value;
-      });
-      urlValidationStatus.className = "text-sm font-medium mb-4 text-green-500";
-      urlValidationStatus.innerText = "✓ URL ist erreichbar und gültig.";
-    } catch (err) {
-      urlValidationStatus.className = "text-sm font-medium mb-4 text-orange-500";
-      urlValidationStatus.innerText = "⚠ URL konnte nicht als Bild geladen werden (evtl. ungültig oder offline). Wird dennoch gespeichert.";
-    }
+function validateTimeoutField() {
+  const raw = settingTimeout.value.trim();
+  if (raw === "") {
+    setFieldError(settingTimeout, "");
+    return true; // empty = default (3600 s)
+  }
+  const seconds = Number(raw);
+  if (!Number.isInteger(seconds) || seconds < DEVICE_LIMITS.timeoutMin || seconds > DEVICE_LIMITS.timeoutMax) {
+    setFieldError(settingTimeout, `Bitte eine ganze Zahl zwischen ${DEVICE_LIMITS.timeoutMin} und ${DEVICE_LIMITS.timeoutMax} Sekunden (30 Tage) eingeben.`);
+    return false;
+  }
+  setFieldError(settingTimeout, "");
+  return true;
+}
+
+function validateSettingsForm() {
+  // run all checks so that every invalid field is marked
+  const results = [validateUrlField(settingUrl), validateTimeoutField(), validateUrlField(settingSettingsUrl), validateLengthField(settingHttpAuthUser, "Der Benutzername"), validateLengthField(settingHttpAuthPassword, "Das Passwort")];
+  return results.every(Boolean);
+}
+
+/**
+ * Informational only: the device fetches the URL itself, the browser merely tries the same.
+ * Runs after saving and never blocks it.
+ */
+function probeImageUrl(url) {
+  urlValidationStatus.hidden = true;
+  if (!url) return;
+  if (location.protocol === "https:" && /^http:\/\//i.test(url)) {
+    // Mixed content: the browser may not load http:// from this page, so the check would always fail.
+    return;
+  }
+  urlValidationStatus.hidden = false;
+  urlValidationStatus.textContent = "… Prüfe, ob die URL vom Browser aus erreichbar ist";
+  const img = new Image();
+  let settled = false;
+  const finish = (reachable) => {
+    if (settled || settingUrl.value !== url) return;
+    settled = true;
+    urlValidationStatus.textContent = reachable ? "✓ Die URL ist erreichbar und liefert ein Bild." : "⚠ Die URL konnte vom Browser nicht als Bild geladen werden (evtl. nur im lokalen Netz erreichbar). Sie wurde trotzdem gespeichert.";
+  };
+  const timeout = setTimeout(() => finish(false), 5000);
+  img.onload = () => {
+    clearTimeout(timeout);
+    finish(true);
+  };
+  img.onerror = () => {
+    clearTimeout(timeout);
+    finish(false);
+  };
+  img.src = url;
+}
+
+async function saveDeviceSettings() {
+  if (state.busy) return false;
+  if (!validateSettingsForm()) {
+    setStatus("Bitte die markierten Felder korrigieren.", "err");
+    settingsForm.querySelector('[aria-invalid="true"]')?.focus();
+    return false;
   }
 
   const settings = {
     url: settingUrl.value,
-    timeout: settingTimeout.value,
+    timeout: settingTimeout.value.trim(),
     httpAuthUser: settingHttpAuthUser.value,
-    httpAuthPassword: settingHttpAuthPassword.value,
+    // The device does not reveal its password: an empty field keeps the stored one.
+    // Without a user name the password is cleared as well.
+    httpAuthPassword: settingHttpAuthPassword.value !== "" ? settingHttpAuthPassword.value : settingHttpAuthUser.value === "" ? "" : undefined,
     motionWakeup: settingMotionWakeup.checked,
     chargerMode: settingChargerMode.checked,
     autoRotation: settingAutoRotation.checked,
     settingsUrl: settingSettingsUrl.value,
   };
 
-  const success = await bleInterface.saveSettings(settings);
-  if (success) {
-    syncBadgeSettings.classList.remove("hidden");
+  const originalText = btnSaveSettings.textContent;
+  btnSaveSettings.textContent = "Speichere…";
+  btnSaveSettings.disabled = true;
+  let success = false;
+  try {
+    success = await bleInterface.saveSettings(settings);
+  } finally {
+    btnSaveSettings.textContent = originalText;
+    syncUi();
   }
+
+  if (success) {
+    syncBadgeSettings.hidden = false;
+    markSettingsDirty(false);
+    probeImageUrl(settings.url);
+  } else if (!bleInterface.isConnected) {
+    setStatus("Nicht gespeichert: Das E-Paper ist nicht verbunden.", "err");
+  }
+  return success;
+}
+
+settingsForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  saveDeviceSettings();
 });
+
+// --- Settings JSON preview ---
 
 let tempJsonSettings = null;
 
-document.getElementById("btnPreviewJson")?.addEventListener("click", async () => {
-  const rawUrl = settingSettingsUrl.value;
-  if (!rawUrl) {
-    alert("Bitte zuerst eine JSON URL eingeben.");
+btnPreviewJson.addEventListener("click", async () => {
+  if (!settingSettingsUrl.value.trim()) {
+    setFieldError(settingSettingsUrl, "Bitte zuerst eine JSON-URL eingeben.");
+    settingSettingsUrl.focus();
+    return;
+  }
+  if (!validateUrlField(settingSettingsUrl)) {
+    settingSettingsUrl.focus();
     return;
   }
 
-  const cacheBuster = "nocache=" + new Date().getTime();
-  const url = rawUrl + (rawUrl.includes("?") ? "&" : "?") + cacheBuster;
+  const rawUrl = settingSettingsUrl.value;
+  const url = rawUrl + (rawUrl.includes("?") ? "&" : "?") + "nocache=" + Date.now();
 
-  document.getElementById("btnPreviewJson").innerText = "Lade...";
+  btnPreviewJson.textContent = "Lade…";
+  btnPreviewJson.disabled = true;
   try {
     const response = await fetchWithProxy(url, { cache: "no-store" });
     if (!response.ok) throw new Error("HTTP Fehler " + response.status);
-    
+
     const json = await response.json();
+    if (!json || typeof json !== "object" || Array.isArray(json)) throw new Error("Die Datei enthält kein JSON-Objekt.");
 
     tempJsonSettings = json;
-    document.getElementById("jsonPreviewContent").innerText = JSON.stringify(json, null, 2);
-    document.getElementById("jsonPreviewModal").classList.remove("hidden");
+    jsonPreviewContent.textContent = JSON.stringify(json, null, 2);
+    openDialog(jsonPreviewModal);
   } catch (e) {
     console.error(e);
-    alert("Fehler beim Abrufen der JSON (CORS oder ungültige URL). Wenn die Datei lokal (z.B. NAS) liegt, stelle sicher, dass der Server CORS-Header sendet (Access-Control-Allow-Origin: *). Details: " + e.message);
+    const mixedContent = location.protocol === "https:" && /^http:\/\//i.test(rawUrl);
+    await showMessage({
+      title: "JSON konnte nicht geladen werden",
+      tone: "err",
+      text: mixedContent ? "Der Browser darf von dieser HTTPS-Seite keine HTTP-Adresse abrufen. Das E-Paper selbst kann die URL trotzdem laden – die Vorschau funktioniert nur mit einer HTTPS-URL oder wenn du dieses Tool lokal über HTTP öffnest." : "Die Datei ist nicht erreichbar, kein gültiges JSON oder der Server erlaubt den Abruf nicht (CORS). Liegt sie lokal (z. B. auf einem NAS), muss der Server den Header „Access-Control-Allow-Origin: *“ senden.",
+      detail: e.message,
+    });
+  } finally {
+    btnPreviewJson.textContent = "Prüfen";
+    syncUi();
   }
-  document.getElementById("btnPreviewJson").innerText = "Prüfen";
 });
 
-document.getElementById("btnCloseJsonPreview")?.addEventListener("click", () => {
-  document.getElementById("jsonPreviewModal").classList.add("hidden");
-});
-document.getElementById("btnCancelJson")?.addEventListener("click", () => {
-  document.getElementById("jsonPreviewModal").classList.add("hidden");
-});
+$("btnCancelJson").addEventListener("click", () => closeDialog(jsonPreviewModal));
 
-document.getElementById("btnApplyJson")?.addEventListener("click", async () => {
-  document.getElementById("jsonPreviewModal").classList.add("hidden");
+$("btnApplyJson").addEventListener("click", async () => {
+  closeDialog(jsonPreviewModal);
   if (!tempJsonSettings) return;
 
   if (tempJsonSettings.timeout !== undefined) settingTimeout.value = tempJsonSettings.timeout;
   if (tempJsonSettings.downloadUrl !== undefined) settingUrl.value = tempJsonSettings.downloadUrl;
   if (tempJsonSettings.httpAuthUser !== undefined) settingHttpAuthUser.value = tempJsonSettings.httpAuthUser;
   if (tempJsonSettings.httpAuthPassword !== undefined) settingHttpAuthPassword.value = tempJsonSettings.httpAuthPassword;
-  if (tempJsonSettings.motionWakeup !== undefined) settingMotionWakeup.checked = tempJsonSettings.motionWakeup;
-  if (tempJsonSettings.chargerMode !== undefined) settingChargerMode.checked = tempJsonSettings.chargerMode;
-  if (tempJsonSettings.autoRotation !== undefined) settingAutoRotation.checked = tempJsonSettings.autoRotation;
+  if (tempJsonSettings.motionWakeup !== undefined) settingMotionWakeup.checked = Boolean(tempJsonSettings.motionWakeup);
+  if (tempJsonSettings.chargerMode !== undefined) settingChargerMode.checked = Boolean(tempJsonSettings.chargerMode);
+  if (tempJsonSettings.autoRotation !== undefined) settingAutoRotation.checked = Boolean(tempJsonSettings.autoRotation);
+  updateTimeoutHint();
+  markSettingsDirty(true);
 
-  document.getElementById("btnSaveSettings").click();
+  await saveDeviceSettings();
+});
+
+// --- Switches that are stored immediately ---
+
+async function saveSwitch(input, type, label) {
+  const enabled = input.checked;
+  input.disabled = true;
+  let saved = false;
+  try {
+    saved = await bleInterface.directSaveSetting(type, enabled);
+  } finally {
+    input.disabled = false;
+  }
+  if (saved) {
+    setStatus(`${label} ${enabled ? "aktiviert" : "deaktiviert"}.`, "ok");
+  } else {
+    input.checked = !enabled; // show what the device really has
+    setStatus(`${label} konnte nicht gespeichert werden.`, "err");
+  }
+}
+
+settingMotionWakeup.addEventListener("change", () => saveSwitch(settingMotionWakeup, "motionWakeup", "Motion Wakeup"));
+settingAutoRotation.addEventListener("change", () => saveSwitch(settingAutoRotation, "autoRotation", "Auto Rotation"));
+settingChargerMode.addEventListener("change", async () => {
+  if (settingChargerMode.checked) {
+    // Charging non-rechargeable cells is a safety hazard: ask before switching it on.
+    const confirmed = await showMessage({
+      title: "Charger Mode aktivieren?",
+      tone: "warn",
+      text: "Der Charger Mode lädt die eingelegten Zellen über USB-C. Aktiviere ihn nur, wenn NiMH-Akkus eingelegt sind.",
+      detail: "Normale Batterien (z. B. Alkaline) dürfen nicht geladen werden – sie können auslaufen oder überhitzen.",
+      okLabel: "Ja, NiMH-Akkus eingelegt",
+      cancelLabel: "Abbrechen",
+      okVariant: "danger",
+    });
+    if (!confirmed) {
+      settingChargerMode.checked = false;
+      return;
+    }
+  }
+  await saveSwitch(settingChargerMode, "chargerMode", "Charger Mode");
 });
 
 btnFactoryReset.addEventListener("click", async () => {
-  if (!confirm("Möchtest du das Gerät wirklich auf Werkseinstellungen zurücksetzen? Alle Einstellungen, WLAN-Zugangsdaten und gespeicherte Bilder werden gelöscht.")) {
-    return;
-  }
+  const confirmed = await showMessage({
+    title: "Gerät zurücksetzen?",
+    tone: "err",
+    text: "Das Gerät wird auf Werkseinstellungen zurückgesetzt und startet neu.",
+    detail: "Gelöscht werden: alle Einstellungen, die WLAN-Zugangsdaten und gespeicherte Bilder.",
+    okLabel: "Ja, zurücksetzen",
+    cancelLabel: "Abbrechen",
+    okVariant: "danger",
+  });
+  if (!confirmed) return;
   await bleInterface.factoryReset();
 });
 
-settingMotionWakeup.addEventListener("change", async (e) => {
-  settingMotionWakeup.disabled = true;
-  await bleInterface.directSaveSetting("motionWakeup", settingMotionWakeup.checked);
-  settingMotionWakeup.disabled = false;
+// ---------------------------------------------------------------------------
+// Image editor
+// ---------------------------------------------------------------------------
+
+let EPD_WIDTH = 800;
+let EPD_HEIGHT = 480;
+let displayLockedToDevice = false;
+
+function applyDisplayProfile(isPaperL, lockToDevice = false) {
+  const nextWidth = isPaperL ? 1200 : 800;
+  const nextHeight = isPaperL ? 1600 : 480;
+  const dimsChanged = EPD_WIDTH !== nextWidth || EPD_HEIGHT !== nextHeight;
+  const lockChanged = displayLockedToDevice !== lockToDevice;
+  // The device reports its display every 10 s. Nothing to do if nothing changed – in particular
+  // the preview canvas must not be touched (resizing a canvas clears it).
+  if (!dimsChanged && !lockChanged) return;
+
+  EPD_WIDTH = nextWidth;
+  EPD_HEIGHT = nextHeight;
+  displayLockedToDevice = lockToDevice;
+
+  previewContainer.style.setProperty("--epd-ratio", `${EPD_WIDTH} / ${EPD_HEIGHT}`);
+  displayBadge.textContent = isPaperL ? '13.3" · 1200×1600' : '7.3" · 800×480';
+  displaySizeSelect.value = isPaperL ? "13" : "7";
+  displaySizeSelect.disabled = lockToDevice;
+  displaySizeSelect.title = lockToDevice ? `Automatisch an verbundenes Gerät angepasst (${isPaperL ? '13.3"' : '7.3"'})` : "";
+  displayAutoBadge.hidden = !lockToDevice;
+
+  const deviceCode = isPaperL ? "epd13" : "epd7";
+  otaDeviceSelect.value = deviceCode;
+  offlineOtaDeviceSelect.value = deviceCode;
+
+  const img = generatePicture.getOriginalImage();
+  if (img && dimsChanged) {
+    applyAutoRotation(img);
+    updatePreview();
+  }
+}
+
+/** Landscape picture on a portrait display (or vice versa) is turned by 90°. */
+function applyAutoRotation(img) {
+  if ((img.height > img.width && EPD_WIDTH > EPD_HEIGHT) || (img.width > img.height && EPD_HEIGHT > EPD_WIDTH)) {
+    generatePicture.setImageRotation(270);
+  } else {
+    generatePicture.setImageRotation(0);
+  }
+}
+
+displaySizeSelect.addEventListener("change", (e) => {
+  if (bleInterface.isConnected) {
+    applyDisplayProfile(bleInterface.isPaperL, true);
+    return;
+  }
+  applyDisplayProfile(e.target.value === "13", false);
 });
 
-settingChargerMode.addEventListener("change", async (e) => {
-  settingChargerMode.disabled = true;
-  await bleInterface.directSaveSetting("chargerMode", settingChargerMode.checked);
-  settingChargerMode.disabled = false;
-});
-
-settingAutoRotation.addEventListener("change", async (e) => {
-  settingAutoRotation.disabled = true;
-  await bleInterface.directSaveSetting("autoRotation", settingAutoRotation.checked);
-  settingAutoRotation.disabled = false;
-});
+// --- Processing options ---
 
 let activeAutoOptions = null;
+// After "Auto-Optimieren" the sliders show the suggested values. They only override the
+// suggestion once the user actually moves one.
+let toneSlidersTouched = false;
 
-async function updatePreview(options = null) {
-  if (!generatePicture.getOriginalImage()) return;
+function updateSliderOutputs() {
+  [processingBrightness, processingContrast, processingSaturation].forEach((slider) => {
+    const value = parseInt(slider.value, 10) || 0;
+    $(slider.id + "Out").textContent = value > 0 ? "+" + value : String(value);
+  });
+}
 
-  if (options && Object.keys(options).length > 0) {
-    activeAutoOptions = options;
-  }
-
+function collectProcessingInputs() {
   const matrix = errorDiffusionMatrix.value;
   const isSerpentine = serpentine.checked;
-  const brightnessInt = parseInt(processingBrightness.value, 10) || 0;
-  const contrastInt = parseInt(processingContrast.value, 10) || 0;
-  const saturationInt = parseInt(processingSaturation.value, 10) || 0;
+  const brightness = parseInt(processingBrightness.value, 10) || 0;
+  const contrast = parseInt(processingContrast.value, 10) || 0;
+  const saturation = parseInt(processingSaturation.value, 10) || 0;
 
-  const currentOptions = activeAutoOptions ? { ...activeAutoOptions } : {};
-  currentOptions.errorDiffusionMatrix = matrix;
-  currentOptions.serpentine = isSerpentine;
+  const options = activeAutoOptions ? { ...activeAutoOptions } : {};
+  options.errorDiffusionMatrix = matrix;
+  options.serpentine = isSerpentine;
 
-  const hoverCanvas = document.getElementById("previewHoverCanvas");
+  if (options.toneMapping && toneSlidersTouched) {
+    // Without this the auto tone mapping always won and the sliders had no effect at all.
+    const base = options.toneMapping;
+    const merged = { ...base, exposure: brightness / 100, contrast: contrast / 100, saturation: saturation / 100 };
+    if (base.mode === "off") {
+      merged.mode = "contrast";
+    } else if (base.mode === "scurve" && contrast !== 0) {
+      // epdoptimize applies the contrast factor only in "contrast" mode; without a mode it
+      // applies both the contrast and the S-curve.
+      delete merged.mode;
+      merged.strength = base.strength ?? 0.9;
+    }
+    options.toneMapping = merged;
+  }
 
-  setStatus("Erzeuge Dithering Vorschau...", "text-yellow-600");
+  return { palette: paletteSelect.value || "spectra6Custom", matrix, isSerpentine, brightness, contrast, saturation, options };
+}
+
+// --- Preview pipeline: never two renders on the same canvas at once ---
+
+let previewRunning = false;
+let previewQueued = false;
+
+async function renderPreview() {
+  const input = collectProcessingInputs();
+  previewContainer.classList.add("is-busy");
+  setStatus("Erzeuge Dithering-Vorschau…", "busy");
+  await nextFrame();
 
   try {
     if (bleInterface.isConnected) {
       applyDisplayProfile(bleInterface.isPaperL, true);
     }
     generatePicture.setEpdDimensions(EPD_WIDTH, EPD_HEIGHT);
-    await generatePicture.processPreview(canvas, hoverCanvas, paletteSelect ? paletteSelect.value : "spectra6Custom", matrix, isSerpentine, brightnessInt, contrastInt, saturationInt, currentOptions);
+    const result = await generatePicture.processPreview(canvas, previewHoverCanvas, input.palette, input.matrix, input.isSerpentine, input.brightness, input.contrast, input.saturation, input.options);
 
-    syncUploadButtonState();
-    btnDownloadBin.disabled = false;
-    setStatus("Bildvorschau optimiert und bereit zum Upload!", "text-green-600");
+    const hasSimulation = Boolean(result?.hasDisplaySimulation);
+    previewStage.classList.toggle("has-simulation", hasSimulation);
+    previewModeRow.hidden = !hasSimulation;
+    if (!previewQueued) setStatus(bleInterface.isConnected ? "Bildvorschau optimiert und bereit zum Senden." : "Bildvorschau optimiert. Zum Senden das E-Paper verbinden oder als BMP herunterladen.", "ok");
   } catch (e) {
-    setStatus("Fehler beim Dithering: " + e.message, "text-red-500");
+    setStatus("Fehler beim Dithering: " + e.message, "err");
     console.error(e);
+  } finally {
+    previewContainer.classList.remove("is-busy");
   }
 }
 
-async function generateFullBuffer(options = null) {
+async function updatePreview() {
   if (!generatePicture.getOriginalImage()) return;
+  if (previewRunning) {
+    previewQueued = true; // render once more with the latest settings when the current run ends
+    return;
+  }
+  previewRunning = true;
+  try {
+    do {
+      previewQueued = false;
+      await renderPreview();
+    } while (previewQueued);
+  } finally {
+    previewRunning = false;
+  }
+}
 
+let previewDebounce = null;
+function schedulePreview() {
+  if (!generatePicture.getOriginalImage()) return;
+  clearTimeout(previewDebounce);
+  previewDebounce = setTimeout(updatePreview, 250);
+}
+
+async function generateFullBuffer() {
+  if (!generatePicture.getOriginalImage()) return;
   if (bleInterface.isConnected) {
     applyDisplayProfile(bleInterface.isPaperL, true);
   }
-
-  const matrix = errorDiffusionMatrix.value;
-  const isSerpentine = serpentine.checked;
-  const brightnessInt = parseInt(processingBrightness.value, 10) || 0;
-  const contrastInt = parseInt(processingContrast.value, 10) || 0;
-  const saturationInt = parseInt(processingSaturation.value, 10) || 0;
-
-  const currentOptions = options && Object.keys(options).length > 0 ? options : (activeAutoOptions ? { ...activeAutoOptions } : {});
-  currentOptions.errorDiffusionMatrix = matrix;
-  currentOptions.serpentine = isSerpentine;
-
+  const input = collectProcessingInputs();
   generatePicture.setEpdDimensions(EPD_WIDTH, EPD_HEIGHT);
-  await generatePicture.generateFullBuffer(paletteSelect ? paletteSelect.value : "spectra6Custom", matrix, isSerpentine, brightnessInt, contrastInt, saturationInt, currentOptions);
+  await generatePicture.generateFullBuffer(input.palette, input.matrix, input.isSerpentine, input.brightness, input.contrast, input.saturation, input.options);
 }
 
-fileInput.addEventListener("change", (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
+[errorDiffusionMatrix, serpentine].forEach((el) => el.addEventListener("change", updatePreview));
 
+[processingBrightness, processingContrast, processingSaturation].forEach((el) => {
+  el.addEventListener("input", () => {
+    toneSlidersTouched = true;
+    updateSliderOutputs();
+    schedulePreview();
+  });
+});
+
+btnResetProcessing.addEventListener("click", () => {
   activeAutoOptions = null;
+  toneSlidersTouched = false;
+  processingBrightness.value = 0;
+  processingContrast.value = 0;
+  processingSaturation.value = 0;
+  updateSliderOutputs();
+  updatePreview();
+});
 
+// --- Loading an image ---
+
+let currentImageUrl = null;
+
+function loadImageFile(file) {
+  if (!file) return;
+  const url = URL.createObjectURL(file);
   const img = new Image();
   img.onload = () => {
+    if (currentImageUrl) URL.revokeObjectURL(currentImageUrl);
+    currentImageUrl = url;
+
+    activeAutoOptions = null;
+    toneSlidersTouched = false;
     if (bleInterface.isConnected) {
       applyDisplayProfile(bleInterface.isPaperL, true);
     }
     generatePicture.setOriginalImage(img);
-    if ((img.height > img.width && EPD_WIDTH > EPD_HEIGHT) || (img.width > img.height && EPD_HEIGHT > EPD_WIDTH)) {
-      generatePicture.setImageRotation(270);
-    } else {
-      generatePicture.setImageRotation(0);
-    }
-    expandImageSettings();
+    applyAutoRotation(img);
+
+    state.hasImage = true;
+    previewEmpty.hidden = true;
+    previewStage.hidden = false;
+    setCollapsible(imageSettingsDetails, true);
+    syncUi();
     updatePreview();
   };
-  img.src = URL.createObjectURL(file);
+  img.onerror = () => {
+    URL.revokeObjectURL(url);
+    setStatus("Das Bild konnte nicht geladen werden. Bitte ein JPEG, PNG oder WebP wählen.", "err");
+  };
+  img.src = url;
+}
+
+fileInput.addEventListener("change", (e) => {
+  loadImageFile(e.target.files[0]);
+  fileInput.value = ""; // allows picking the same file again
+});
+btnPickImage.addEventListener("click", () => fileInput.click());
+previewEmpty.addEventListener("click", () => fileInput.click());
+
+// Drag & drop / paste (desktop)
+["dragenter", "dragover"].forEach((type) =>
+  previewContainer.addEventListener(type, (e) => {
+    if (!e.dataTransfer?.types?.includes("Files")) return;
+    e.preventDefault();
+    previewContainer.classList.add("is-dragover");
+  }),
+);
+["dragleave", "dragend", "drop"].forEach((type) =>
+  previewContainer.addEventListener(type, (e) => {
+    // dragleave also fires when moving onto a child element
+    if (type === "dragleave" && previewContainer.contains(e.relatedTarget)) return;
+    previewContainer.classList.remove("is-dragover");
+  }),
+);
+previewContainer.addEventListener("drop", (e) => {
+  const file = [...(e.dataTransfer?.files || [])].find((f) => f.type.startsWith("image/"));
+  if (!file) return;
+  e.preventDefault();
+  loadImageFile(file);
+});
+document.addEventListener("paste", (e) => {
+  if (getCurrentView() !== "bild" || state.busy) return;
+  const file = [...(e.clipboardData?.files || [])].find((f) => f.type.startsWith("image/"));
+  if (file) loadImageFile(file);
 });
 
-if (btnRotate) {
-  btnRotate.addEventListener("click", () => {
-    if (generatePicture.getOriginalImage()) {
-      generatePicture.setImageRotation((generatePicture.getImageRotation() + 90) % 360);
-      updatePreview();
-    }
-  });
-}
+btnRotate.addEventListener("click", () => {
+  if (!generatePicture.getOriginalImage()) return;
+  generatePicture.setImageRotation((generatePicture.getImageRotation() + 90) % 360);
+  updatePreview();
+});
+
+btnPreviewRaw.addEventListener("click", () => {
+  const showRaw = btnPreviewRaw.getAttribute("aria-pressed") !== "true";
+  btnPreviewRaw.setAttribute("aria-pressed", String(showRaw));
+  previewStage.classList.toggle("show-raw", showRaw);
+});
 
 btnAutoDither.addEventListener("click", () => {
   if (!generatePicture.getOriginalImage()) return;
 
   generatePicture.setEpdDimensions(EPD_WIDTH, EPD_HEIGHT);
-  const result = generatePicture.autoOptimise(canvas, paletteSelect ? paletteSelect.value : "spectra6Custom");
-
-  if (result) {
-    const resolvedOptions = result.resolvedOptions || result;
-    const suggestion = result.suggestion;
-
-    resolvedOptions.errorDiffusionMatrix = errorDiffusionMatrix.value;
-    serpentine.checked = resolvedOptions.serpentine ?? true;
-
-    if (resolvedOptions.toneMapping) {
-      processingBrightness.value = Math.round((resolvedOptions.toneMapping.exposure ?? 0) * 100) || 0;
-      processingContrast.value = Math.round((resolvedOptions.toneMapping.contrast ?? 0) * 100) || 0;
-      processingSaturation.value = Math.round((resolvedOptions.toneMapping.saturation ?? 0) * 100) || 0;
-    } else {
-      processingBrightness.value = 0;
-      processingContrast.value = 0;
-      processingSaturation.value = 0;
-    }
-
-    activeAutoOptions = resolvedOptions;
-
-    if (paletteSelect && paletteSelect.value === "new") {
-      setStatus("Automatisches Setting gefunden: Custom Color Profile", "text-blue-500");
-    } else {
-      setStatus(`Automatisches Setting gefunden: ${suggestion.classification.style}, Typ: ${suggestion.imageKind}`, "text-blue-500");
-    }
-
-    updatePreview(activeAutoOptions);
-  }
-});
-
-btnDownloadBin.addEventListener("click", async () => {
-  if (!generatePicture.getOriginalImage()) return;
-
-  try {
-    setStatus("Generiere volle Auflösung für Download...", "text-blue-500");
-    await generateFullBuffer(generatePicture.getCurrentDitherOptions());
-  } catch (err) {
-    setStatus("Fehler beim Generieren: " + err.message, "text-red-500");
+  const result = generatePicture.autoOptimise(canvas, paletteSelect.value || "spectra6Custom");
+  if (!result) {
+    setStatus("Für dieses Bild wurde keine automatische Einstellung gefunden.", "warn");
+    updatePreview(); // autoOptimise drew the undithered picture onto the preview canvas
     return;
   }
 
+  const resolvedOptions = result.resolvedOptions || result;
+  const suggestion = result.suggestion;
+
+  resolvedOptions.errorDiffusionMatrix = errorDiffusionMatrix.value;
+  serpentine.checked = resolvedOptions.serpentine ?? true;
+
+  if (resolvedOptions.toneMapping) {
+    processingBrightness.value = Math.round((resolvedOptions.toneMapping.exposure ?? 0) * 100) || 0;
+    processingContrast.value = Math.round((resolvedOptions.toneMapping.contrast ?? 0) * 100) || 0;
+    processingSaturation.value = Math.round((resolvedOptions.toneMapping.saturation ?? 0) * 100) || 0;
+  } else {
+    processingBrightness.value = 0;
+    processingContrast.value = 0;
+    processingSaturation.value = 0;
+  }
+  updateSliderOutputs();
+
+  activeAutoOptions = resolvedOptions;
+  toneSlidersTouched = false;
+
+  if (paletteSelect.value === "new" || !suggestion) {
+    setStatus("Automatisches Setting gefunden: Custom Color Profile", "ok");
+  } else {
+    setStatus(`Automatisches Setting gefunden: ${suggestion.classification.style}, Typ: ${suggestion.imageKind}`, "ok");
+  }
+
+  updatePreview();
+});
+
+// --- Palette ---
+
+const PALETTE_LABELS = { black: "Schwarz", white: "Weiß", blue: "Blau", green: "Grün", red: "Rot", yellow: "Gelb" };
+
+function renderPaletteEditor() {
+  if (paletteSelect.value !== "spectra6Custom") {
+    paletteEditor.hidden = true;
+    return;
+  }
+  paletteEditor.hidden = false;
+
+  if (!generatePicture.getCustomPalette()) {
+    const basePalette = generatePicture.getBasePalette(paletteSelect.value);
+    generatePicture.setCustomPalette(JSON.parse(JSON.stringify(basePalette)));
+  }
+  const currentCustomPalette = generatePicture.getCustomPalette();
+
+  paletteEditor.replaceChildren();
+  currentCustomPalette.forEach((c, idx) => {
+    const label = PALETTE_LABELS[c.name] || c.name;
+    const wrap = document.createElement("label");
+    wrap.className = "swatch";
+
+    const input = document.createElement("input");
+    input.type = "color";
+    input.value = c.color.length === 4 ? "#" + c.color[1] + c.color[1] + c.color[2] + c.color[2] + c.color[3] + c.color[3] : c.color;
+    input.title = `${label} (${input.value})`;
+    input.setAttribute("aria-label", `Farbe ${label}`);
+    input.addEventListener("input", (e) => {
+      currentCustomPalette[idx].color = e.target.value;
+      input.title = `${label} (${e.target.value})`;
+      schedulePreview();
+    });
+
+    const caption = document.createElement("span");
+    caption.textContent = label;
+
+    wrap.append(input, caption);
+    paletteEditor.appendChild(wrap);
+  });
+
+  const reset = document.createElement("button");
+  reset.type = "button";
+  reset.className = "btn-neu btn-util btn-neu-danger-text";
+  reset.textContent = "Farben zurücksetzen";
+  reset.addEventListener("click", () => {
+    generatePicture.setCustomPalette(null);
+    renderPaletteEditor();
+    updatePreview();
+  });
+  paletteEditor.appendChild(reset);
+}
+
+paletteSelect.addEventListener("change", () => {
+  generatePicture.setCustomPalette(null);
+  renderPaletteEditor();
+  if (paletteSelect.value !== "new") {
+    btnPreviewRaw.setAttribute("aria-pressed", "false");
+    previewStage.classList.remove("show-raw");
+  }
+  updatePreview();
+});
+
+// --- Download / upload ---
+
+function buildBmp(imageBuffer) {
   const headerSize = 118;
-  const bufferSize = generatePicture.getProcessedImageBuffer().length;
+  const bufferSize = imageBuffer.length;
   const fileSize = headerSize + bufferSize;
   const bmpBuffer = new ArrayBuffer(fileSize);
   const view = new DataView(bmpBuffer);
@@ -922,334 +1431,167 @@ btnDownloadBin.addEventListener("click", async () => {
     view.setUint8(pOffset + i * 4 + 3, 0);
   }
 
-  bytes.set(generatePicture.getProcessedImageBuffer(), headerSize);
+  bytes.set(imageBuffer, headerSize);
+  return new Blob([bmpBuffer], { type: "image/bmp" });
+}
 
-  const blob = new Blob([bmpBuffer], { type: "image/bmp" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "epaper_image.bmp";
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(() => {
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }, 0);
+btnDownloadBin.addEventListener("click", async () => {
+  if (!generatePicture.getOriginalImage() || state.busy) return;
+
+  btnDownloadBin.disabled = true;
+  try {
+    setStatus("Generiere volle Auflösung für Download…", "busy");
+    await nextFrame();
+    await generateFullBuffer();
+    downloadBlob(buildBmp(generatePicture.getProcessedImageBuffer()), "epaper_image.bmp");
+    setStatus("BMP-Datei erstellt (epaper_image.bmp).", "ok");
+  } catch (err) {
+    console.error(err);
+    setStatus("Fehler beim Generieren: " + err.message, "err");
+  } finally {
+    syncUi();
+  }
 });
 
 btnUploadImage.addEventListener("click", async () => {
-  if (!generatePicture.getOriginalImage()) return;
+  if (!generatePicture.getOriginalImage() || !bleInterface.isConnected) return;
 
-  if (bleInterface.isConnected) {
-    applyDisplayProfile(bleInterface.isPaperL, true);
-  }
-
-  try {
-    btnUploadImage.disabled = true;
-    setStatus("Generiere volle Auflösung für Upload...", "text-blue-500");
-    await generateFullBuffer(generatePicture.getCurrentDitherOptions());
-  } catch (err) {
-    setStatus("Fehler beim Generieren: " + err.message, "text-red-500");
-    syncUploadButtonState();
-    return;
-  }
-
-  try {
-    btnUploadImage.disabled = true;
-    progressBar.classList.remove("bg-red-500");
-    progressContainer.classList.remove("hidden");
-    progressBar.style.width = "0%";
-
+  await runTransfer({ title: "Bild wird gesendet", abortable: true, failTitle: "Senden fehlgeschlagen" }, async () => {
+    setStatus("Generiere volle Auflösung für Upload…", "busy");
+    await nextFrame();
+    await generateFullBuffer();
     await bleInterface.uploadImage(generatePicture.getProcessedImageBuffer());
-    expandImageSettings();
-  } catch (error) {
-    progressBar.classList.add("bg-red-500");
-  } finally {
-    syncUploadButtonState();
-    btnDownloadBin.disabled = false;
-  }
+  });
 });
 
-const btnOtaBle = document.getElementById("btnOtaBle");
-const btnOtaSerial = document.getElementById("btnOtaSerial");
-const serialModeNotice = document.getElementById("serialModeNotice");
-const serialUnsupportedNotice = document.getElementById("serialUnsupportedNotice");
+bleInterface.onUploadProgress = (type, percent) => {
+  setProgress(percent);
+};
 
-const serialMonitorContainer = document.getElementById("serialMonitorContainer");
-const btnToggleSerialMonitor = document.getElementById("btnToggleSerialMonitor");
-const btnClearSerialLog = document.getElementById("btnClearSerialLog");
-const serialLogBox = document.getElementById("serialLogBox");
-const serialLogOutput = document.getElementById("serialLogOutput");
-
-let otaMethod = "ble";
+// ---------------------------------------------------------------------------
+// Firmware: connection method
+// ---------------------------------------------------------------------------
 
 function setOtaMode(mode) {
-  otaMethod = mode;
-  const otaModeLabels = document.querySelectorAll(".otaModeLabel");
-  if (mode === "ble") {
-    if (btnOtaBle) {
-      btnOtaBle.className = "flex-1 py-2 rounded-lg font-semibold bg-white text-gray-800 shadow-sm focus:outline-none transition-all flex items-center justify-center gap-1.5";
-    }
-    if (btnOtaSerial) {
-      btnOtaSerial.className = "flex-1 py-2 rounded-lg font-semibold text-gray-500 hover:text-gray-800 focus:outline-none transition-all flex items-center justify-center gap-1.5";
-    }
-    if (activeOtaModeBadge) {
-      activeOtaModeBadge.innerText = "Modus: Bluetooth (BLE)";
-      activeOtaModeBadge.className = "text-xs font-semibold px-2.5 py-1 rounded-full bg-blue-100 text-blue-700";
-    }
-    if (bleModeNotice) bleModeNotice.classList.remove("hidden");
-    if (serialModeNotice) serialModeNotice.classList.add("hidden");
-    if (serialUnsupportedNotice) serialUnsupportedNotice.classList.add("hidden");
-    if (spiffsBleNotice) spiffsBleNotice.classList.remove("hidden");
-    if (spiffsUsbTools) spiffsUsbTools.classList.add("hidden");
-    if (serialMonitorContainer) serialMonitorContainer.classList.add("hidden");
-    otaModeLabels.forEach((el) => {
-      el.textContent = "(BLE)";
-    });
-  } else {
-    if (btnOtaBle) {
-      btnOtaBle.className = "flex-1 py-2 rounded-lg font-semibold text-gray-500 hover:text-gray-800 focus:outline-none transition-all flex items-center justify-center gap-1.5";
-    }
-    if (btnOtaSerial) {
-      btnOtaSerial.className = "flex-1 py-2 rounded-lg font-semibold bg-white text-gray-800 shadow-sm focus:outline-none transition-all flex items-center justify-center gap-1.5";
-    }
-    if (activeOtaModeBadge) {
-      activeOtaModeBadge.innerText = "Modus: USB-Kabel (COM-Port)";
-      activeOtaModeBadge.className = "text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800";
-    }
-    if (bleModeNotice) bleModeNotice.classList.add("hidden");
-    if (spiffsBleNotice) spiffsBleNotice.classList.add("hidden");
-    if (spiffsUsbTools) spiffsUsbTools.classList.remove("hidden");
-    if (serialMonitorContainer) serialMonitorContainer.classList.remove("hidden");
+  state.otaMethod = mode === "serial" ? "serial" : "ble";
+  const isBle = state.otaMethod === "ble";
 
-    if (!("serial" in navigator)) {
-      if (serialUnsupportedNotice) serialUnsupportedNotice.classList.remove("hidden");
-      if (serialModeNotice) serialModeNotice.classList.add("hidden");
-    } else {
-      if (serialModeNotice) serialModeNotice.classList.remove("hidden");
-      if (serialUnsupportedNotice) serialUnsupportedNotice.classList.add("hidden");
-    }
-    otaModeLabels.forEach((el) => {
-      el.textContent = "(USB)";
-    });
-  }
-}
+  btnOtaBle.setAttribute("aria-pressed", String(isBle));
+  btnOtaSerial.setAttribute("aria-pressed", String(!isBle));
+  activeOtaModeBadge.textContent = isBle ? "Modus: Bluetooth" : "Modus: USB-Kabel";
 
-if (btnOtaBle) {
-  btnOtaBle.addEventListener("click", () => setOtaMode("ble"));
-}
-if (btnOtaSerial) {
-  btnOtaSerial.addEventListener("click", () => setOtaMode("serial"));
-}
-if (btnSwitchToUsb) {
-  btnSwitchToUsb.addEventListener("click", () => setOtaMode("serial"));
-}
+  bleModeNotice.hidden = !isBle;
+  serialModeNotice.hidden = isBle || !serialAvailable;
+  serialUnsupportedNotice.hidden = isBle || serialAvailable;
+  spiffsBleNotice.hidden = !isBle;
+  spiffsUsbTools.hidden = isBle;
+  serialMonitorContainer.hidden = isBle;
 
-let serialMonitorPort = null;
-let serialMonitorReader = null;
-let serialMonitorKeepReading = false;
-
-async function disconnectSerialMonitor() {
-  serialMonitorKeepReading = false;
-  if (serialMonitorReader) {
-    try {
-      await serialMonitorReader.cancel();
-    } catch (e) {
-      console.warn("Reader cancel error:", e);
-    }
-    serialMonitorReader = null;
-  }
-  if (serialMonitorPort) {
-    try {
-      await serialMonitorPort.close();
-    } catch (e) {
-      console.warn("Serial port close error:", e);
-    }
-    serialMonitorPort = null;
-  }
-  if (btnToggleSerialMonitor) {
-    btnToggleSerialMonitor.innerText = "Seriellen Debug Monitor verbinden";
-    btnToggleSerialMonitor.className = "w-full bg-slate-700 hover:bg-slate-800 text-white font-bold py-2 rounded-lg transition-colors text-sm mb-3";
-  }
-}
-
-async function connectSerialMonitor() {
-  if (!("serial" in navigator)) {
-    alert("Dein Browser unterstützt keine Web Serial API. Bitte verwende Chrome, Edge oder Opera.");
-    return;
-  }
-
-  try {
-    serialMonitorPort = await requestSerialPort();
-    await serialMonitorPort.open({ baudRate: 115200 });
-
-    serialMonitorKeepReading = true;
-    if (serialLogBox) serialLogBox.classList.remove("hidden");
-    if (btnToggleSerialMonitor) {
-      btnToggleSerialMonitor.innerText = "🔌 Seriellen Debug Monitor trennen";
-      btnToggleSerialMonitor.className = "w-full bg-red-600 hover:bg-red-700 text-white font-bold py-2 rounded-lg transition-colors text-sm mb-3";
-    }
-
-    const textDecoder = new TextDecoderStream();
-    const readableStreamClosed = serialMonitorPort.readable.pipeTo(textDecoder.writable);
-    const reader = textDecoder.readable.getReader();
-    serialMonitorReader = reader;
-
-    while (serialMonitorKeepReading) {
-      const { value, done } = await reader.read();
-      if (done) {
-        break;
-      }
-      if (value && serialLogOutput) {
-        serialLogOutput.innerText += value;
-        serialLogOutput.scrollTop = serialLogOutput.scrollHeight;
-      }
-    }
-  } catch (err) {
-    console.error("Serial Monitor Error:", err);
-    await disconnectSerialMonitor();
-    if (err.name !== "NotFoundError" && err.name !== "AbortError") {
-      setStatus("Serial Monitor Fehler: " + err.message, "text-red-500");
-    }
-  }
-}
-
-if (btnToggleSerialMonitor) {
-  btnToggleSerialMonitor.addEventListener("click", async () => {
-    if (serialMonitorPort) {
-      await disconnectSerialMonitor();
-    } else {
-      await connectSerialMonitor();
-    }
+  document.querySelectorAll(".otaModeLabel").forEach((el) => {
+    el.textContent = isBle ? "BLE" : "USB";
   });
+  syncUi();
 }
 
-if (btnClearSerialLog) {
-  btnClearSerialLog.addEventListener("click", () => {
-    if (serialLogOutput) serialLogOutput.innerText = "";
+btnOtaBle.addEventListener("click", () => setOtaMode("ble"));
+btnOtaSerial.addEventListener("click", () => setOtaMode("serial"));
+btnSwitchToUsb.addEventListener("click", () => setOtaMode("serial"));
+
+/** Bluetooth updates need a connected device: offer to connect instead of failing silently. */
+async function ensureBleConnected() {
+  if (bleInterface.settingsService) return true;
+  if (!bluetoothAvailable) {
+    await showMessage({ title: "Bluetooth nicht verfügbar", tone: "warn", text: "Dieser Browser unterstützt kein Web Bluetooth. Nutze Chrome, Edge oder Opera – oder wechsle auf einem PC zum Verbindungsweg USB-Kabel." });
+    return false;
+  }
+  const connectNow = await showMessage({
+    title: "Nicht verbunden",
+    text: "Für das Update per Bluetooth muss das E-Paper verbunden sein. Drücke die Reset-Taste am Gerät und verbinde dich – oder wechsle zum Verbindungsweg USB-Kabel.",
+    okLabel: "Verbinden",
+    cancelLabel: "Abbrechen",
+    okVariant: "signal",
   });
+  if (connectNow) bleInterface.connect();
+  return false;
 }
+
+// ---------------------------------------------------------------------------
+// Serial port / USB flashing
+// ---------------------------------------------------------------------------
 
 const SERIAL_FILTERS = [
   { usbVendorId: 0x10c4, usbProductId: 0xea60 }, // Silicon Labs CP210x USB to UART Bridge (CP2102N etc.)
   { usbVendorId: 0x1a86, usbProductId: 0x7523 }, // CH340 USB to UART Bridge
   { usbVendorId: 0x1a86, usbProductId: 0x55d4 }, // CH343 USB to UART Bridge
   { usbVendorId: 0x303a, usbProductId: 0x1001 }, // Espressif USB JTAG/serial
-  { usbVendorId: 0x303a, usbProductId: 0x1002 }  // Espressif USB CDC
+  { usbVendorId: 0x303a, usbProductId: 0x1002 }, // Espressif USB CDC
 ];
 
 async function requestSerialPort() {
-  if (!("serial" in navigator)) {
+  if (!serialAvailable) {
     throw new Error("Dein Webbrowser unterstützt keine serielle Verbindung (Web Serial API). Nutze Chrome, Edge oder Opera.");
   }
   return await navigator.serial.requestPort({ filters: SERIAL_FILTERS });
 }
 
-const usbFlashDialog = document.getElementById("usbFlashDialog");
-const usbFlashTitle = document.getElementById("usbFlashTitle");
-const usbFlashDescription = document.getElementById("usbFlashDescription");
-const usbFlashFileName = document.getElementById("usbFlashFileName");
-const usbFlashFileSize = document.getElementById("usbFlashFileSize");
-const usbFlashTargetAddress = document.getElementById("usbFlashTargetAddress");
-const btnCancelUsbFlash = document.getElementById("btnCancelUsbFlash");
-const btnConfirmUsbFlash = document.getElementById("btnConfirmUsbFlash");
-
-let pendingUsbFileBuffer = null;
-let pendingUsbAddress = 0x10000;
-let pendingUsbLabel = "Firmware";
-
-if (btnCancelUsbFlash) {
-  btnCancelUsbFlash.addEventListener("click", () => {
-    if (usbFlashDialog) usbFlashDialog.close();
-    pendingUsbFileBuffer = null;
-  });
-}
-
-if (btnConfirmUsbFlash) {
-  btnConfirmUsbFlash.addEventListener("click", async () => {
-    let port = null;
-    try {
-      port = await requestSerialPort();
-    } catch (e) {
-      setStatus("USB Flashing abgebrochen: " + e.message, "text-orange-500");
-      if (usbFlashDialog) usbFlashDialog.close();
-      return;
+/** Must run directly inside a click handler (the port chooser needs a user gesture). */
+async function pickSerialPort() {
+  try {
+    return await requestSerialPort();
+  } catch (e) {
+    if (e?.name === "NotFoundError" || e?.name === "AbortError") {
+      setStatus("Kein COM-Port ausgewählt – Vorgang abgebrochen.", "warn");
+    } else {
+      setStatus("USB-Verbindung fehlgeschlagen: " + e.message, "err");
     }
-
-    if (usbFlashDialog) usbFlashDialog.close();
-
-    if (pendingUsbFileBuffer) {
-      const buffer = pendingUsbFileBuffer;
-      const addr = pendingUsbAddress;
-      const label = pendingUsbLabel;
-      pendingUsbFileBuffer = null;
-      await uploadFirmwareSerial(buffer, addr, label, port);
-    }
-  });
+    return null;
+  }
 }
 
-function openUsbFlashDialog(buffer, filename, fileSizeStr, addressHex, label) {
-  pendingUsbFileBuffer = buffer;
-  pendingUsbAddress = addressHex === "0x3B0000" ? 0x3B0000 : 0x10000;
-  pendingUsbLabel = label;
-
-  if (usbFlashTitle) usbFlashTitle.innerText = `USB Flashing: ${label}`;
-  if (usbFlashDescription) usbFlashDescription.innerText = `Bereit zum Flashen an Adresse ${addressHex}`;
-  if (usbFlashFileName) usbFlashFileName.innerText = filename;
-  if (usbFlashFileSize) usbFlashFileSize.innerText = fileSizeStr;
-  if (usbFlashTargetAddress) usbFlashTargetAddress.innerText = addressHex;
-
-  if (usbFlashDialog) usbFlashDialog.showModal();
+function describeSerialError(err) {
+  if (err?.name === "InvalidStateError" || err?.message?.includes("already open")) {
+    return "Der COM-Port ist blockiert. Eventuell ist der PlatformIO Serial Monitor oder ein anderes Programm (z. B. ein anderer Browser-Tab) noch geöffnet. Bitte schließe diese Verbindungen und versuche es erneut.";
+  }
+  return err?.message || String(err);
 }
 
-async function uploadFirmwareSerial(buffer, address = 0x10000, label = "Firmware", port = null) {
+const loaderTerminal = {
+  clean: () => {},
+  writeLine: (data) => console.log(data),
+  write: (data) => console.log(data),
+};
+
+async function openEspLoader(port) {
+  await disconnectSerialMonitor();
+  setStatus("Verbindung mit USB-Gerät wird hergestellt…", "busy");
+  // tracing off: it hex-dumps every packet to the console and into memory
+  const transport = new Transport(port, false);
+  const esploader = new ESPLoader({ transport, baudrate: 921600, terminal: loaderTerminal });
+  return { transport, esploader };
+}
+
+async function closeTransport(transport) {
+  if (!transport) return;
+  try {
+    await transport.disconnect();
+  } catch (e) {
+    console.warn("Disconnection failed:", e);
+  }
+}
+
+async function flashSerial(buffer, address, label, port) {
   let transport = null;
   try {
-    await disconnectSerialMonitor();
-    btnSelectFw.disabled = true;
-    if (btnUpdateOfflineFw) btnUpdateOfflineFw.disabled = true;
-    btnFetchOriginalFw.disabled = true;
-    if (btnSelectSpiffs) btnSelectSpiffs.disabled = true;
-    if (btnBackupSpiffs) btnBackupSpiffs.disabled = true;
-    fwProgressContainer.classList.remove("hidden");
-    fwProgressBar.style.width = "0%";
+    const loader = await openEspLoader(port);
+    transport = loader.transport;
+    const esploader = loader.esploader;
 
-    setStatus("Verbindung mit USB-Gerät wird hergestellt...", "text-blue-500");
-    
-    if (!port) {
-      port = await requestSerialPort();
-    }
-    transport = new Transport(port, true);
-
-    const loaderTerminal = {
-      clean: () => {},
-      writeLine: (data) => {
-        console.log(data);
-      },
-      write: (data) => {
-        console.log(data);
-      },
-    };
-
-    const esploader = new ESPLoader({
-      transport: transport,
-      baudrate: 921600,
-      terminal: loaderTerminal
-    });
-
-    setStatus("Lade Bootloader...", "text-blue-500");
+    setStatus("Lade Bootloader…", "busy");
     await esploader.main();
 
-    setStatus(`Flashe ${label}...`, "text-blue-500");
-    const fileArray = [
-      {
-        data: buffer,
-        address: address
-      }
-    ];
-
+    setStatus(`Flashe ${label}…`, "busy");
     await esploader.writeFlash({
-      fileArray: fileArray,
+      fileArray: [{ data: buffer, address }],
       flashMode: "keep",
       flashFreq: "keep",
       flashSize: "keep",
@@ -1257,9 +1599,9 @@ async function uploadFirmwareSerial(buffer, address = 0x10000, label = "Firmware
       compress: true,
       reportProgress: (fileIndex, written, total) => {
         const percent = Math.round((written / total) * 100);
-        fwProgressBar.style.width = percent + "%";
-        setStatus(`Flashe ${label} per USB: ${percent}%...`, "text-blue-500");
-      }
+        setProgress(percent);
+        setStatus(`Flashe ${label} per USB: ${percent}%...`, "busy");
+      },
     });
 
     try {
@@ -1268,348 +1610,274 @@ async function uploadFirmwareSerial(buffer, address = 0x10000, label = "Firmware
       console.warn("Hard reset attempt:", resetErr);
     }
 
-    fwProgressBar.style.width = "100%";
-    setStatus(`✅ ${label} erfolgreich geflasht! Drücke jetzt den Reset-Knopf am E-Paper, um zu starten.`, "text-green-600");
+    setProgress(100);
+    setStatus(`✅ ${label} erfolgreich geflasht! Drücke jetzt den Reset-Knopf am E-Paper, um zu starten.`, "ok");
   } catch (err) {
     console.error(err);
-    if (err.name === "InvalidStateError" || err.message.includes("already open")) {
-      setStatus("Fehler: Der COM-Port ist blockiert! Eventuell ist der PlatformIO Serial Monitor oder ein anderes Programm (z.B. ein anderer Browsertab) noch geöffnet. Bitte schließe diese Verbindungen und versuche es erneut.", "text-red-500");
-    } else {
-      setStatus("Fehler beim USB-Flash: " + err.message, "text-red-500");
-    }
+    throw new Error(describeSerialError(err));
   } finally {
-    if (transport) {
-      try {
-        await transport.disconnect();
-      } catch (e) {
-        console.warn("Disconnection failed:", e);
-      }
-    }
-    btnSelectFw.disabled = false;
-    if (btnUpdateOfflineFw) btnUpdateOfflineFw.disabled = false;
-    btnFetchOriginalFw.disabled = false;
-    if (btnSelectSpiffs) btnSelectSpiffs.disabled = false;
-    if (btnBackupSpiffs) btnBackupSpiffs.disabled = false;
+    await closeTransport(transport);
   }
 }
 
-async function uploadFirmwareBle(buffer) {
-  try {
-    btnSelectFw.disabled = true;
-    if (btnUpdateOfflineFw) btnUpdateOfflineFw.disabled = true;
-    btnFetchOriginalFw.disabled = true;
-    if (btnSelectSpiffs) btnSelectSpiffs.disabled = true;
-    if (btnBackupSpiffs) btnBackupSpiffs.disabled = true;
-    fwProgressContainer.classList.remove("hidden");
-    fwProgressBar.style.width = "0%";
+// --- USB flash confirmation dialog (custom firmware / SPIFFS restore) ---
 
-    await bleInterface.uploadFirmware(buffer);
-  } finally {
-    btnSelectFw.disabled = false;
-    if (btnUpdateOfflineFw) btnUpdateOfflineFw.disabled = false;
-    btnFetchOriginalFw.disabled = false;
-    if (btnSelectSpiffs) btnSelectSpiffs.disabled = false;
-    if (btnBackupSpiffs) btnBackupSpiffs.disabled = false;
-  }
+let pendingUsbFlash = null; // { buffer, address, label }
+
+function openUsbFlashDialog(buffer, filename, fileSizeStr, address, label) {
+  const addressHex = "0x" + address.toString(16).toUpperCase();
+  pendingUsbFlash = { buffer, address, label };
+
+  usbFlashTitle.textContent = `USB-Flashing: ${label}`;
+  usbFlashDescription.textContent = `Bereit zum Flashen an Adresse ${addressHex}.`;
+  usbFlashFileName.textContent = filename;
+  usbFlashFileSize.textContent = fileSizeStr;
+  usbFlashTargetAddress.textContent = addressHex;
+
+  openDialog(usbFlashDialog);
 }
 
+btnCancelUsbFlash.addEventListener("click", () => closeDialog(usbFlashDialog));
 
+btnConfirmUsbFlash.addEventListener("click", async () => {
+  const job = pendingUsbFlash;
+  const port = await pickSerialPort();
+  pendingUsbFlash = null;
+  closeDialog(usbFlashDialog);
+  if (!port || !job) return;
+
+  await runTransfer({ title: `${job.label} wird geflasht`, successTitle: "Erfolgreich geflasht", failTitle: "USB-Flash fehlgeschlagen", stickySuccess: true }, () => flashSerial(job.buffer, job.address, job.label, port));
+});
+
+// ---------------------------------------------------------------------------
+// Firmware: original cloud firmware
+// ---------------------------------------------------------------------------
 
 let currentOtaUrl = null;
+let cloudFwRequest = 0;
 
 async function checkCloudFw() {
-    otaVersion.innerText = "wird geladen...";
-    btnConfirmOta.disabled = true;
-    currentOtaUrl = null;
-    try {
-        const type = otaDeviceSelect.value;
-        const targetUrl = `./factory/espfota_${type}_pre.json`;
-        let isFallback = false;
-        let res = await fetchWithProxy(targetUrl);
-        
-        // If local fetch fails (e.g. 404 on deployed page) or returns HTML (Vite SPA fallback on local dev server)
-        const isHtml = res.ok && res.headers.get("content-type")?.includes("text/html");
-        if (!res.ok || isHtml) {
-            console.log("Local fetch failed or returned HTML. Trying remote fallback...");
-            const fallbackUrl = `http://ul.epaperframe.de/espfota_${type}_pre.json`;
-            res = await fetchWithProxy(fallbackUrl);
-            isFallback = true;
-        }
+  const request = ++cloudFwRequest; // a newer request (device type changed) wins
+  otaVersion.textContent = "wird geladen…";
+  btnConfirmOta.disabled = true;
+  currentOtaUrl = null;
+  try {
+    const type = otaDeviceSelect.value;
+    const targetUrl = `./factory/espfota_${type}_pre.json`;
+    let isFallback = false;
+    let res = await fetchWithProxy(targetUrl);
 
-        if (!res.ok) throw new Error("JSON konnte nicht geladen werden.");
-        const data = await res.json();
-        
-        otaVersion.innerText = data.version || data.date || "Verfügbar";
-        
-        // If we fell back to the remote server, use the remote binary URL
-        if (isFallback) {
-            currentOtaUrl = data.url || `http://ul.epaperframe.de/firmware_${type}_pre.bin`;
-        } else {
-            currentOtaUrl = `./factory/firmware_${type}_pre.bin`;
-        }
-        btnConfirmOta.disabled = false;
-    } catch (e) {
-        otaVersion.innerText = "Fehler (" + e.message + ")";
+    // If local fetch fails (e.g. 404 on deployed page) or returns HTML (Vite SPA fallback on local dev server)
+    const isHtml = res.ok && res.headers.get("content-type")?.includes("text/html");
+    if (!res.ok || isHtml) {
+      console.log("Local fetch failed or returned HTML. Trying remote fallback...");
+      const fallbackUrl = `http://ul.epaperframe.de/espfota_${type}_pre.json`;
+      res = await fetchWithProxy(fallbackUrl);
+      isFallback = true;
     }
+
+    if (!res.ok) throw new Error("JSON konnte nicht geladen werden.");
+    const data = await res.json();
+    if (request !== cloudFwRequest) return;
+
+    otaVersion.textContent = data.version || data.date || "Verfügbar";
+
+    // If we fell back to the remote server, use the remote binary URL
+    if (isFallback) {
+      currentOtaUrl = data.url || `http://ul.epaperframe.de/firmware_${type}_pre.bin`;
+    } else {
+      currentOtaUrl = `./factory/firmware_${type}_pre.bin`;
+    }
+    btnConfirmOta.disabled = false;
+  } catch (e) {
+    if (request !== cloudFwRequest) return;
+    otaVersion.textContent = "Fehler (" + e.message + ")";
+  }
 }
 
-btnFetchOriginalFw.addEventListener("click", () => {
-    if (otaMethod === "ble") {
-        if (!bleInterface || !bleInterface.settingsService) {
-            setStatus("Bitte zuerst mit dem E-Paper verbinden.", "text-red-500");
-            return;
-        }
-        otaDeviceSelect.value = bleInterface.isPaperL ? "epd13" : "epd7";
-        otaDeviceSelect.disabled = true;
-    } else {
-        otaDeviceSelect.disabled = false;
-        otaDeviceSelect.value = (bleInterface.isConnected ? bleInterface.isPaperL : displaySizeSelect?.value === "13") ? "epd13" : "epd7";
-    }
-    
-    otaDialog.showModal();
-    checkCloudFw();
+/** Presets a device-type select: locked to the connected device for BLE, free choice for USB. */
+function prepareDeviceSelect(select) {
+  if (state.otaMethod === "ble") {
+    select.value = bleInterface.isPaperL ? "epd13" : "epd7";
+    select.disabled = true;
+  } else {
+    select.disabled = false;
+    select.value = (bleInterface.isConnected ? bleInterface.isPaperL : displaySizeSelect.value === "13") ? "epd13" : "epd7";
+  }
+}
+
+async function downloadFirmware(res, what) {
+  if (!res.ok) throw new Error(`${what} konnte nicht geladen werden (HTTP ${res.status}).`);
+  const buffer = new Uint8Array(await res.arrayBuffer());
+  await validateEsp32FirmwareBinary(buffer);
+  return buffer;
+}
+
+btnFetchOriginalFw.addEventListener("click", async () => {
+  if (state.otaMethod === "ble" && !(await ensureBleConnected())) return;
+  prepareDeviceSelect(otaDeviceSelect);
+  openDialog(otaDialog);
+  checkCloudFw();
 });
 
 otaDeviceSelect.addEventListener("change", checkCloudFw);
-
-btnCancelOta.addEventListener("click", () => {
-    otaDialog.close();
-});
+btnCancelOta.addEventListener("click", () => closeDialog(otaDialog));
 
 btnConfirmOta.addEventListener("click", async () => {
-    let port = null;
-    if (otaMethod === "serial") {
-        try {
-            port = await requestSerialPort();
-        } catch (e) {
-            setStatus("USB Flashing abgebrochen: " + e.message, "text-orange-500");
-            otaDialog.close();
-            return;
-        }
-    }
-    otaDialog.close();
-    if (!currentOtaUrl) return;
-    
-    try {
-        setStatus("Lade Cloud-Firmware herunter...", "text-blue-500");
-        const res = await fetchWithProxy(currentOtaUrl);
-        if (!res.ok) throw new Error("Firmware konnte nicht geladen werden.");
-        
-        const arrayBuffer = await res.arrayBuffer();
-        const buffer = new Uint8Array(arrayBuffer);
-        await validateEsp32FirmwareBinary(buffer);
-        
-        if (otaMethod === "ble") {
-            await uploadFirmwareBle(buffer);
-        } else {
-            await uploadFirmwareSerial(buffer, 0x10000, "Original Cloud Firmware", port);
-        }
-    } catch (err) {
-        console.error(err);
-        setStatus("Fehler beim Download der Cloud-Firmware: " + err.message, "text-red-500");
-    }
-});
-
-if (btnUpdateOfflineFw) {
-    btnUpdateOfflineFw.addEventListener("click", () => {
-        if (otaMethod === "ble") {
-            if (!bleInterface || !bleInterface.settingsService) {
-                setStatus("Bitte zuerst mit dem E-Paper verbinden.", "text-red-500");
-                return;
-            }
-            offlineOtaDeviceSelect.value = bleInterface.isPaperL ? "epd13" : "epd7";
-            offlineOtaDeviceSelect.disabled = true;
-        } else {
-            offlineOtaDeviceSelect.disabled = false;
-            offlineOtaDeviceSelect.value = (bleInterface.isConnected ? bleInterface.isPaperL : displaySizeSelect?.value === "13") ? "epd13" : "epd7";
-        }
-        
-        otaOfflineDialog.showModal();
-    });
-}
-
-if (btnCancelOfflineOta) {
-    btnCancelOfflineOta.addEventListener("click", () => {
-        otaOfflineDialog.close();
-    });
-}
-
-if (btnConfirmOfflineOta) {
-    btnConfirmOfflineOta.addEventListener("click", async () => {
-        let port = null;
-        if (otaMethod === "serial") {
-            try {
-                port = await requestSerialPort();
-            } catch (e) {
-                setStatus("USB Flashing abgebrochen: " + e.message, "text-orange-500");
-                otaOfflineDialog.close();
-                return;
-            }
-        }
-        otaOfflineDialog.close();
-        
-        try {
-            const type = offlineOtaDeviceSelect.value;
-            const targetUrl = `./firmware_offline_${type}.bin`;
-            
-            setStatus("Lade Offline-Firmware herunter...", "text-blue-500");
-            let res = await fetch(targetUrl);
-            
-            const isHtml = res.ok && res.headers.get("content-type")?.includes("text/html");
-            if (!res.ok || isHtml) {
-                console.log("Local offline firmware fetch failed or returned HTML. Trying remote fallback...");
-                const fallbackUrl = `https://paperlesspaper.github.io/paperlesspaper-firmware-offline/firmware_offline_${type}.bin`;
-                res = await fetchWithProxy(fallbackUrl);
-            }
-
-            if (!res.ok) throw new Error(`HTTP Error ${res.status} beim Download`);
-            
-            const arrayBuffer = await res.arrayBuffer();
-            const buffer = new Uint8Array(arrayBuffer);
-            await validateEsp32FirmwareBinary(buffer);
-            
-            if (otaMethod === "ble") {
-                await uploadFirmwareBle(buffer);
-            } else {
-                await uploadFirmwareSerial(buffer, 0x10000, "Offline Firmware", port);
-            }
-        } catch (err) {
-            console.error(err);
-            setStatus("Fehler beim Download der Offline-Firmware: " + err.message, "text-red-500");
-        }
-    });
-}
-
-if (btnSelectFw) {
-  btnSelectFw.addEventListener("click", () => {
-    if (otaMethod === "ble") {
-      if (!bleInterface || !bleInterface.settingsService) {
-        setStatus("Bitte zuerst mit dem E-Paper verbinden.", "text-red-500");
-        return;
-      }
-    }
-    fwInput.click();
-  });
-}
-
-fwInput.addEventListener("change", (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-
-  const reader = new FileReader();
-  reader.onload = async (evt) => {
-    const buffer = new Uint8Array(evt.target.result);
-    try {
-      await validateEsp32FirmwareBinary(buffer);
-      if (otaMethod === "ble") {
-        await uploadFirmwareBle(buffer);
-      } else {
-        const sizeKb = (file.size / 1024).toFixed(1) + " KB";
-        openUsbFlashDialog(buffer, file.name, sizeKb, "0x10000", "Firmware");
-      }
-    } catch (err) {
-      console.error(err);
-      setStatus("Ungültige Firmware-Datei: " + err.message, "text-red-500");
-    }
-    fwInput.value = "";
-  };
-  reader.readAsArrayBuffer(file);
-});
-
-if (btnSelectSpiffs) {
-  btnSelectSpiffs.addEventListener("click", () => {
-    if (!("serial" in navigator)) {
-      setStatus("⚠️ USB-Flashing wird von deinem Browser nicht unterstützt. Nutze Chrome, Edge oder Opera.", "text-red-500");
-      alert("Dein Browser unterstützt keine serielle Verbindung (Web Serial API). Bitte nutze Chrome, Edge oder Opera für USB-Flashing.");
+  const method = state.otaMethod;
+  const url = currentOtaUrl;
+  let port = null;
+  if (method === "serial") {
+    port = await pickSerialPort();
+    if (!port) {
+      closeDialog(otaDialog);
       return;
     }
-    spiffsInput.click();
+  }
+  closeDialog(otaDialog);
+  if (!url) return;
+
+  await runTransfer({ title: "Cloud-Firmware wird installiert", abortable: method === "ble", successTitle: "Firmware installiert", failTitle: "Firmware-Update fehlgeschlagen", stickySuccess: true }, async () => {
+    setStatus("Lade Cloud-Firmware herunter…", "busy");
+    const buffer = await downloadFirmware(await fetchWithProxy(url), "Die Cloud-Firmware");
+
+    if (method === "ble") {
+      await bleInterface.uploadFirmware(buffer);
+    } else {
+      await flashSerial(buffer, APP_ADDRESS, "Original Cloud Firmware", port);
+    }
   });
-}
+});
 
-if (spiffsInput) {
-  spiffsInput.addEventListener("change", (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+// ---------------------------------------------------------------------------
+// Firmware: offline firmware
+// ---------------------------------------------------------------------------
 
-    const reader = new FileReader();
-    reader.onload = async (evt) => {
-      const buffer = new Uint8Array(evt.target.result);
-      const sizeKb = (file.size / 1024).toFixed(1) + " KB";
-      openUsbFlashDialog(buffer, file.name, sizeKb, "0x3B0000", "SPIFFS (Zertifikat)");
-      spiffsInput.value = "";
-    };
-    reader.readAsArrayBuffer(file);
+btnUpdateOfflineFw.addEventListener("click", async () => {
+  if (state.otaMethod === "ble" && !(await ensureBleConnected())) return;
+  prepareDeviceSelect(offlineOtaDeviceSelect);
+  openDialog(otaOfflineDialog);
+});
+
+btnCancelOfflineOta.addEventListener("click", () => closeDialog(otaOfflineDialog));
+
+btnConfirmOfflineOta.addEventListener("click", async () => {
+  const method = state.otaMethod;
+  const type = offlineOtaDeviceSelect.value;
+  let port = null;
+  if (method === "serial") {
+    port = await pickSerialPort();
+    if (!port) {
+      closeDialog(otaOfflineDialog);
+      return;
+    }
+  }
+  closeDialog(otaOfflineDialog);
+
+  await runTransfer({ title: "Offline-Firmware wird installiert", abortable: method === "ble", successTitle: "Firmware installiert", failTitle: "Firmware-Update fehlgeschlagen", stickySuccess: true }, async () => {
+    setStatus("Lade Offline-Firmware herunter…", "busy");
+    let res = await fetch(`./firmware_offline_${type}.bin`);
+
+    const isHtml = res.ok && res.headers.get("content-type")?.includes("text/html");
+    if (!res.ok || isHtml) {
+      console.log("Local offline firmware fetch failed or returned HTML. Trying remote fallback...");
+      res = await fetchWithProxy(`${PUBLIC_SITE_URL}${IS_DEV_CHANNEL ? "dev/" : ""}firmware_offline_${type}.bin`);
+    }
+    const buffer = await downloadFirmware(res, "Die Offline-Firmware");
+
+    if (method === "ble") {
+      await bleInterface.uploadFirmware(buffer);
+    } else {
+      await flashSerial(buffer, APP_ADDRESS, "Offline Firmware", port);
+    }
   });
-}
+});
 
-async function backupSpiffsSerial() {
-  if (!("serial" in navigator)) {
-    setStatus("⚠️ USB-Verbindung wird von deinem Browser nicht unterstützt. Nutze Chrome, Edge oder Opera.", "text-red-500");
-    alert("Dein Browser unterstützt keine serielle Verbindung (Web Serial API). Bitte nutze Chrome, Edge oder Opera.");
+// ---------------------------------------------------------------------------
+// Firmware: custom .bin
+// ---------------------------------------------------------------------------
+
+btnSelectFw.addEventListener("click", async () => {
+  if (state.otaMethod === "ble" && !(await ensureBleConnected())) return;
+  fwInput.click();
+});
+
+fwInput.addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  fwInput.value = "";
+  if (!file) return;
+
+  let buffer;
+  try {
+    buffer = new Uint8Array(await file.arrayBuffer());
+    await validateEsp32FirmwareBinary(buffer);
+  } catch (err) {
+    console.error(err);
+    setStatus("Ungültige Firmware-Datei: " + err.message, "err");
+    await showMessage({ title: "Ungültige Firmware-Datei", tone: "err", text: err.message, detail: file.name });
     return;
   }
 
+  if (state.otaMethod === "ble") {
+    if (!(await ensureBleConnected())) return;
+    const confirmed = await showMessage({
+      title: "Eigene Firmware flashen?",
+      tone: "warn",
+      text: "Die Datei wird per Bluetooth auf das verbundene E-Paper übertragen und ersetzt die laufende Firmware.",
+      detail: `${file.name} · ${(file.size / 1024).toFixed(1)} KB`,
+      okLabel: "Ja, flashen",
+      cancelLabel: "Abbrechen",
+      okVariant: "signal",
+    });
+    if (!confirmed) return;
+    await runTransfer({ title: "Firmware wird installiert", abortable: true, successTitle: "Firmware installiert", failTitle: "Firmware-Update fehlgeschlagen", stickySuccess: true }, () => bleInterface.uploadFirmware(buffer));
+  } else {
+    openUsbFlashDialog(buffer, file.name, (file.size / 1024).toFixed(1) + " KB", APP_ADDRESS, "Firmware");
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Certificates (SPIFFS partition) via USB
+// ---------------------------------------------------------------------------
+
+btnSelectSpiffs.addEventListener("click", () => spiffsInput.click());
+
+spiffsInput.addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  spiffsInput.value = "";
+  if (!file) return;
+
+  if (file.size === 0 || file.size > SPIFFS_SIZE) {
+    // Anything larger would be written past the partition into the coredump area.
+    await showMessage({
+      title: "Datei passt nicht in die SPIFFS-Partition",
+      tone: "err",
+      text: `Die Partition ist ${SPIFFS_SIZE / 1024} KB groß. Bitte wähle das Zertifikat-Backup (.bin) dieses Geräts.`,
+      detail: `${file.name} · ${(file.size / 1024).toFixed(1)} KB`,
+    });
+    return;
+  }
+
+  const buffer = new Uint8Array(await file.arrayBuffer());
+  openUsbFlashDialog(buffer, file.name, (file.size / 1024).toFixed(1) + " KB", SPIFFS_ADDRESS, "SPIFFS (Zertifikat)");
+});
+
+async function backupSpiffsSerial(port) {
   let transport = null;
   try {
-    await disconnectSerialMonitor();
-    if (btnBackupSpiffs) btnBackupSpiffs.disabled = true;
-    if (btnSelectSpiffs) btnSelectSpiffs.disabled = true;
-    btnSelectFw.disabled = true;
-    if (btnUpdateOfflineFw) btnUpdateOfflineFw.disabled = true;
-    btnFetchOriginalFw.disabled = true;
-    fwProgressContainer.classList.remove("hidden");
-    fwProgressBar.style.width = "0%";
+    const loader = await openEspLoader(port);
+    transport = loader.transport;
+    const esploader = loader.esploader;
 
-    setStatus("Verbindung mit USB-Gerät wird hergestellt...", "text-blue-500");
-
-    let port = null;
-    try {
-      port = await requestSerialPort();
-    } catch (portErr) {
-      if (portErr.name !== "NotFoundError" && portErr.name !== "AbortError") {
-        setStatus("USB-Verbindung fehlgeschlagen: " + portErr.message, "text-red-500");
-      } else {
-        setStatus("USB-Verbindung abgebrochen.", "text-gray-500");
-      }
-      return;
-    }
-
-    transport = new Transport(port, true);
-
-    const loaderTerminal = {
-      clean: () => {},
-      writeLine: (data) => console.log(data),
-      write: (data) => console.log(data)
-    };
-
-    const esploader = new ESPLoader({
-      transport: transport,
-      baudrate: 921600,
-      terminal: loaderTerminal
-    });
-
-    setStatus("Lade Bootloader...", "text-blue-500");
+    setStatus("Lade Bootloader…", "busy");
     await esploader.main();
 
-    const spiffsAddress = 0x3b0000;
-    const spiffsSize = 0x40000; // 256 KB
-
-    setStatus("Lese SPIFFS Zertifikat-Partition aus...", "text-blue-500");
-    const spiffsData = await esploader.readFlash(spiffsAddress, spiffsSize, (packet, current, total) => {
+    setStatus("Lese SPIFFS Zertifikat-Partition aus…", "busy");
+    const spiffsData = await esploader.readFlash(SPIFFS_ADDRESS, SPIFFS_SIZE, (packet, current, total) => {
       const percent = Math.round((current / total) * 100);
-      fwProgressBar.style.width = percent + "%";
-      setStatus(`Lese SPIFFS Zertifikate: ${percent}% (${Math.round(current / 1024)} KB / ${Math.round(total / 1024)} KB)...`, "text-blue-500");
+      setProgress(percent);
+      setStatus(`Lese SPIFFS Zertifikate: ${percent}% (${Math.round(current / 1024)} KB / ${Math.round(total / 1024)} KB)...`, "busy");
     });
-
-    try {
-      await esploader.after("hard_reset");
-    } catch (resetErr) {
-      console.warn("Hard reset attempt:", resetErr);
-    }
-
-    fwProgressBar.style.width = "100%";
-    const dateStr = new Date().toISOString().slice(0, 10);
 
     // Detect EPD number (e.g. epd7-3485188f1dc8) from SPIFFS partition data or chip MAC
     let epdNumber = "";
@@ -1629,7 +1897,7 @@ async function backupSpiffsSerial() {
           const rawMac = await esploader.chip.readMac(esploader);
           if (rawMac) {
             const cleanMac = rawMac.replace(/[^0-9a-fA-F]/g, "").toLowerCase();
-            const prefix = (displaySizeSelect?.value === "13" || offlineOtaDeviceSelect?.value === "epd13") ? "epd13-" : "epd7-";
+            const prefix = displaySizeSelect.value === "13" || offlineOtaDeviceSelect.value === "epd13" ? "epd13-" : "epd7-";
             epdNumber = prefix + cleanMac;
           }
         }
@@ -1638,148 +1906,244 @@ async function backupSpiffsSerial() {
       }
     }
 
-    if (!epdNumber && bleInterface?.bleDevice?.name && bleInterface.bleDevice.name.toLowerCase().startsWith("epd")) {
+    if (!epdNumber && bleInterface.bleDevice?.name && bleInterface.bleDevice.name.toLowerCase().startsWith("epd")) {
       epdNumber = bleInterface.bleDevice.name.toLowerCase().trim();
     }
 
-    const filename = epdNumber
-      ? `spiffs_backup_${epdNumber}_${dateStr}.bin`
-      : `spiffs_certificates_backup_${dateStr}.bin`;
+    try {
+      await esploader.after("hard_reset");
+    } catch (resetErr) {
+      console.warn("Hard reset attempt:", resetErr);
+    }
 
-    const blob = new Blob([spiffsData], { type: "application/octet-stream" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    setProgress(100);
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const filename = epdNumber ? `spiffs_backup_${epdNumber}_${dateStr}.bin` : `spiffs_certificates_backup_${dateStr}.bin`;
+    downloadBlob(new Blob([spiffsData], { type: "application/octet-stream" }), filename);
 
-    setStatus(`✅ SPIFFS Zertifikate erfolgreich heruntergeladen (${filename}, 256 KB)!`, "text-green-600");
+    setStatus(`✅ SPIFFS Zertifikate erfolgreich heruntergeladen (${filename}, 256 KB)!`, "ok");
   } catch (err) {
     console.error("Backup SPIFFS Error:", err);
-    if (err.name === "NotFoundError" || err.name === "AbortError") {
-      setStatus("USB-Auslesen abgebrochen (Kein Port ausgewählt).", "text-gray-500");
-    } else if (err.name === "InvalidStateError" || err.message?.includes("already open")) {
-      setStatus("Fehler: Der COM-Port ist blockiert! Eventuell ist ein serieller Monitor oder anderes Programm geöffnet. Schließe diese und versuche es erneut.", "text-red-500");
-    } else {
-      setStatus("Fehler beim Sichern der Zertifikate: " + err.message, "text-red-500");
-    }
+    throw new Error(describeSerialError(err));
   } finally {
-    if (transport) {
-      try {
-        await transport.disconnect();
-      } catch (e) {
-        console.warn("Disconnection failed:", e);
-      }
-    }
-    if (btnBackupSpiffs) btnBackupSpiffs.disabled = false;
-    if (btnSelectSpiffs) btnSelectSpiffs.disabled = false;
-    btnSelectFw.disabled = false;
-    if (btnUpdateOfflineFw) btnUpdateOfflineFw.disabled = false;
-    btnFetchOriginalFw.disabled = false;
+    await closeTransport(transport);
   }
 }
 
-if (btnBackupSpiffs) {
-  btnBackupSpiffs.addEventListener("click", () => {
-    if (!("serial" in navigator)) {
-      setStatus("⚠️ USB-Verbindung wird von deinem Browser nicht unterstützt. Nutze Chrome, Edge oder Opera.", "text-red-500");
-      alert("Dein Browser unterstützt keine serielle Verbindung (Web Serial API). Bitte nutze Chrome, Edge oder Opera.");
-      return;
-    }
-    if (usbBackupDialog) {
-      usbBackupDialog.showModal();
-    } else {
-      backupSpiffsSerial();
-    }
-  });
-}
+btnBackupSpiffs.addEventListener("click", () => openDialog(usbBackupDialog));
+btnCancelUsbBackup.addEventListener("click", () => closeDialog(usbBackupDialog));
 
-if (btnCancelUsbBackup) {
-  btnCancelUsbBackup.addEventListener("click", () => {
-    if (usbBackupDialog) usbBackupDialog.close();
-  });
-}
+btnConfirmUsbBackup.addEventListener("click", async () => {
+  const port = await pickSerialPort();
+  closeDialog(usbBackupDialog);
+  if (!port) return;
 
-if (btnConfirmUsbBackup) {
-  btnConfirmUsbBackup.addEventListener("click", async () => {
-    if (usbBackupDialog) usbBackupDialog.close();
-    await backupSpiffsSerial();
-  });
-}
-
-paletteSelect.addEventListener("change", () => {
-  generatePicture.setCustomPalette(null);
-  renderPaletteEditor();
-  if (generatePicture.getOriginalImage()) updatePreview();
+  await runTransfer({ title: "Zertifikate werden gesichert", successTitle: "Backup gespeichert", failTitle: "Backup fehlgeschlagen", stickySuccess: true }, () => backupSpiffsSerial(port));
 });
 
-renderPaletteEditor();
+// ---------------------------------------------------------------------------
+// Serial debug monitor
+// ---------------------------------------------------------------------------
 
-function renderPaletteEditor() {
-  if (!paletteEditor) return;
+const SERIAL_LOG_MAX_CHARS = 200000;
+let serialMonitor = null; // { port, reader, closed }
+let serialLogLength = 0;
 
-  if (paletteSelect.value !== "spectra6Custom") {
-    paletteEditor.style.display = "none";
+function appendSerialLog(text) {
+  const stickToBottom = serialLogOutput.scrollHeight - serialLogOutput.scrollTop - serialLogOutput.clientHeight < 40;
+  serialLogOutput.append(text);
+  serialLogLength += text.length;
+  if (serialLogLength > SERIAL_LOG_MAX_CHARS) {
+    // keep the newest half – an unbounded log slows the page down more and more
+    const kept = serialLogOutput.textContent.slice(-SERIAL_LOG_MAX_CHARS / 2);
+    serialLogOutput.textContent = kept;
+    serialLogLength = kept.length;
+  }
+  if (stickToBottom) serialLogOutput.scrollTop = serialLogOutput.scrollHeight;
+}
+
+function updateSerialMonitorUi() {
+  const active = Boolean(serialMonitor);
+  btnToggleSerialMonitor.textContent = active ? "Monitor trennen" : "Monitor verbinden";
+  btnToggleSerialMonitor.classList.toggle("btn-neu-danger-text", active);
+}
+
+async function disconnectSerialMonitor() {
+  const monitor = serialMonitor;
+  if (!monitor) return;
+  serialMonitor = null;
+  try {
+    await monitor.reader.cancel();
+  } catch (e) {
+    console.warn("Reader cancel error:", e);
+  }
+  // The port can only be closed after the pipe has released its lock on port.readable.
+  await monitor.closed;
+  try {
+    await monitor.port.close();
+  } catch (e) {
+    console.warn("Serial port close error:", e);
+  }
+  updateSerialMonitorUi();
+}
+
+async function connectSerialMonitor() {
+  const port = await pickSerialPort();
+  if (!port) return;
+
+  try {
+    await port.open({ baudRate: 115200 });
+  } catch (err) {
+    console.error("Serial Monitor Error:", err);
+    setStatus("Serieller Monitor: " + describeSerialError(err), "err");
     return;
+  }
+
+  const textDecoder = new TextDecoderStream();
+  const closed = port.readable.pipeTo(textDecoder.writable).catch(() => {});
+  const reader = textDecoder.readable.getReader();
+  serialMonitor = { port, reader, closed };
+  serialLogBox.hidden = false;
+  updateSerialMonitorUi();
+  setStatus("Serieller Monitor verbunden (115200 Baud).", "ok");
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) appendSerialLog(value);
+    }
+  } catch (err) {
+    console.error("Serial Monitor Error:", err);
+    setStatus("Serieller Monitor: Verbindung verloren (" + err.message + ").", "warn");
+  } finally {
+    // also reached when the device is unplugged
+    await disconnectSerialMonitor();
+  }
+}
+
+btnToggleSerialMonitor.addEventListener("click", async () => {
+  if (serialMonitor) {
+    await disconnectSerialMonitor();
+    setStatus("Serieller Monitor getrennt.", "idle");
   } else {
-    paletteEditor.style.display = "flex";
+    await connectSerialMonitor();
   }
+});
 
-  const basePalette = generatePicture.getBasePalette(paletteSelect.value);
+btnClearSerialLog.addEventListener("click", () => {
+  serialLogOutput.textContent = "";
+  serialLogLength = 0;
+});
 
-  if (!generatePicture.getCustomPalette()) {
-    generatePicture.setCustomPalette(JSON.parse(JSON.stringify(basePalette)));
-  }
+// ---------------------------------------------------------------------------
+// Release channel (stable "main" / preview "dev")
+// ---------------------------------------------------------------------------
 
-  const currentCustomPalette = generatePicture.getCustomPalette();
+const CHANNEL_LABEL = { main: "Stabil", dev: "Vorschau" };
+const versionDialog = $("versionDialog");
 
-  paletteEditor.innerHTML = "";
-  currentCustomPalette.forEach((c, idx) => {
-    const wrap = document.createElement("div");
-    wrap.className = "flex flex-col items-center";
-
-    const input = document.createElement("input");
-    input.type = "color";
-
-    input.value = c.color.length === 4 ? "#" + c.color[1] + c.color[1] + c.color[2] + c.color[2] + c.color[3] + c.color[3] : c.color;
-    input.className = "w-8 h-8 p-0 border-0 rounded cursor-pointer";
-    input.title = c.name + " (" + input.value + ")";
-
-    input.addEventListener("input", (e) => {
-      currentCustomPalette[idx].color = e.target.value;
-      input.title = c.name + " (" + e.target.value + ")";
-      throttledUpdatePreview();
-    });
-
-    const label = document.createElement("span");
-    label.className = "text-[10px] text-gray-500 capitalize mt-1";
-
-    label.innerText = c.name.replace("gameboy", "GB");
-
-    wrap.appendChild(input);
-    wrap.appendChild(label);
-    paletteEditor.appendChild(wrap);
-  });
+/** main is published at the site root, dev in ./dev/ below it. */
+function channelUrl(channel) {
+  const here = new URL("./", location.href);
+  if (channel === RELEASE_CHANNEL) return here;
+  return new URL(IS_DEV_CHANNEL ? "../" : "dev/", here);
 }
 
-const previewContainer = document.getElementById("previewContainer");
-const previewHoverCanvas = document.getElementById("previewHoverCanvas");
-const previewHoverLabel = document.getElementById("previewHoverLabel");
-
-if (previewContainer) {
-  previewContainer.addEventListener("mouseenter", () => {
-    if (paletteSelect && paletteSelect.value === "new" && previewHoverCanvas && previewHoverCanvas.width > 0) {
-      previewHoverCanvas.style.opacity = "0";
-      if (previewHoverLabel) previewHoverLabel.style.opacity = "1";
-    }
-  });
-  previewContainer.addEventListener("mouseleave", () => {
-    if (paletteSelect && paletteSelect.value === "new" && previewHoverCanvas) {
-      previewHoverCanvas.style.opacity = "1";
-    }
-    if (previewHoverLabel) previewHoverLabel.style.opacity = "0";
-  });
+/** "main · v0.1.0 · a827d05" */
+function describeBuild(channel, info) {
+  const parts = [channel];
+  if (info?.fwVersion) parts.push(`v${info.fwVersion}`);
+  if (info?.commit) parts.push(String(info.commit).slice(0, 7));
+  return parts.join(" · ");
 }
+
+function openVersionDialog() {
+  if (state.busy) return;
+  const notes = [];
+  if (state.conn !== "disconnected") notes.push("Beim Wechsel wird die Bluetooth-Verbindung getrennt – danach einfach neu verbinden.");
+  if (state.hasImage) notes.push("Das geladene Bild muss neu ausgewählt werden.");
+  const note = $("versionSwitchNote");
+  note.textContent = notes.join(" ");
+  note.hidden = notes.length === 0;
+  openDialog(versionDialog);
+}
+
+/** Loads the other version: a complete build with its own web UI and its own firmware. */
+function switchChannel(target) {
+  closeDialog(versionDialog);
+  if (target === RELEASE_CHANNEL || state.busy) return;
+  // keep the current view (#firmware, …)
+  location.href = channelUrl(target).href + location.hash;
+}
+
+async function initReleaseChannel() {
+  const ownInfo = { fwVersion: EXPECTED_FW_VERSION, commit: BUILD_COMMIT };
+  const buildInfo = $("buildInfo");
+  buildInfo.textContent = "Version: " + (RELEASE_CHANNEL === "local" ? ["Lokaler Build", `v${EXPECTED_FW_VERSION}`].join(" · ") : `${CHANNEL_LABEL[RELEASE_CHANNEL]} (${describeBuild(RELEASE_CHANNEL, ownInfo)})`);
+  buildInfo.hidden = false;
+
+  if (RELEASE_CHANNEL === "local") return; // nothing to switch to
+
+  // The offline firmware card names the build it flashes: always the one of this web UI.
+  const fwBadge = $("offlineFwChannelBadge");
+  fwBadge.textContent = describeBuild(RELEASE_CHANNEL, { commit: BUILD_COMMIT });
+  fwBadge.classList.toggle("badge-mode", IS_DEV_CHANNEL);
+  fwBadge.hidden = false;
+
+  if (IS_DEV_CHANNEL) {
+    $("channelBanner").hidden = false;
+    document.documentElement.classList.add("has-env-banner");
+  }
+
+  // Offer the switch only if the other version is really deployed next to this one.
+  const other = IS_DEV_CHANNEL ? "main" : "dev";
+  let otherInfo = null;
+  try {
+    const res = await fetch(new URL("channel.json", channelUrl(other)), { cache: "no-store" });
+    if (res.ok) otherInfo = await res.json();
+  } catch (e) {
+    console.info("Release channel check:", e);
+  }
+  if (otherInfo?.channel !== other) return;
+
+  const infos = { [RELEASE_CHANNEL]: ownInfo, [other]: otherInfo };
+  $("channelMainInfo").textContent = describeBuild("main", infos.main);
+  $("channelDevInfo").textContent = describeBuild("dev", infos.dev);
+  for (const [channel, btn] of [
+    ["main", $("btnChannelMain")],
+    ["dev", $("btnChannelDev")],
+  ]) {
+    const current = channel === RELEASE_CHANNEL;
+    btn.setAttribute("aria-pressed", String(current));
+    btn.setAttribute("aria-label", `${CHANNEL_LABEL[channel]} (${channel})${current ? " – aktuell geöffnet" : " – jetzt wechseln"}`);
+    btn.addEventListener("click", () => switchChannel(channel));
+  }
+  $("btnCloseVersion").addEventListener("click", () => closeDialog(versionDialog));
+
+  const btnVersion = $("btnVersion");
+  $("versionLabel").textContent = IS_DEV_CHANNEL ? "Dev" : "Stabil";
+  btnVersion.dataset.channel = RELEASE_CHANNEL;
+  btnVersion.setAttribute("aria-label", `Version: ${CHANNEL_LABEL[RELEASE_CHANNEL]} (${RELEASE_CHANNEL}). Version wechseln`);
+  btnVersion.hidden = false;
+  btnVersion.addEventListener("click", openVersionDialog);
+
+  if (IS_DEV_CHANNEL) {
+    const bannerSwitch = $("btnChannelBannerSwitch");
+    bannerSwitch.hidden = false;
+    bannerSwitch.addEventListener("click", openVersionDialog);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Start
+// ---------------------------------------------------------------------------
+
+initNavigation();
+initDialogs();
+initCollapsibles();
+renderPaletteEditor();
+updateSliderOutputs();
+setOtaMode("ble");
+syncUi();
+initReleaseChannel();

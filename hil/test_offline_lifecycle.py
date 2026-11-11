@@ -88,9 +88,19 @@ def test_02_gatt_contract(device, target, run_state):
     _require_candidate(run_state)
     device.enter_setup_mode()
 
+    probe = "hil-probe-pw"
+
     async def inspect():
         async with BleSession(device.uid) as ble:
+            # Passwords are write-only: a stored password must not come back over BLE.
+            await ble.write_text(settings.CHR_HTTP_PASSWORD, probe)
+            password_reads = {
+                uuid: await ble.try_read(uuid) for uuid in (settings.CHR_HTTP_PASSWORD, settings.CHR_WIFI_PASSWORD)
+            }
+            await ble.write_text(settings.CHR_HTTP_PASSWORD, "")
             return {
+                "password_reads": password_reads,
+                "password_properties": {uuid: ble.characteristic_properties(uuid) for uuid in password_reads},
                 "name": ble.advertised_name,
                 "services": ble.service_uuids(),
                 "characteristics": ble.characteristic_uuids(),
@@ -105,6 +115,11 @@ def test_02_gatt_contract(device, target, run_state):
     assert set(settings.OFFLINE_SERVICES) <= found["services"]
     missing = set(settings.OFFLINE_CHARACTERISTICS) - found["characteristics"]
     assert not missing, f"Characteristics missing: {sorted(missing)}"
+
+    for uuid, properties in found["password_properties"].items():
+        assert "write" in properties and "read" not in properties, f"Password characteristic {uuid} must be write-only."
+    for uuid, value in found["password_reads"].items():
+        assert not value, f"Password characteristic {uuid} returned {len(value)} bytes on read."
 
     system = found["system"]
     assert system["fw"] == "offline"

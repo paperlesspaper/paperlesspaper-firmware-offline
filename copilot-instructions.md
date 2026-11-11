@@ -6,7 +6,7 @@ Dies ist eine "Offline-first" Firmware für ein ESP32-C6-basiertes E-Paper-Displ
 Das System besteht aus zwei Hauptkomponenten:
 
 1. **Der Firmware (`src/`)**: Ein C++ PlatformIO-Projekt basierend auf dem Arduino-Framework.
-2. **Dem Web-UI (`web/`)**: Einem Vite-basierten Web-Frontend (HTML/TailwindCSS/JS), das über Web-BLE (Bluetooth Low Energy) direkt mit dem ESP32 kommuniziert.
+2. **Dem Web-UI (`web/`)**: Einem Vite-basierten Web-Frontend (HTML/CSS/Vanilla JS), das über Web-BLE (Bluetooth Low Energy) direkt mit dem ESP32 kommuniziert.
 
 ---
 
@@ -31,10 +31,11 @@ Das System besteht aus zwei Hauptkomponenten:
 
 ## 3. Web-UI-Richtlinien (`web/`)
 
-- Das Web-Interface ist absichtlich simpel gehalten (Vanilla JS `app.js` + Tailwind CSS in `index.html`), keine Frameworks wie React/Vue.
+- Das Web-Interface ist absichtlich simpel gehalten (Vanilla JS `app.js` + UI-Helfer `ui.js`, Markup in `index.html`, ein zentrales Stylesheet `styles.css`), keine Frameworks wie React/Vue und kein CSS-Framework.
+- **Design:** Die Oberfläche folgt der Richtlinie `design-new.xml` (Neo-Industrial Monochrome), umgesetzt Mobile First. Farben, Schriften und Abstände stehen als CSS-Variablen am Anfang von `styles.css`; neue Elemente nutzen die vorhandenen Klassen (`.btn-neu`, `.neu-card`, `.neu-input`, …) statt Inline-Styles. Statusmeldungen laufen über `setStatus(text, level)` mit den Stufen `idle | busy | ok | warn | err`.
 - **Formatierungs-Regeln für HTML/JS (`web/`):**
   - **Prettier Settings:** `printWidth: 2000`, `tabWidth: 4`, `singleQuote: true`, `htmlWhitespaceSensitivity: ignore`.
-  - **HTML Besonderheit:** In der `index.html` stehen `<!doctype html>`, `<html>`, `<head>` und `<body>` **nichteingerückt (flush-left)** am Zeilenanfang. Modifiziere diese Struktur niemals, sie muss exakt so beibehalten werden, da Prettier dies sonst fälschlicherweise auto-einrücken würde. Es dürfen keine zusätzlichen Zeilenumbrüche zwischen Klassenattributen (Tailwind) auftauchen.
+  - **HTML Besonderheit:** In der `index.html` stehen `<!doctype html>`, `<html>`, `<head>` und `<body>` **nichteingerückt (flush-left)** am Zeilenanfang. Modifiziere diese Struktur niemals, sie muss exakt so beibehalten werden, da Prettier dies sonst fälschlicherweise auto-einrücken würde. Es dürfen keine zusätzlichen Zeilenumbrüche zwischen Klassenattributen auftauchen.
   - **JavaScript:** Verwende einfache Anführungszeichen (`'`) für Strings (außer dort, wo HTML/Doppelzitate notwendig sind).
 - **Image Processing:** Für Dithering/Bildverarbeitung wird `epdoptimize` genutzt. Liefere stets Code, der gut mit dem Canvas-Preview im UI harmoniert.
 

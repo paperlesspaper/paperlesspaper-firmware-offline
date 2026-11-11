@@ -333,11 +333,12 @@ export class GeneratePicture {
         const data = imgData.data;
 
         const L_inv = profile.data.matrix || this.computeLightingMatrix(profile.data.reference);
-        const colorMap = new Map();
+        // Device colour -> colour as it really looks on the display (parsed once, not per pixel)
+        const colorTable = [];
         for (const p of profile.data.palette) {
             if (p.measured) {
                 const corrected = L_inv ? this.applyAffineToRGB(p.measured, L_inv) : p.measured;
-                colorMap.set(p.deviceColor.toUpperCase(), corrected);
+                colorTable.push({ ...this.hexToRgb(p.deviceColor), corrected });
             }
         }
 
@@ -345,12 +346,11 @@ export class GeneratePicture {
             const r = data[i], g = data[i + 1], b = data[i + 2];
             let minDist = Infinity;
             let bestColor = null;
-            for (const [devHex, corrected] of colorMap) {
-                const ec = this.hexToRgb(devHex);
+            for (const ec of colorTable) {
                 const dist = (r - ec.r) ** 2 + (g - ec.g) ** 2 + (b - ec.b) ** 2;
                 if (dist < minDist) {
                     minDist = dist;
-                    bestColor = corrected;
+                    bestColor = ec.corrected;
                 }
             }
             if (bestColor) {
@@ -440,13 +440,12 @@ export class GeneratePicture {
         if (isNew) {
             replaceColors(canvas, canvas, activePalette);
             this.renderDisplayPreview(canvas, { name: "new.json", data: newProfile }, hoverCanvas);
-            if (hoverCanvas) hoverCanvas.style.opacity = "1";
-        } else {
-            if (hoverCanvas) {
-                hoverCanvas.getContext("2d").clearRect(0, 0, hoverCanvas.width, hoverCanvas.height);
-                hoverCanvas.style.opacity = "0";
-            }
+        } else if (hoverCanvas) {
+            hoverCanvas.getContext("2d").clearRect(0, 0, hoverCanvas.width, hoverCanvas.height);
         }
+
+        // true = hoverCanvas holds a simulation of the real display colours
+        return { hasDisplaySimulation: isNew && Boolean(hoverCanvas) };
     }
 
     async generateFullBuffer(paletteSelectValue, matrix, isSerpentine, brightnessInt, contrastInt, saturationInt, optionsOverrides = {}) {
@@ -472,6 +471,11 @@ export class GeneratePicture {
             replaceColors(fullCanvas, fullCanvas, activePalette);
         }
 
+        const paletteRgb = activePalette.map((entry) => ({
+            ...this.hexToRgb(isNew ? entry.deviceColor : entry.color),
+            index: this.SPECTRA_COLOR_INDICES[entry.name] ?? 6,
+        }));
+
         const ditheredData = fullCtx.getImageData(0, 0, this.epdWidth, this.epdHeight);
         let ditheredRaw = ditheredData.data;
         let outputCount = Math.ceil((this.epdWidth * this.epdHeight) / 2);
@@ -484,7 +488,15 @@ export class GeneratePicture {
                     g = ditheredRaw[i + 1],
                     b = ditheredRaw[i + 2];
 
-                let colorIndex = this.getClosestColorIndex(r, g, b, activePalette, isNew);
+                let colorIndex = 6;
+                let minDst = Infinity;
+                for (const c of paletteRgb) {
+                    const dst = (r - c.r) ** 2 + (g - c.g) ** 2 + (b - c.b) ** 2;
+                    if (dst < minDst) {
+                        minDst = dst;
+                        colorIndex = c.index;
+                    }
+                }
 
                 let outIdx = Math.floor((y * this.epdWidth + x) / 2);
                 if (x % 2 === 0) this.processedImageBuffer[outIdx] = colorIndex << 4;
