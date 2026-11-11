@@ -24,6 +24,7 @@ main_13.cpp.disabled
 # HIL testbench
 /_cloud
 junit_*.xml
+hil_result_*.json
 risk_report.md
 hil_test_protocol.*
 __pycache__/

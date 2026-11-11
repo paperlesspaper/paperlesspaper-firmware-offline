@@ -87,6 +87,17 @@ class BleSession:
     def characteristic_uuids(self):
         return {c.uuid.lower() for s in self.client.services for c in s.characteristics}
 
+    def characteristic_properties(self, uuid):
+        char = self.client.services.get_characteristic(uuid)
+        return set(char.properties) if char else set()
+
+    async def try_read(self, uuid):
+        """Returns the value of a characteristic, or None if the device refuses the read."""
+        try:
+            return await self.read_bytes(uuid)
+        except Exception:
+            return None
+
     async def read_bytes(self, uuid):
         return bytes(await self.client.read_gatt_char(uuid))
 

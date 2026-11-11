@@ -1306,6 +1306,7 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
          if (!bleValueFits(attrVal, MAX_WIFI_PASS_LEN, "WiFi password"))
             return;
          wifiSettings.pss = attrVal.c_str();
+         pCharacteristic->setValue(""); // do not keep the password in the GATT table
          Serial.printf("[BLE] Set wifi PASS (%u chars)\n", (unsigned)wifiSettings.pss.length());
          wifiSettings.isDeployWifi = true;
       }
@@ -1335,6 +1336,7 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
          if (!bleValueFits(attrVal, MAX_SETTING_STRING_LEN, "HTTP password"))
             return;
          settings.httpAuthPassword = attrVal.c_str();
+         pCharacteristic->setValue("");
          Serial.println("[BLE] Set HTTP Auth password");
       }
       else if (uuidStr == "10000002-0000-0000-0000-000000000001") {
@@ -1795,7 +1797,8 @@ bool BleInit(String deviceId, bool enable) {
 
    NimBLEService *wifiDataService = pServer->createService("0515c086-7b0c-11ed-a1eb-0242ac120002");
    NimBLECharacteristic *wifiSsidCharacteristic = wifiDataService->createCharacteristic("090b0ef2-7b0d-11ed-a1eb-0242ac120002", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
-   NimBLECharacteristic *wifiPwCharacteristic = wifiDataService->createCharacteristic("a62eed84-7b0d-11ed-a1eb-0242ac120002", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+   // Passwords are write-only: BLE has no authentication, a stored password must never be readable.
+   NimBLECharacteristic *wifiPwCharacteristic = wifiDataService->createCharacteristic("a62eed84-7b0d-11ed-a1eb-0242ac120002", NIMBLE_PROPERTY::WRITE);
 
    wifiSsidCharacteristic->setCallbacks(&chrCallbacks);
    wifiPwCharacteristic->setCallbacks(&chrCallbacks);
@@ -1830,7 +1833,7 @@ bool BleInit(String deviceId, bool enable) {
    NimBLECharacteristic *timeoutCharacteristic = epaperSettingsService->createCharacteristic("10000005-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
    NimBLECharacteristic *settingsUrlCharacteristic = epaperSettingsService->createCharacteristic("1000000b-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
    NimBLECharacteristic *httpAuthUserCharacteristic = epaperSettingsService->createCharacteristic("10000007-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
-   NimBLECharacteristic *httpAuthPasswordCharacteristic = epaperSettingsService->createCharacteristic("10000008-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+   NimBLECharacteristic *httpAuthPasswordCharacteristic = epaperSettingsService->createCharacteristic("10000008-0000-0000-0000-000000000001", NIMBLE_PROPERTY::WRITE); // write-only, see WiFi password
    NimBLECharacteristic *motionWakeupCharacteristic = epaperSettingsService->createCharacteristic("10000009-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
    NimBLECharacteristic *chargerModeCharacteristic = epaperSettingsService->createCharacteristic("1000000a-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
    NimBLECharacteristic *autoRotationCharacteristic = epaperSettingsService->createCharacteristic("1000000c-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
@@ -1854,7 +1857,6 @@ bool BleInit(String deviceId, bool enable) {
    // Services are started when the server is started
 
    wifiSsidCharacteristic->setValue(wifiSettings.ssid.c_str());
-   wifiPwCharacteristic->setValue(wifiSettings.pss.c_str());
    uint8_t initVal = wifiSettings.wifiIsConnected ? 1 : 0;
    wifiConnectedCharacteristic->setValue(&initVal, 1);
    wifiInfoCharacteristic->setValue("{}");
@@ -1889,8 +1891,6 @@ bool BleInit(String deviceId, bool enable) {
    timeoutCharacteristic->setValue(timeoutStr);
    settingsUrlCharacteristic->setValue(settings.settingsUrl.c_str());
    httpAuthUserCharacteristic->setValue(settings.httpAuthUser.c_str());
-   ;
-   httpAuthPasswordCharacteristic->setValue(settings.httpAuthPassword.c_str());
    motionWakeupCharacteristic->setValue(settings.motionWakeup ? "1" : "0");
    chargerModeCharacteristic->setValue(settings.chargerMode ? "1" : "0");
    autoRotationCharacteristic->setValue(settings.autoRotation ? "1" : "0");

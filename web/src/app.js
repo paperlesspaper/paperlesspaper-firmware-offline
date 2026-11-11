@@ -556,7 +556,6 @@ bleInterface.onSettingsLoaded = (settings) => {
     syncBadgeSettings.classList.remove("hidden");
   }
   if (settings.httpAuthUser !== undefined) settingHttpAuthUser.value = settings.httpAuthUser;
-  if (settings.httpAuthPassword !== undefined) settingHttpAuthPassword.value = settings.httpAuthPassword;
   if (settings.motionWakeup !== undefined) settingMotionWakeup.checked = settings.motionWakeup;
   if (settings.chargerMode !== undefined) settingChargerMode.checked = settings.chargerMode;
   if (settings.autoRotation !== undefined) settingAutoRotation.checked = settings.autoRotation;
@@ -646,7 +645,9 @@ btnSaveSettings.addEventListener("click", async () => {
     url: settingUrl.value,
     timeout: settingTimeout.value,
     httpAuthUser: settingHttpAuthUser.value,
-    httpAuthPassword: settingHttpAuthPassword.value,
+    // The device does not reveal its password: an empty field keeps the stored one.
+    // Without a user name the password is cleared as well.
+    httpAuthPassword: settingHttpAuthPassword.value !== "" ? settingHttpAuthPassword.value : settingHttpAuthUser.value === "" ? "" : undefined,
     motionWakeup: settingMotionWakeup.checked,
     chargerMode: settingChargerMode.checked,
     autoRotation: settingAutoRotation.checked,

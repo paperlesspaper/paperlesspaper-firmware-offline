@@ -62,7 +62,7 @@ export class DeviceBleInterface {
     this.UPLOAD_CMD_UUID = "10000004-0000-0000-0000-000000000001"; // WRITE
     this.TIMEOUT_UUID = "10000005-0000-0000-0000-000000000001";
     this.HTTP_AUTH_USER_UUID = "10000007-0000-0000-0000-000000000001"; // READ/WRITE
-    this.HTTP_AUTH_PASS_UUID = "10000008-0000-0000-0000-000000000001"; // READ/WRITE
+    this.HTTP_AUTH_PASS_UUID = "10000008-0000-0000-0000-000000000001"; // WRITE only
     this.MOTION_WAKEUP_UUID = "10000009-0000-0000-0000-000000000001"; // READ/WRITE
     this.CHARGER_MODE_UUID = "1000000a-0000-0000-0000-000000000001"; // READ/WRITE
     this.SETTINGS_URL_UUID = "1000000b-0000-0000-0000-000000000001"; // READ/WRITE
@@ -281,8 +281,7 @@ export class DeviceBleInterface {
         const httpAuthUserChar = await this.settingsService.getCharacteristic(this.HTTP_AUTH_USER_UUID);
         settings.httpAuthUser = new TextDecoder().decode(await httpAuthUserChar.readValue()).replace(/\0/g, "");
 
-        const httpAuthPasswordChar = await this.settingsService.getCharacteristic(this.HTTP_AUTH_PASS_UUID);
-        settings.httpAuthPassword = new TextDecoder().decode(await httpAuthPasswordChar.readValue()).replace(/\0/g, "");
+        // The password is write-only on the device and is never read back.
 
         const motionWakeupChar = await this.settingsService.getCharacteristic(this.MOTION_WAKEUP_UUID);
         const motionWakeupVal = new TextDecoder().decode(await motionWakeupChar.readValue());
@@ -506,8 +505,11 @@ export class DeviceBleInterface {
         const httpAuthUserChar = await this.settingsService.getCharacteristic(this.HTTP_AUTH_USER_UUID);
         await httpAuthUserChar.writeValue(encoder.encode(settings.httpAuthUser || ""));
 
-        const httpAuthPasswordChar = await this.settingsService.getCharacteristic(this.HTTP_AUTH_PASS_UUID);
-        await httpAuthPasswordChar.writeValue(encoder.encode(settings.httpAuthPassword || ""));
+        // undefined = keep the password stored on the device
+        if (settings.httpAuthPassword !== undefined) {
+          const httpAuthPasswordChar = await this.settingsService.getCharacteristic(this.HTTP_AUTH_PASS_UUID);
+          await httpAuthPasswordChar.writeValue(encoder.encode(settings.httpAuthPassword));
+        }
 
         const motionWakeupChar = await this.settingsService.getCharacteristic(this.MOTION_WAKEUP_UUID);
         await motionWakeupChar.writeValue(encoder.encode(settings.motionWakeup ? "1" : "0"));

@@ -152,7 +152,7 @@ Liest den aktuellen Status des Geräts (WLAN etc.).
 | UUID | Name | Properties | Beschreibung |
 |------|------|------------|--------------|
 | `090b0ef2-...` | **SSID** | Read, Write | WLAN Name. |
-| `a62eed84-...` | **Password** | Read, Write | WLAN Passwort. |
+| `a62eed84-...` | **Password** | Write | WLAN Passwort. Nicht auslesbar. |
 
 ### 3. E-Paper Settings Service
 **Service UUID**: `10000000-0000-0000-0000-000000000001`
@@ -167,7 +167,7 @@ Verwaltet alle Einstellungen und kümmert sich um den Upload von Bildern und Fir
 | `10000005-...` | **Timeout** | Read, Write | Sleep Timeout in Sekunden (z.B. `3600`). Erlaubt: 60 bis 2592000 (30 Tage), andere Werte werden ignoriert. |
 | `1000000b-...` | **Settings URL** | Read, Write | Optionale HTTP(s) URL zu einem JSON-Config File. |
 | `10000007-...` | **HTTP User** | Read, Write | Benutzername für HTTP Basic Auth. |
-| `10000008-...` | **HTTP Pass** | Read, Write | Passwort für HTTP Basic Auth. |
+| `10000008-...` | **HTTP Pass** | Write | Passwort für HTTP Basic Auth. Nicht auslesbar. |
 | `10000009-...` | **Motion Wakeup** | Read, Write | `1` / `true` = Aufwecken bei Bewegung aktiviert (nur URL Modus). |
 | `1000000a-...` | **Charger Mode** | Read, Write | `1` / `true` = Ladefunktion für NiMH-Akkus aktiviert. |
 | `1000000c-...` | **Auto Rotation** | Read, Write | `1` / `true` = Automatische Bildschirmausrichtung via Accelerometer aktiviert. |
@@ -223,6 +223,8 @@ Die Firmware wird auf echter Hardware getestet (`hil/`), auf demselben Windows-R
   python -m hil.run --target epd7 -v
   ```
 - **KI-Schritte** (`tools/`, Google Gemini, Secret `GEMINI_API_KEY`): Vor dem Build bewertet `ai_risk_analysis.py` die Änderungen des Pushs; bei der Bewertung HOCH / BLOCKIERT stoppt der Lauf, bevor ein Gerät geflasht wird. Das Testprotokoll (`hil/report.py`) fasst Tests und Risikobewertung zusammen und ergänzt bei fehlgeschlagenen Tests eine KI-Fehlerdiagnose. Ohne Secret laufen die Tests ohne diese Schritte. An die API gehen der Diff, der Quellcode aus `src/` und Log-Auszüge; Secrets, Geräte-IDs und Pfade werden vorher maskiert.
+- **Ergebnisdateien:** Den Test-PC verlässt nur `hil_result_<gerät>.json` (`hil/results.py`): Testnamen, Ergebnis, Dauer und der maskierte Fehlertext. Die rohe JUnit-Datei wird nicht hochgeladen, weil sie Geräte-IDs enthalten kann und GitHub Artefakte nicht maskiert.
+- **Gating für `main`:** `deploy.yml` ruft diesen Workflow auf und veröffentlicht nur, wenn Risikoanalyse und Hardware-Test bestanden sind.
 - **Nicht abbrechen:** Ein laufender Test flasht Geräte per BLE. Ohne verdrahteten Boot-Taster lässt sich ein Gerät mit unvollständiger oder defekter Firmware nur von Hand wiederbeleben.
 
 ## Roadmap (not ordered)

@@ -33,14 +33,21 @@ if CLOUD_ROOT not in sys.path:
 from testbench import config as cloud_config  # noqa: E402
 from testbench.hardware_controller import ESP32HardwareController, HardwareSetupError  # noqa: E402
 from testbench.flasher import fetch_production_firmware  # noqa: E402
-from testbench.privacy import (  # noqa: E402
-    mask_mac,
-    mask_path,
-    mask_ssid,
-    mask_uid,
-    register_github_mask,
-    sanitize_log_line,
-)
+from testbench import privacy as _privacy  # noqa: E402
+from testbench.privacy import mask_mac, mask_path, mask_ssid, sanitize_log_line  # noqa: E402
+
+from .results import remember  # noqa: E402
+
+
+def register_github_mask(value):
+    """Masks the value in the job log and keeps it out of the uploaded result file."""
+    remember(value)
+    _privacy.register_github_mask(value)
+
+
+def mask_uid(uid):
+    remember(uid)
+    return _privacy.mask_uid(uid)
 
 __all__ = [
     "CLOUD_ROOT",
