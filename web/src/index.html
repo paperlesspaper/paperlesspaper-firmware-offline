@@ -610,60 +610,54 @@
             <div class="stack view-narrow">
                 <div class="neu-card" data-tone="info">
                     <div class="card-head">
-                        <h2 id="helpTitle">Hilfe &amp; FAQ</h2>
+                        <h2 id="helpTitle">Hilfe</h2>
                     </div>
-                    <p class="card-desc">Kurzanleitungen zu Verbindung, Bild-Editor, automatischem Download und Firmware.</p>
+                    <p class="card-desc">Kurz erklärt: verbinden, Bild senden, Bild automatisch laden und Firmware wechseln.</p>
                 </div>
 
                 <div class="collapsible open" data-collapsible>
-                    <button type="button" class="collapsible-head" aria-expanded="true" aria-controls="helpConnect">
-                        <span>🔌 Verbinden</span>
+                    <button type="button" class="collapsible-head" aria-expanded="true" aria-controls="helpStart">
+                        <span>🚀 Erste Schritte</span>
                         <span class="collapsible-icon" aria-hidden="true">▲</span>
                     </button>
-                    <div class="collapsible-body" id="helpConnect">
+                    <div class="collapsible-body" id="helpStart">
                         <div class="collapsible-inner">
                             <div class="collapsible-content prose">
-                                <p>Um Einstellungen zu ändern oder Bilder zu übertragen, muss Bluetooth am E-Paper aktiv sein. Mit der Cloud-Firmware musst du das Gerät zurücksetzen und dann wieder wecken.</p>
                                 <ol class="step-list">
                                     <li class="step-item">
                                         <span class="step-num">1</span>
                                         <div>
-                                            <strong>Reset-Taste (großer Knopf) auf der Rückseite einmal drücken</strong>
-                                            <span class="step-desc">Mit der Original Cloud Firmware: warten, bis der WLAN-Verbindungsbildschirm geladen ist.</span>
+                                            <strong>Reset-Taste einmal drücken</strong>
+                                            <span class="step-desc">Großer Knopf auf der Rückseite. Bluetooth ist danach 30 Sekunden aktiv.</span>
                                         </div>
                                     </li>
                                     <li class="step-item">
                                         <span class="step-num">2</span>
                                         <div>
-                                            <strong>Das Gerät erwacht mit Bluetooth</strong>
-                                            <span class="step-desc">Es bleibt 30 Sekunden lang sichtbar.</span>
+                                            <strong>Oben auf „Verbinden“ tippen</strong>
+                                            <span class="step-desc">
+                                                In der Liste heißt dein Display
+                                                <code>epd7-…</code>
+                                                oder
+                                                <code>epd13-…</code>
+                                            </span>
                                         </div>
                                     </li>
                                     <li class="step-item">
                                         <span class="step-num">3</span>
                                         <div>
-                                            <strong>Oben auf „Verbinden“ tippen und das Display auswählen</strong>
-                                            <span class="step-desc">
-                                                Zum Beispiel
-                                                <code>epd7-…</code>
-                                                oder
-                                                <code>epd13-…</code>
-                                                .
-                                            </span>
+                                            <strong>Loslegen</strong>
+                                            <span class="step-desc">Unter „Bild“ ein Bild senden oder unter „Gerät“ WLAN und Download-URL einrichten.</span>
                                         </div>
                                     </li>
                                 </ol>
-                                <p class="callout">
-                                    <span class="callout-caption">Hinweis (Offline Firmware)</span>
-                                    Wird innerhalb der 30 Sekunden keine Verbindung aufgebaut, geht das E-Paper wieder in den Deep Sleep oder wechselt in den normalen Betrieb.
-                                </p>
-                                <p class="callout callout-info">
-                                    <span class="callout-caption">💡 Schnell-Aktualisierung</span>
-                                    Drückst du die Reset-Taste zweimal im Abstand von etwa einer Sekunde, wird der Bluetooth-Modus übersprungen und sofort ein Bild-Update vom Server erzwungen (die URL muss konfiguriert sein).
+                                <p class="callout callout-warn">
+                                    <span class="callout-caption">Noch die Cloud-Firmware installiert?</span>
+                                    Dort ist Bluetooth nur nach einem Werksreset aktiv: Reset-Taste 5× schnell hintereinander drücken und warten, bis der WLAN-Verbindungsbildschirm erscheint. Danach unter „Firmware“ die Offline-Firmware flashen.
                                 </p>
                                 <p class="callout">
                                     <span class="callout-caption">Unterstützte Browser</span>
-                                    Bluetooth benötigt Chrome, Edge oder Opera (Android, Windows, macOS, Linux). USB-Flashing benötigt einen dieser Browser auf einem PC. Safari und Firefox unterstützen beides nicht.
+                                    Bluetooth braucht Chrome, Edge oder Opera (Android, Windows, macOS, Linux). USB-Flashing braucht einen dieser Browser auf einem PC. Safari und Firefox unterstützen beides nicht.
                                 </p>
                             </div>
                         </div>
@@ -671,72 +665,130 @@
                 </div>
 
                 <div class="collapsible" data-collapsible>
-                    <button type="button" class="collapsible-head" aria-expanded="false" aria-controls="helpEditor">
-                        <span>🎨 Bild-Editor &amp; Upload</span>
+                    <button type="button" class="collapsible-head" aria-expanded="false" aria-controls="helpButtons">
+                        <span>🔘 Tasten am Gerät</span>
                         <span class="collapsible-icon" aria-hidden="true">▲</span>
                     </button>
-                    <div class="collapsible-body" id="helpEditor">
+                    <div class="collapsible-body" id="helpButtons">
                         <div class="collapsible-inner">
                             <div class="collapsible-content prose">
-                                <p>
-                                    Im Bereich
-                                    <strong>Bild</strong>
-                                    wählst du ein Bild von deinem PC oder Smartphone aus:
-                                </p>
-                                <ul>
-                                    <li>
-                                        <strong>Vorschau:</strong>
-                                        Bilder werden automatisch in die 6 Farben des E-Paper-Displays umgerechnet (Dithering). Algorithmus, Palette und Farben lassen sich unter „Bild-Einstellungen“ anpassen.
-                                    </li>
-                                    <li>
-                                        <strong>Auto-Optimieren:</strong>
-                                        Findet selbstständig passende Kontrast- und Dithering-Einstellungen für dein Bild.
-                                    </li>
-                                    <li>
-                                        <strong>An Gerät senden:</strong>
-                                        Überträgt das aufbereitete Bild per Bluetooth direkt an das Gerät. Das Gerät muss verbunden sein.
-                                    </li>
-                                    <li>
-                                        <strong>BMP herunterladen:</strong>
-                                        Speichert die fertig geditherte
-                                        <code>.bmp</code>
-                                        -Datei für den Server-Betrieb.
-                                    </li>
-                                </ul>
+                                <dl class="def-list">
+                                    <div class="def-row">
+                                        <dt>1× Reset</dt>
+                                        <dd>Einrichtungsmodus: Bluetooth ist 30 Sekunden aktiv. Ohne Verbindung aktualisiert das Gerät das Bild wie gewohnt und schläft wieder ein.</dd>
+                                    </div>
+                                    <div class="def-row">
+                                        <dt>2× Reset</dt>
+                                        <dd>Sofort aktualisieren: überspringt Bluetooth und lädt das Bild neu vom Server, auch wenn es sich nicht geändert hat.</dd>
+                                    </div>
+                                    <div class="def-row">
+                                        <dt>5× Reset</dt>
+                                        <dd>Werkseinstellungen: löscht Einstellungen, WLAN-Zugangsdaten und das gespeicherte Bild.</dd>
+                                    </div>
+                                    <div class="def-row">
+                                        <dt>Klein + Reset</dt>
+                                        <dd>Bootloader-Modus für das USB-Kabel: kleinen Knopf halten, Reset kurz drücken, kleinen Knopf loslassen.</dd>
+                                    </div>
+                                </dl>
+                                <p class="field-hint">Reset ist der große Knopf auf der Rückseite. Mehrfaches Drücken zählt, wenn jeder Druck innerhalb von 3 Sekunden auf den vorigen folgt.</p>
                             </div>
                         </div>
                     </div>
                 </div>
 
                 <div class="collapsible" data-collapsible>
-                    <button type="button" class="collapsible-head" aria-expanded="false" aria-controls="helpUrl">
-                        <span>⚙️ WLAN &amp; automatischer Download</span>
+                    <button type="button" class="collapsible-head" aria-expanded="false" aria-controls="helpImage">
+                        <span>🎨 Bild per Bluetooth senden</span>
                         <span class="collapsible-icon" aria-hidden="true">▲</span>
                     </button>
-                    <div class="collapsible-body" id="helpUrl">
+                    <div class="collapsible-body" id="helpImage">
                         <div class="collapsible-inner">
                             <div class="collapsible-content prose">
-                                <p>
-                                    Im Bereich
-                                    <strong>Gerät</strong>
-                                    richtest du ein, dass das E-Paper selbstständig Bilder von einem lokalen oder entfernten Webserver lädt.
+                                <ol class="step-list">
+                                    <li class="step-item">
+                                        <span class="step-num">1</span>
+                                        <div>
+                                            <strong>Unter „Bild“ ein Bild wählen</strong>
+                                            <span class="step-desc">Es wird an das Display angepasst und in dessen 6 Farben umgerechnet. Die Vorschau zeigt das Ergebnis.</span>
+                                        </div>
+                                    </li>
+                                    <li class="step-item">
+                                        <span class="step-num">2</span>
+                                        <div>
+                                            <strong>Bei Bedarf anpassen</strong>
+                                            <span class="step-desc">„Auto-Optimieren“ wählt passende Werte. Palette, Dithering, Helligkeit, Kontrast und Sättigung stehen unter „Bild-Einstellungen“.</span>
+                                        </div>
+                                    </li>
+                                    <li class="step-item">
+                                        <span class="step-num">3</span>
+                                        <div>
+                                            <strong>„An Gerät senden“</strong>
+                                            <span class="step-desc">Das Gerät muss verbunden sein. Nach der Übertragung erscheint das Bild auf dem Display.</span>
+                                        </div>
+                                    </li>
+                                </ol>
+                                <p class="callout callout-info">
+                                    <span class="callout-caption">Gut zu wissen</span>
+                                    Ein gesendetes Bild bleibt stehen. Das Gerät wacht dann nicht mehr von selbst auf, sondern nur über die Reset-Taste. Sobald du unter „Gerät“ eine Download-URL speicherst, lädt es Bilder wieder automatisch.
                                 </p>
-                                <ul>
-                                    <li>
-                                        <strong>WLAN:</strong>
-                                        Trage dein WLAN ein. Das Gerät sucht Netze und meldet den Verbindungsstatus.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="collapsible" data-collapsible>
+                    <button type="button" class="collapsible-head" aria-expanded="false" aria-controls="helpDownload">
+                        <span>🌐 Bild automatisch laden (WLAN)</span>
+                        <span class="collapsible-icon" aria-hidden="true">▲</span>
+                    </button>
+                    <div class="collapsible-body" id="helpDownload">
+                        <div class="collapsible-inner">
+                            <div class="collapsible-content prose">
+                                <ol class="step-list">
+                                    <li class="step-item">
+                                        <span class="step-num">1</span>
+                                        <div>
+                                            <strong>Unter „Gerät“ das WLAN eintragen</strong>
+                                            <span class="step-desc">Netz scannen oder den Namen eingeben. Das Gerät testet die Verbindung und speichert die Zugangsdaten nur bei Erfolg.</span>
+                                        </div>
                                     </li>
-                                    <li>
-                                        <strong>Download-URL:</strong>
-                                        HTTP-Link zu einem Bild (z. B.
-                                        <code>http://nas.local/info.jpg</code>
-                                        ). JPEGs und 24-Bit-BMPs werden direkt auf dem ESP32 gedithert. Wir empfehlen aber fertig geditherte BMPs aus dem Bild-Editor.
+                                    <li class="step-item">
+                                        <span class="step-num">2</span>
+                                        <div>
+                                            <strong>Download-URL und Intervall speichern</strong>
+                                            <span class="step-desc">Die URL zeigt auf ein Bild auf deinem Server (http oder https). Das Gerät lädt es im eingestellten Abstand, von 60 Sekunden bis 30 Tage.</span>
+                                        </div>
                                     </li>
-                                    <li>
-                                        <strong>Settings-JSON-URL:</strong>
-                                        Verwalte Intervall, Lade-Modus und weitere Optionen über eine JSON-Datei auf deinem Server – ohne das Display erneut per Bluetooth zu verbinden.
+                                    <li class="step-item">
+                                        <span class="step-num">3</span>
+                                        <div>
+                                            <strong>Bild auf dem Server ablegen</strong>
+                                            <span class="step-desc">Am besten ein Bild aus dem Editor: unter „Bild“ auf „BMP herunterladen“ tippen.</span>
+                                        </div>
                                     </li>
-                                </ul>
+                                </ol>
+                                <dl class="def-list">
+                                    <div class="def-row">
+                                        <dt>BMP aus dem Editor</dt>
+                                        <dd>Wird unverändert angezeigt. Beste Qualität, empfohlen.</dd>
+                                    </div>
+                                    <div class="def-row">
+                                        <dt>JPEG</dt>
+                                        <dd>Wird auf dem Gerät auf die volle Displayfläche skaliert und in die Display-Farben umgerechnet. Nutze das Seitenverhältnis deines Displays.</dd>
+                                    </div>
+                                    <div class="def-row">
+                                        <dt>24-Bit-BMP</dt>
+                                        <dd>Wird auf dem Gerät umgerechnet, aber nicht skaliert. Die Auflösung muss genau passen: 800×480 (7.3") oder 1200×1600 (13.3").</dd>
+                                    </div>
+                                </dl>
+                                <p class="callout">
+                                    <span class="callout-caption">Download fehlgeschlagen?</span>
+                                    Das Display zeigt eine Fehlermeldung und das Gerät versucht es nach 1 bis 5 Minuten erneut.
+                                </p>
+                                <p class="callout">
+                                    <span class="callout-caption">Settings-JSON (optional)</span>
+                                    Mit einer JSON-Datei auf deinem Server änderst du Intervall, Download-URL und Geräte-Optionen, ohne das Gerät per Bluetooth zu verbinden. „Prüfen“ zeigt die Datei an und übernimmt sie. Aufbau und Beispiel stehen in der README.
+                                </p>
                             </div>
                         </div>
                     </div>
@@ -744,30 +796,48 @@
 
                 <div class="collapsible" data-collapsible>
                     <button type="button" class="collapsible-head" aria-expanded="false" aria-controls="helpFirmware">
-                        <span>💾 Firmware-Versionen</span>
+                        <span>💾 Firmware wechseln</span>
                         <span class="collapsible-icon" aria-hidden="true">▲</span>
                     </button>
                     <div class="collapsible-body" id="helpFirmware">
                         <div class="collapsible-inner">
                             <div class="collapsible-content prose">
-                                <p>
-                                    Im Bereich
-                                    <strong>Firmware</strong>
-                                    stehen zwei Firmwares zum Flashen bereit:
-                                </p>
-                                <p class="callout">
-                                    <span class="callout-caption">Original Cloud Firmware (Auslieferung)</span>
-                                    Verbindet sich mit der Cloud und bezieht Bilder über unsere App (
-                                    <a href="https://paperlesspaper.de" target="_blank" rel="noopener noreferrer">paperlesspaper.de</a>
-                                    ). Quellcode im
-                                    <a href="https://github.com/paperlesspaper/paperlesspaper-firmware" target="_blank" rel="noopener noreferrer">Cloud-Firmware-Repository</a>
-                                    .
-                                </p>
-                                <p class="callout">
-                                    <span class="callout-caption">Offline Firmware (optional)</span>
-                                    Für maximale Unabhängigkeit und Smart-Home-Integration: lokaler Bild-Download über WLAN, JSON-Einstellungen und Bluetooth-Direktübertragung. Quellcode und Anleitung im
-                                    <a href="https://github.com/paperlesspaper/paperlesspaper-firmware-offline" target="_blank" rel="noopener noreferrer">Offline-Firmware-Repository</a>
-                                    .
+                                <p>Unter „Firmware“ stehen drei Firmwares zur Wahl:</p>
+                                <dl class="def-list">
+                                    <div class="def-row">
+                                        <dt>Offline Firmware</dt>
+                                        <dd>Unabhängig von der Cloud: Bilder per Bluetooth oder von deinem eigenen Server.</dd>
+                                    </div>
+                                    <div class="def-row">
+                                        <dt>Original Cloud Firmware</dt>
+                                        <dd>
+                                            Auslieferungszustand: Bilder kommen über unsere App auf
+                                            <a href="https://paperlesspaper.de" target="_blank" rel="noopener noreferrer">paperlesspaper.de</a>
+                                        </dd>
+                                    </div>
+                                    <div class="def-row">
+                                        <dt>Eigene Firmware</dt>
+                                        <dd>
+                                            Eine selbst gebaute
+                                            <code>firmware.bin</code>
+                                            für den ESP32-C6
+                                        </dd>
+                                    </div>
+                                </dl>
+                                <p>Flashen kannst du auf zwei Wegen:</p>
+                                <dl class="def-list">
+                                    <div class="def-row">
+                                        <dt>Bluetooth</dt>
+                                        <dd>Gerät verbinden und auf „Flashen“ tippen. Kein Kabel nötig.</dd>
+                                    </div>
+                                    <div class="def-row">
+                                        <dt>USB-Kabel</dt>
+                                        <dd>Am PC: Gerät per USB-C anschließen, Bootloader-Modus aktivieren (siehe „Tasten am Gerät“) und auf „Flashen“ tippen.</dd>
+                                    </div>
+                                </dl>
+                                <p class="callout callout-info">
+                                    <span class="callout-caption">Stabil und Vorschau</span>
+                                    Über den Versions-Knopf neben dem Titel wechselst du zur Vorschau. Sie enthält die neuesten Änderungen an Oberfläche und Firmware, die noch getestet werden.
                                 </p>
                             </div>
                         </div>
@@ -776,40 +846,39 @@
 
                 <div class="collapsible" data-collapsible>
                     <button type="button" class="collapsible-head" aria-expanded="false" aria-controls="helpCerts">
-                        <span>🔐 Zertifikate &amp; SPIFFS</span>
+                        <span>🔐 Zertifikate sichern</span>
                         <span class="collapsible-icon" aria-hidden="true">▲</span>
                     </button>
                     <div class="collapsible-body" id="helpCerts">
                         <div class="collapsible-inner">
                             <div class="collapsible-content prose">
-                                <p>
-                                    Für die verschlüsselte Verbindung zur Cloud (Original Cloud Firmware) benötigt das E-Paper gerätespezifische AWS-IoT-Zertifikate auf dem SPIFFS-Speicher (Adresse
-                                    <code>0x3B0000</code>
-                                    ).
-                                </p>
+                                <p>Die Cloud-Firmware braucht Zertifikate, die nur auf deinem Gerät gespeichert sind. Sichere sie, bevor du die Firmware wechselst.</p>
+                                <ol class="step-list">
+                                    <li class="step-item">
+                                        <span class="step-num">1</span>
+                                        <div>
+                                            <strong>Unter „Firmware“ den Verbindungsweg „USB-Kabel (COM)“ wählen</strong>
+                                            <span class="step-desc">Gerät per USB-C anschließen und den Bootloader-Modus aktivieren (siehe „Tasten am Gerät“).</span>
+                                        </div>
+                                    </li>
+                                    <li class="step-item">
+                                        <span class="step-num">2</span>
+                                        <div>
+                                            <strong>„Zertifikate sichern“</strong>
+                                            <span class="step-desc">Speichert die Zertifikate als .bin-Datei auf deinem PC.</span>
+                                        </div>
+                                    </li>
+                                    <li class="step-item">
+                                        <span class="step-num">3</span>
+                                        <div>
+                                            <strong>Bei Bedarf: „Zertifikate wiederherstellen“</strong>
+                                            <span class="step-desc">Überträgt ein Backup oder eine Datei vom Support zurück auf das Gerät.</span>
+                                        </div>
+                                    </li>
+                                </ol>
                                 <p class="callout callout-warn">
                                     <span class="callout-caption">Wichtig</span>
-                                    Die gerätespezifischen Zertifikate sind nicht im Repository enthalten. Sie sind ausschließlich direkt über unseren Support erhältlich.
-                                </p>
-                                <p>
-                                    <strong>Backup anlegen:</strong>
-                                    Bevor du auf eine andere Firmware wechselst, solltest du deine Zertifikate sichern. Wähle im Bereich
-                                    <strong>Firmware</strong>
-                                    den Verbindungsweg
-                                    <strong>USB-Kabel (COM)</strong>
-                                    und tippe auf
-                                    <strong>„Zertifikate sichern“</strong>
-                                    . Die Partition wird ausgelesen und als
-                                    <code>.bin</code>
-                                    -Datei gespeichert.
-                                </p>
-                                <p>
-                                    <strong>Zertifikat wiederherstellen:</strong>
-                                    Liegt dein Zertifikat als
-                                    <code>.bin</code>
-                                    -Datei vom Support oder aus einem Backup vor, überträgst du es mit
-                                    <strong>„Zertifikate wiederherstellen“</strong>
-                                    per USB-Kabel direkt an Adresse 0x3B0000.
+                                    Ohne Zertifikate kann sich das Gerät nicht mehr mit der Cloud verbinden. Ersatz gibt es nur über unseren Support.
                                 </p>
                             </div>
                         </div>
@@ -818,9 +887,8 @@
 
                 <p class="field-hint mono" id="buildInfo" hidden></p>
                 <p class="field-hint">
-                    Weitere technische Details zur Offline-Firmware stehen in der
+                    Technische Details zur Offline-Firmware stehen in der
                     <a href="https://github.com/paperlesspaper/paperlesspaper-firmware-offline" target="_blank" rel="noopener noreferrer">README auf GitHub ↗</a>
-                    .
                 </p>
             </div>
         </section>

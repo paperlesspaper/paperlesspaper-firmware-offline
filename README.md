@@ -1,243 +1,294 @@
-# E-Paper ESP32-C6 Firmware
+# paperlesspaper Offline Firmware
 
-Offline first Firmware for an ESP32-C6 based E-Paper display device, featuring Web-BLE configuration, direct image upload via Bluetooth, WiFi HTTP image download, and OTA updates.
+Offline-first firmware for the paperlesspaper E-Paper frames (ESP32-C6, Spectra 6, 7.3" and 13.3").
+The frame runs without any cloud: send images from your browser over Bluetooth, or let the frame download them from a server in your own network.
 
-> ⚠️ **WARNING:** If you delete the spiffs partition on your device, the certificates for cloud connection are gone. The device can´t connect to our servers anymore.
+### 🚀 [Open the Web UI & Flasher](https://paperlesspaper.github.io/paperlesspaper-firmware-offline/)
 
----
+Set up the frame, send images and flash firmware directly in the browser. Nothing to install.
+Requires Chrome, Edge or Opera (Web Bluetooth / Web Serial). The Web UI is in German.
 
-## 🌐 Web-UI & Online Flasher
+> [!WARNING]
+> **Back up your certificates before you switch firmware.** The cloud firmware needs device-specific certificates that are stored in the `spiffs` partition. If that partition is erased, the frame can no longer connect to the paperlesspaper cloud. The certificates are not part of this repository; replacements are only available from customer support. See [Certificates](#certificates).
 
-**Configure your device, flash firmware, or upload images directly from your browser — no local setup required!**
+## Contents
 
-# 🚀 [**LAUNCH WEB-UI & FLASHER**](https://paperlesspaper.github.io/paperlesspaper-firmware-offline/) 👈
+- [Quick start](#quick-start)
+- [Cloud vs. offline firmware](#cloud-vs-offline-firmware)
+- [Buttons](#buttons)
+- [Image sources](#image-sources)
+- [Remote settings (JSON)](#remote-settings-json)
+- [Web UI](#web-ui)
+- [Certificates](#certificates)
+- [Build from source](#build-from-source)
+- [BLE protocol](#ble-protocol)
+- [Hardware-in-the-loop test](#hardware-in-the-loop-test)
+- [Roadmap](#roadmap)
 
-* **Wireless Management (Web-BLE)**: Configure WiFi credentials, sleep timers, download URLs, and transfer images wirelessly over Bluetooth.
-* **USB Flashing (Web Serial)**: Flash firmware binaries directly over a USB-C cable or upload SPIFFS certificate images (.bin) using your browser.
-* **Web Serial Debug Monitor**: Monitor UART serial logs in real-time (115200 baud) directly inside the Web UI without external software.
-* **Certificates**: Cloud certificates for returning to Cloud Firmware are not included in the repository and are available exclusively via Customer Support.
-* *Supported Browsers: Chrome (requires Web Bluetooth / Web Serial).*
+## Quick start
 
----
+1. Open the [Web UI](https://paperlesspaper.github.io/paperlesspaper-firmware-offline/).
+2. Press the **reset button** (big button on the back) once. Bluetooth is now active for 30 seconds.
+3. Click **Verbinden** and select your frame (`epd7-…` or `epd13-…`).
+4. Open **Firmware** and flash the **Offline Firmware**.
+5. Send an image in **Bild**, or set up WiFi and a download URL in **Gerät**.
 
+Still running the cloud firmware? It only offers Bluetooth after a factory reset: press the reset button 5 times in quick succession and wait for the WiFi setup screen. Alternatively, flash over USB (**Firmware → USB-Kabel**).
 
-## Comparison: Cloud Firmware vs. Offline Firmware
+## Cloud vs. offline firmware
 
-| Feature / Attribute | [Cloud Firmware](https://github.com/paperlesspaper/paperlesspaper-firmware) (Default) | [Offline Firmware](https://github.com/paperlesspaper/paperlesspaper-firmware-offline/) (Alternative) |
+| | [Cloud firmware](https://github.com/paperlesspaper/paperlesspaper-firmware) (default) | Offline firmware |
 | :--- | :--- | :--- |
-| **Primary Purpose** | Convenient out-of-the-box usage via official infrastructure. Ideal for users who do not want to maintain their own server setup. | Maximum independence, privacy, and long-term sustainability ("Offline-First"). Makes the frame completely independent of company servers. |
-| **Server Dependency** | Requires an active internet connection and access to official [paperlesspaper.de](https://paperlesspaper.de/) servers. | **100% local and standalone.** Operates entirely within your local network without any internet requirement (HTTP or BLE). |
-| **Image Source & Fetching** | Images are fetched centrally from the cloud via the official [API](https://docs.paperlesspaper.de/api-guide). | Flexible sources: Direct local upload via Bluetooth or automated HTTP download from any local URL (e.g., Home Assistant, Synology, Raspberry Pi). |
-| **Image Processing (Dithering)** | **Server-side:** Optimal color dithering is pre-calculated in the cloud. The display receives raw, ready-to-render data. | **On-Device or Local Dithering:** The ESP32-C6 dynamically scales and dithers standard JPEGs and 24-bit BMPs (Floyd-Steinberg) directly on-chip to match the display palette or uses pre dithered BMP. |
-| **Configuration** | Managed via the official paperlesspaper web dashboard and onboarding portal. | Configured via Bluetooth using the hosted [Web-UI & Flasher](https://paperlesspaper.github.io/paperlesspaper-firmware-offline/) or automated via a local `settings.json` file. |
-| **Firmware Updates (OTA)** | Fully automatic Over-the-Air (OTA) updates managed directly via cloud infrastructure. | Manual updates conducted wirelessly over Bluetooth (Web-BLE) or directly over USB cable (Web Serial) in the browser. |
-| **Support & Assistance** | **Official Vendor Support:** Direct support for setup, hardware issues, and cloud services provided via official paperlesspaper channels. | **Community & Self-Service:** Issue tracking, feature requests, and technical discussions managed independently via GitHub repository issues. |
-| **Switching & Reverting** | Cloud Firmware can be replaced via Offline Firmware Web Tool | Can be returned to Cloud Firmware via Web Tool ⚠️ **Important Note:** If you delete the spiffs partition on your device, the certificates for cloud connection are gone. The device can´t connect to our servers anymore. |
+| **Purpose** | Works out of the box with the paperlesspaper servers | Independent of company servers, private, runs in your own network |
+| **Internet** | Required | Not required |
+| **Image source** | paperlesspaper cloud ([API](https://docs.paperlesspaper.de/api-guide)) | Bluetooth upload from the browser, or download from any URL (Home Assistant, NAS, Raspberry Pi, …) |
+| **Dithering** | In the cloud | In the Web UI or on the device |
+| **Configuration** | paperlesspaper web app | Web UI over Bluetooth, or a settings JSON on your server |
+| **Firmware updates** | Automatic (OTA) | Manual in the Web UI, over Bluetooth or USB |
+| **Support** | Official paperlesspaper support | Community, via GitHub issues |
 
-## Hardware Requirements
+You can switch between both firmwares at any time in the Web UI.
 
-- **Microcontroller**: ESP32-C6-DevKitM-1
-- **Display**: Spectra 6 7.3" (EL073TF1) **OR** Spectra 6 13.3" (EL133UF3)
-- **Sensors**: KXTJ3-1057 Accelerometer
-- **Other**: Battery, Charger circuit (see Hardware Settings below)
+## Buttons
 
-## Software Requirements
+| Action | Result |
+| :--- | :--- |
+| Press reset **once** | Setup mode: Bluetooth is active for 30 seconds. Without a connection the frame continues with a normal update. |
+| Press reset **twice** | Skips setup mode and downloads the image again, even if it has not changed. |
+| Press reset **5 times** | Factory reset: deletes settings, WiFi credentials and the stored image. |
+| Hold the small button, press reset, release the small button | Bootloader mode for USB flashing. |
 
-- **IDE**: Visual Studio Code
-- **Extension**: PlatformIO
-- **Framework**: Arduino (via PlatformIO)
+Multiple presses count when each press follows the previous one within 3 seconds.
 
-## Installation & Setup
+## Image sources
 
-1.  **Clone the Repository**
+The frame shows one image and then goes to deep sleep. Where the image comes from depends on what you did last:
 
-    ```bash
-    git clone <repository-url>
-    cd <repository-name>
-    ```
+### Bluetooth upload
 
-2.  **Web-UI & Flasher (Recommended)**
-    Use the **hosted Web-UI** directly in your web browser:
-    
-    ### 🔗 [**Launch Web-UI & Flasher**](https://paperlesspaper.github.io/paperlesspaper-firmware-offline/)
-    
-    *   **Wireless Flashing**: Update settings and upload images/firmware wirelessly via Bluetooth (Web-BLE).
-    *   **USB Flashing**: Flash the firmware binary directly over a USB-C cable (Web Serial) using the built-in esptool.
-    *   **Stable / Preview**: The link opens the stable version (branch `main`). The version button next to the title switches to the preview version (branch `dev`): the newest web UI together with the newest, still-in-testing offline firmware. Web UI and firmware always belong together – each version flashes the firmware built from its own branch.
+Choose an image in the Web UI (**Bild**). It is fitted to the display, dithered to the 6 display colors and sent to the frame.
+The frame keeps this image and sleeps until you press the reset button. There is no timed wake-up in this mode.
 
-    *Alternatively, to run the web frontend locally:*
-    - Navigate to the `web/` folder.
-    - Install dependencies: `npm install`
-    - Build or run via Vite: `npm run dev` or `npm run build`
-    - You can set WiFi credentials, a local HTTP download URL, the sleep timeout, or upload an image directly via Web-BLE.
+### WiFi download
 
-3.  **Build and Upload Firmware**
-    - Select your display target in PlatformIO (`epd7` for 7-inch, `epd13` for 13-inch).
-    - Start your Devices **Boot Mode** (see "Hardware Settings" below for instructions)
-    - Run the PlatformIO task: `General` -> `Upload`.
+Enter WiFi credentials, a download URL and an update interval in the Web UI (**Gerät**). The frame wakes up at the interval (60 seconds to 30 days, default 1 hour), downloads the image, shows it and sleeps again. Saving a download URL switches the frame back from Bluetooth upload to WiFi download.
 
-## Modes of Operation
-- **Setup Mode (BLE Activation)**: Press the **reset button once** (the big button) to wake the device and activate Bluetooth (BLE). 
-  - Once active, you can connect to the device via the Web-UI to configure settings or upload an image.
-  - If you do not connect via BLE, the device will automatically fall back to normal operation after 30 seconds: it will try to connect to the configured WiFi to download a new image, or, if WiFi is unavailable/not configured, it will simply load the last stored image before going back to deep sleep.
-- **Force Download / Skip Setup**: Press the **reset button twice** (or more) in quick succession to boot the device:
-  - This skips the BLE Setup Mode entirely to speed up the process.
-  - It also forces a fresh image download from the configured URL, bypassing HTTP cache/modification checks (`forceDownload`), so the display is guaranteed to refresh.
-- **BLE Upload**: Easily load and dither an image in the Web-UI and transmit it to the display entirely offline via Bluetooth. (BLE expects pre-dithered raw payloads for maximum transmission efficiency). The Web-UI automatically detects your display size via BLE (7" vs 13") and adjusts the layout. For the 13" display, the live-preview is rendered at 1/4 resolution for smooth slider performance, while the final image is automatically processed in full 1200x1600 resolution upon upload.
-- **WiFi Download**: Configure a Download URL (e.g., `http://local-server/image.jpg` or `.bmp`), and the ESP32 will fetch the display contents via WiFi upon waking up. 
-  - If the server returns a stable `ETag` (preferred) or `Last-Modified`, conditional requests (`If-None-Match` / `If-Modified-Since`) and HTTP `304 Not Modified` skip flash writes and unnecessary display refreshes when the image has not changed. Servers can also optionally return `X-OpenPaper-Sleep-Seconds` (60–86400) to dynamically schedule the next wake-up.
-  - **On-Device Dithering**: The firmware automatically detects whether the downloaded file is a pre-dithered 4-bit BMP, a standard 24-bit BMP, or a JPEG image. 
-  - 24-bit BMPs and JPEGs are dynamically scaled and perfectly dithered (Floyd-Steinberg) directly on the ESP32 to match the display's 6-color palette. This significantly reduces server-side preprocessing and allows fetching normal web JPEGs directly!
-- **Deep Sleep**: The device enters deep sleep to save power after an update. It wakes up via:
-  - Timer (configurable duration).
-  - Accelerometer (motion) (optional).
-  - Button press.
+| Format | What the frame does |
+| :--- | :--- |
+| **4-bit BMP** from the Web UI (**BMP herunterladen**) | Shown as it is. Best quality, recommended. |
+| **JPEG** | Scaled to the full display and dithered on the device (Floyd-Steinberg). The aspect ratio is not kept, so use the aspect ratio of your display. |
+| **24-bit BMP** | Dithered on the device, but not scaled. It must have exactly the display resolution and top-down row order. |
 
-## Memory Map (EEPROM/Flash)
+Display resolution: 800×480 (7.3") or 1200×1600 (13.3").
 
-- `0-39`: WiFi Name
-- `40-105`: WiFi Password
-- `210`: Sleep Time
-- `220`: Display Orientation Store
-- `499`: Magic Flag (First Boot Indicator)
-- `500+`: Settings Store
+Details:
 
-> **First Boot Initialization**: Beim ersten Start (oder wenn die Magic Flag bei Adresse 499 nicht `42` ist) wird der EEPROM automatisch bereinigt und mit sinnvollen Standardwerten (z.B. Timeout = 3600s) initialisiert.
+- **URL:** `http://` or `https://`, up to 128 characters. HTTPS certificates are not verified.
+- **Login:** optional HTTP Basic Auth for the image download.
+- **Caching:** if the server sends an `ETag` (preferred) or `Last-Modified` header, an unchanged image is neither written to flash nor refreshed on the display.
+- **Server-controlled interval:** the response header `X-OpenPaper-Sleep-Seconds` (60–86400) sets the time until the next wake-up.
+- **Errors:** if the download fails, the frame shows an error message and tries again after 1 to 5 minutes.
+- **Motion wake-up (optional):** the frame also updates when it is moved.
+- **Low battery:** below 4.0 V without USB power the frame skips updates to protect the batteries.
 
-## Remote JSON Settings
+## Remote settings (JSON)
 
-The firmware supports fetching its configuration automatically from an HTTP JSON endpoint. This allows you to manage the device behavior directly from your smart home server or cloud without connecting via BLE.
+Enter a **Settings-JSON-URL** in the Web UI to manage the frame from your server without Bluetooth. The frame loads the file on every wake-up, before the image. If the server sends `Last-Modified`, an unchanged file is skipped.
 
-- Configure the **Settings JSON URL** in the Web-UI or via BLE.
-- When the device wakes up and connects to WiFi, it will automatically fetch the JSON.
-- It leverages the HTTP `Last-Modified` and `If-Modified-Since` headers to avoid unnecessary parsing and EEPROM writes, saving battery and flash memory life.
-- In the Web-UI, you can click "Prüfen" to preview the JSON and apply it directly. The Web-UI uses an intelligent CORS proxy fallback to bypass browser security restrictions when testing public URLs.
-
-An example `settings_sample.json` is provided in the repository:
 ```json
 {
   "timeout": 3600,
   "motionWakeup": false,
   "chargerMode": false,
-  "downloadUrl": "https://paperlesspaper.de/b?d=MY_DEVICE_ID",
+  "autoRotation": true,
+  "downloadUrl": "http://my-server.local/image.bmp",
   "httpAuthUser": "",
   "httpAuthPassword": ""
 }
 ```
 
-## Hardware Settings
+| Key | Meaning |
+| :--- | :--- |
+| `timeout` | Update interval in seconds (60–2592000) |
+| `downloadUrl` | Image URL. Switches the frame to WiFi download. |
+| `httpAuthUser`, `httpAuthPassword` | HTTP Basic Auth for the image download |
+| `motionWakeup` | Update when the frame is moved |
+| `autoRotation` | Rotate the image according to the orientation sensor |
+| `chargerMode` | Charge the batteries over USB-C. **Only with NiMH batteries!** |
 
-- **Charger**: Safety TMR 4h, 4-cell intermittent.
-- **Reset**: 5+ presses
-- **Boot Mode**: Hold the small button, short press the reset button (big button) while holding the small button, then release the small button.
+All keys are optional. The button **Prüfen** in the Web UI shows the file and applies it directly.
 
-## BLE Protocol Documentation
+## Web UI
 
-Die Kommunikation zwischen der Web-UI und der E-Paper Firmware erfolgt über Bluetooth Low Energy (BLE). Das Gerät stellt dazu verschiedene Services und Characteristics (UUIDs) bereit.
+| Tab | Purpose |
+| :--- | :--- |
+| **Bild** | Image editor with live preview: palette, dithering, brightness, contrast, saturation. Send the image over Bluetooth or download it as BMP. |
+| **Gerät** | WiFi, download URL, interval, settings JSON, motion wake-up, auto rotation, charger mode, factory reset. |
+| **Firmware** | Flash the offline, cloud or your own firmware over Bluetooth or USB. Back up and restore certificates (USB). Serial monitor (115200 baud). |
+| **Hilfe** | Short instructions. |
 
-### 1. Device Data Service
-**Service UUID**: `7f74170e-7b0e-11ed-a1eb-0242ac120002`
-Liest den aktuellen Status des Geräts (WLAN etc.).
+**Stable and preview:** the link above opens the stable version (branch `main`). The version button next to the title switches to the preview (branch `dev`). Each version flashes the firmware built from its own branch.
 
-| UUID | Name | Properties | Beschreibung |
-|------|------|------------|--------------|
-| `4c578d4c-...` | **WiFi Connected** | Read, Notify | Gibt `1` zurück, wenn mit WLAN verbunden, sonst `0`. |
-| `4c578d4d-...` | **WiFi Info** | Read, Notify | JSON-String mit Verbindungsdetails (z.B. `{"ip": "192...", "rssi": -65}`). |
-| `60000001-7b0e-...` | **System Info** | Read, Notify | JSON-String mit Systemdaten: `voltage` (mV), `usb`, `charging`, `version`, `fw` (`offline`), `display` (`7` / `13`). |
-| `5131a3fc-...` | **WiFi Scan** | Read, Notify | Liste gefundener WLANs. Wird asynchron befüllt, wenn das Kommando `SCAN_WIFI` über den Upload CMD Kanal gesendet wurde. Format: `SSID´RSSI´´SSID2´RSSI2´´`. |
+**Run locally:**
 
-### 2. WiFi Data Service
-**Service UUID**: `0515c086-7b0c-11ed-a1eb-0242ac120002`
-Überträgt Zugangsdaten an den ESP32. Die Zugangsdaten werden beim Ändern direkt angewendet und getestet.
+```bash
+cd web
+npm install
+npm run dev      # or: npm run build (output in web/dist)
+```
 
-| UUID | Name | Properties | Beschreibung |
-|------|------|------------|--------------|
-| `090b0ef2-...` | **SSID** | Read, Write | WLAN Name. |
-| `a62eed84-...` | **Password** | Write | WLAN Passwort. Nicht auslesbar. |
+Web Bluetooth only works over HTTPS or on `localhost`.
 
-### 3. E-Paper Settings Service
-**Service UUID**: `10000000-0000-0000-0000-000000000001`
-Verwaltet alle Einstellungen und kümmert sich um den Upload von Bildern und Firmware-Updates.
+## Certificates
 
-| UUID | Name | Properties | Beschreibung |
-|------|------|------------|--------------|
-| `10000001-...` | **Download URL** | Read, Write | HTTP URL für den Bild-Download. Bei Eingabe einer URL wechselt das Gerät automatisch in den URL-Modus (Image Mode = 1). |
-| `10000002-...` | **Image Mode** | Read, Write | Modus: `0` = Lokales Bild (BLE), `1` = Web URL. |
-| `10000003-...` | **Upload Data** | Write | Stream für Binärdaten (Bilder / Firmware). Protokoll V2: 1 Byte Sequenznummer + Daten. Legacy: 4 Byte CRC32 (little endian) + Daten. |
-| `10000004-...` | **Upload CMD** | Read, Write | Befehlskanal (siehe "Befehle" unten). "Read" liefert 8 Bytes Status (little endian): `uint16` Bytes im RAM-Puffer (`0xFFFF` = Upload-Fehler, `0xFFFE` = Sequenzfehler), `uint32` CRC32 des Puffers bzw. nach `END` des gespeicherten Bildes, `uint16` maximale Nutzdaten pro Paket. |
-| `10000005-...` | **Timeout** | Read, Write | Sleep Timeout in Sekunden (z.B. `3600`). Erlaubt: 60 bis 2592000 (30 Tage), andere Werte werden ignoriert. |
-| `1000000b-...` | **Settings URL** | Read, Write | Optionale HTTP(s) URL zu einem JSON-Config File. |
-| `10000007-...` | **HTTP User** | Read, Write | Benutzername für HTTP Basic Auth. |
-| `10000008-...` | **HTTP Pass** | Write | Passwort für HTTP Basic Auth. Nicht auslesbar. |
-| `10000009-...` | **Motion Wakeup** | Read, Write | `1` / `true` = Aufwecken bei Bewegung aktiviert (nur URL Modus). |
-| `1000000a-...` | **Charger Mode** | Read, Write | `1` / `true` = Ladefunktion für NiMH-Akkus aktiviert. |
-| `1000000c-...` | **Auto Rotation** | Read, Write | `1` / `true` = Automatische Bildschirmausrichtung via Accelerometer aktiviert. |
-| `1000000d-...` | **Firmware Version** | Read | Version der laufenden Firmware. |
+The cloud firmware authenticates with device-specific AWS IoT certificates in the `spiffs` partition (`0x3B0000`, 256 KB). Flashing a firmware in the Web UI does not touch this partition.
 
-Texte (URLs, HTTP User/Pass) dürfen höchstens 128 Zeichen lang sein, die SSID 32 und das WLAN-Passwort 64. Längere Werte werden abgelehnt.
+- **Back up:** **Firmware → USB-Kabel → Zertifikate sichern** reads the partition and saves it as a `.bin` file.
+- **Restore:** **Zertifikate wiederherstellen** writes a backup, or a file from customer support, back to the frame.
+- **Back to the cloud firmware:** **Firmware → Original Cloud Firmware → Flashen**.
 
-> **Sicherheit:** Die BLE-Schnittstelle hat keine Authentifizierung. Solange das Gerät im Setup-Modus ist, kann jeder in Funkreichweite Einstellungen ändern, das Gerät zurücksetzen oder eine Firmware aufspielen.
+Backup and restore need a USB cable and bootloader mode (see [Buttons](#buttons)).
 
----
+## Build from source
 
-### Upload & Befehle (CMD Channel `10000004-...`)
+**Hardware:** ESP32-C6 (PlatformIO board `esp32-c6-devkitm-1`), Spectra 6 display 7.3" (EL073TF1) or 13.3" (EL133UF3), KXTJ3-1057 accelerometer, batteries with charger (safety timer 4 h, 4 cells, intermittent).
 
-Der CMD Channel verarbeitet Strings, um Uploads zu steuern oder das Gerät zurückzusetzen:
+**Software:** Visual Studio Code with PlatformIO (Arduino framework).
 
-- `RESET`: Löscht alle Einstellungen im EEPROM (Factory Reset) und startet neu.
-- `APPLY`: Beendet den Setup-Modus vorzeitig und lädt das neu empfangene Bild auf das Display.
-- `SCAN_WIFI`: Startet einen asynchronen WLAN-Scan. Die Ergebnisse werden anschließend per Notification über den `WiFi Scan` Characteristic zurückgesendet.
+```bash
+git clone https://github.com/paperlesspaper/paperlesspaper-firmware-offline.git
+cd paperlesspaper-firmware-offline
+pio run -e epd7 -t upload     # 7.3" display
+pio run -e epd13 -t upload    # 13.3" display
+```
 
-#### Ablauf: Bild Upload (BMP)
-Bilder werden in kleine "Checkpoints" (Fenster) unterteilt, um Paketverlusten vorzubeugen:
-1. `START`: Bereitet den Flash-Speicher (`tmp.bmp`) und den RAM-Puffer für ein neues Bild vor.
-2. `V2`: Schaltet auf das Protokoll V2 um (Sequenznummer statt CRC32 pro Paket).
-3. Senden der Daten (über `Upload Data`) in Fenstern von 32768 Bytes.
-4. Nach jedem Fenster liest die Web-UI den `Upload CMD` (Read). Stimmen Byte-Anzahl und CRC32 mit dem im ESP gepufferten Fenster überein, wird `FLUSH` gesendet, um die Daten aus dem RAM in den Flash zu schreiben. Bei einem Fehler sendet die UI `CLEAR`, um den RAM zu leeren, und überträgt das Fenster erneut.
-5. `END:<crc32 hex>`: Schließt die Datei ab. Das Gerät liest das Bild aus dem Flash zurück und verwirft es, wenn Länge oder CRC32 nicht stimmen.
-6. `APPLY`: Zeigt das Bild direkt auf dem Display an.
+Put the frame into bootloader mode before uploading. You can also flash `.pio/build/<env>/firmware.bin` in the Web UI (**Firmware → Eigene Firmware**).
 
-#### Ablauf: Firmware Upload (OTA via BLE)
-Die Firmware wird direkt in die OTA-Partition geflasht, mit denselben Fenstern und Prüfungen wie beim Bild-Upload:
-1. `START_FW`: Initialisiert den OTA-Prozess (`Update.begin()`).
-2. `V2`, dann `FW_SIZE:<bytes>`: Meldet die Größe an (65536 bis 1900544 Bytes).
-3. Senden der Daten in Fenstern, jeweils mit Status-Read und `FLUSH` (schreibt per `Update.write()`) oder `CLEAR`.
-4. `END_FW:<crc32 hex>`: Prüft Größe und CRC32, schließt den OTA-Prozess ab (`Update.end()`) und startet das Gerät kurz darauf in der neuen Firmware neu. Bei einem Fehler bleibt die alte Firmware aktiv.
+> [!CAUTION]
+> Do not erase the whole flash and do not upload a filesystem image. Both delete the certificates.
 
-#### Ablauf: Firmware Upload (via USB / Web Serial)
-Falls Bluetooth nicht verfügbar ist oder du das Gerät lieber direkt per Kabel flashen möchtest, unterstützt die Web-UI das Flashen über die Web Serial API (mittels `esptool-js`):
-1. **Verbindung herstellen**: Verbinde das E-Paper-Display per USB-C-Kabel mit deinem PC.
-2. **Bootloader-Modus aktivieren**: Halte den kleinen Knopf auf der Rückseite gedrückt, drücke kurz den Reset-Knopf (großer Knopf) und lass den kleinen Knopf dann los.
-3. **Flashen**: Wähle in der Web-UI den Reiter "USB-Kabel (COM-Port)", klicke auf den Flash-Button, wähle den passenden COM-Port im Browser-Dialog aus und der Flasher überträgt die App-Partition (Baudrate: `921600`, Offset: `0x10000`) automatisch auf das Gerät.
+## BLE protocol
 
+The frame advertises as `epd7-<mac>` or `epd13-<mac>` while it is in setup mode.
 
-## Hardware-in-the-Loop Test
+> [!NOTE]
+> The BLE interface has no authentication. While the frame is in setup mode, anyone within radio range can change settings, reset the frame or install firmware.
 
-Die Firmware wird auf echter Hardware getestet (`hil/`), auf demselben Windows-Runner und denselben Geräten wie die [Cloud Firmware](https://github.com/paperlesspaper/paperlesspaper-firmware). Der Workflow [`hil-test.yml`](.github/workflows/hil-test.yml) läuft bei jedem Push auf `dev` und manuell.
+<details>
+<summary><b>Services and characteristics</b></summary>
 
-- **Hardware-Schicht:** Relais, serielle Ports und Log-Maskierung kommen aus `testbench/` der Cloud Firmware. Der Workflow checkt das Repository dafür nach `_cloud/` aus; lokal wird ein Checkout neben diesem Repository gefunden oder über `CLOUD_TESTBENCH_ROOT` angegeben.
-- **Ablauf pro Gerät:** Kandidat per BLE flashen (egal ob Cloud oder Offline Firmware läuft) → Factory Reset mit 5 Power-Cycles → BLE-Schnittstelle prüfen → Cloud-Produktionsfirmware per BLE zurückflashen. Der letzte Schritt läuft immer, weil die Cloud-Tests ihn voraussetzen.
-- **Lokal ausführen** (am PC mit der Testhardware):
+#### Device data: `7f74170e-7b0e-11ed-a1eb-0242ac120002`
+
+All characteristics: read, notify. UUID suffix: `-7b0e-11ed-a1eb-0242ac120002`.
+
+| UUID | Name | Value |
+| :--- | :--- | :--- |
+| `4c578d4c` | WiFi connected | One byte: `1` connected, `0` not connected |
+| `4c578d4d` | WiFi info | JSON, e.g. `{"ip": "192.168.1.20", "rssi": -65}`; `{}` when not connected |
+| `5131a3fc` | WiFi scan | `SSID´RSSI´´SSID2´RSSI2´´…`, filled after the command `SCAN_WIFI` |
+| `60000001` | System info | JSON with `voltage` (mV), `usb`, `charging`, `version`, `fw` (`offline`), `display` (`7` or `13`). Updated every 10 seconds. |
+
+#### WiFi: `0515c086-7b0c-11ed-a1eb-0242ac120002`
+
+UUID suffix: `-7b0d-11ed-a1eb-0242ac120002`.
+
+| UUID | Name | Properties | Notes |
+| :--- | :--- | :--- | :--- |
+| `090b0ef2` | SSID | read, write | Up to 32 characters. Write it before the password. |
+| `a62eed84` | Password | write | Up to 64 characters. Writing it starts a connection test (10 seconds). The credentials are stored only if the test succeeds. |
+
+#### Settings: `10000000-0000-0000-0000-000000000001`
+
+UUID suffix: `-0000-0000-0000-000000000001`.
+
+| UUID | Name | Properties | Notes |
+| :--- | :--- | :--- | :--- |
+| `10000001` | Download URL | read, write | A non-empty URL sets the image mode to `1`. |
+| `10000002` | Image mode | read, write | `0` = image sent over BLE, `1` = download from URL |
+| `10000003` | Upload data | write, write without response | Binary data for image and firmware uploads |
+| `10000004` | Upload command | read, write | Commands and upload status, see below |
+| `10000005` | Timeout | read, write | Update interval in seconds, 60–2592000 |
+| `10000007` | HTTP user | read, write | HTTP Basic Auth |
+| `10000008` | HTTP password | write | HTTP Basic Auth |
+| `10000009` | Motion wake-up | read, write | `1` / `0` |
+| `1000000a` | Charger mode | read, write | `1` / `0`, NiMH only. Stored immediately. |
+| `1000000b` | Settings URL | read, write | URL of the settings JSON |
+| `1000000c` | Auto rotation | read, write | `1` / `0`. Stored immediately. |
+| `1000000d` | Firmware version | read | Version of the running firmware |
+
+Texts (URLs, HTTP user and password) may be up to 128 characters long. Longer values and timeouts outside the range are ignored. Send `SAVE_SETTINGS` to store the written values permanently.
+
+</details>
+
+<details>
+<summary><b>Commands and uploads</b></summary>
+
+Commands are written as text to the upload command characteristic (`10000004`).
+
+| Command | Effect |
+| :--- | :--- |
+| `SAVE_SETTINGS` | Stores the settings written so far. |
+| `SCAN_WIFI` | Starts a WiFi scan. The result arrives as a notification on the WiFi scan characteristic. |
+| `APPLY` | Shows the stored image on the display. |
+| `EXIT_SETUP` | Leaves setup mode. The frame continues with a normal update. |
+| `RESET` | Factory reset and restart. |
+
+**Upload status:** reading `10000004` returns 8 bytes (little endian):
+
+| Bytes | Content |
+| :--- | :--- |
+| 0–1 | Bytes in the RAM buffer. `0xFFFF` = upload error, `0xFFFE` = sequence error. |
+| 2–5 | CRC32 of the RAM buffer. After `END` / `END_FW`: CRC32 of the stored image or firmware. |
+| 6–7 | Maximum payload per packet |
+
+**Image upload**
+
+The payload is the raw display image: 4 bits per pixel, row by row, `width × height / 2` bytes (192,000 for 7.3", 960,000 for 13.3"). Color codes: `0` black, `1` blue, `2` green, `3` red, `5` yellow, `6` white.
+
+1. `START` prepares the flash memory and a 32 KB RAM buffer.
+2. `V2` selects protocol V2: every packet is 1 byte sequence number + data. The sequence number starts at 0 in every window. (Without `V2`, every packet is 4 bytes CRC32 + data.)
+3. Send the data in windows of 32768 bytes to `10000003`.
+4. Read the status after each window. If byte count and CRC32 match, send `FLUSH` to write the window to flash. Otherwise send `CLEAR` and repeat the window.
+5. `END:<crc32 hex>` finishes the upload. The frame reads the image back from flash and discards it if length or CRC32 do not match.
+6. `APPLY` shows the image.
+
+**Firmware upload (OTA)**
+
+1. `START_FW` starts the update.
+2. `V2`, then `FW_SIZE:<bytes>` announces the size (65536 to 1900544 bytes).
+3. Send the data in windows as for an image. `FLUSH` writes the window to the OTA partition.
+4. `END_FW:<crc32 hex>` checks size and CRC32 and restarts the frame with the new firmware about one second later. If a check fails, the old firmware stays active.
+
+A disconnect during an upload discards it.
+
+**USB flashing**
+
+The Web UI uses `esptool-js` over Web Serial at 921600 baud. The firmware is written to `0x10000`, the certificates to `0x3B0000`.
+
+</details>
+
+## Hardware-in-the-loop test
+
+Every push to `main` and `dev` is tested on real hardware before it is published. [`deploy.yml`](.github/workflows/deploy.yml) calls [`hil-test.yml`](.github/workflows/hil-test.yml) and deploys only if the risk analysis and the hardware test pass. The test can also be started manually.
+
+<details>
+<summary><b>Details</b></summary>
+
+- **Hardware:** the tests (`hil/`) run on the same self-hosted Windows runner and devices as the [cloud firmware](https://github.com/paperlesspaper/paperlesspaper-firmware). Relays, serial ports and log masking come from its `testbench/` folder. The workflow checks that repository out to `_cloud/`. Locally, a checkout next to this repository is found automatically, or set `CLOUD_TESTBENCH_ROOT`.
+- **Steps per device:** flash the candidate over BLE (from cloud or offline firmware) → factory reset with 5 power cycles → check the BLE interface → flash the cloud production firmware back. The last step always runs because the cloud tests depend on it.
+- **Run locally** (on the PC with the test hardware):
   ```powershell
   pip install -r hil/requirements.txt
   pio run -e epd7
   python -m hil.run --target epd7 -v
   ```
-- **KI-Schritte** (`tools/`, Google Gemini, Secret `GEMINI_API_KEY`): Vor dem Build bewertet `ai_risk_analysis.py` die Änderungen des Pushs; bei der Bewertung HOCH / BLOCKIERT stoppt der Lauf, bevor ein Gerät geflasht wird. Das Testprotokoll (`hil/report.py`) fasst Tests und Risikobewertung zusammen und ergänzt bei fehlgeschlagenen Tests eine KI-Fehlerdiagnose. Ohne Secret laufen die Tests ohne diese Schritte. An die API gehen der Diff, der Quellcode aus `src/` und Log-Auszüge; Secrets, Geräte-IDs und Pfade werden vorher maskiert.
-- **Ergebnisdateien:** Den Test-PC verlässt nur `hil_result_<gerät>.json` (`hil/results.py`): Testnamen, Ergebnis, Dauer und der maskierte Fehlertext. Die rohe JUnit-Datei wird nicht hochgeladen, weil sie Geräte-IDs enthalten kann und GitHub Artefakte nicht maskiert.
-- **Gating für `main`:** `deploy.yml` ruft diesen Workflow auf und veröffentlicht nur, wenn Risikoanalyse und Hardware-Test bestanden sind.
-- **Nicht abbrechen:** Ein laufender Test flasht Geräte per BLE. Ohne verdrahteten Boot-Taster lässt sich ein Gerät mit unvollständiger oder defekter Firmware nur von Hand wiederbeleben.
+- **AI steps** (`tools/`, Google Gemini, secret `GEMINI_API_KEY`): before the build, `ai_risk_analysis.py` rates the changes of the push. A rating of HIGH / BLOCKED stops the run before any device is flashed. The test report (`hil/report.py`) summarizes tests and risk rating and adds an AI diagnosis for failed tests. Without the secret, the tests run without these steps. The API receives the diff, the source code in `src/` and log excerpts; secrets, device IDs and paths are masked first.
+- **Result files:** only `hil_result_<device>.json` leaves the test PC (test names, result, duration, masked error text). The raw JUnit file is not uploaded because it can contain device IDs.
+- **Do not cancel a running test.** It flashes devices over BLE. A device with incomplete firmware can only be recovered by hand.
 
-## Roadmap (not ordered)
+</details>
 
-- (done) settings json for http endpoint to change device behavior in local network
-- (done) settings for motion wakeup and charger via ble
-- (done) ota upload via ble (revert back to cloud firmware)
-- (done) load device settings to web ui via ble (2 way sync)
-- (done) on device dithering with jpg support
-- (done) electron tool to update offline firmware or web flasher
-- (done) add rotation setting to bluetooth
-- (done) host the tool on our infrastructure (select latest firmware build too)
-- store multiple images
-- https://immich.app/ integration into firmware and config via ble
-- (skipped) bluetooth broadcast mode
+## Roadmap
+
+- Store multiple images
+- [Immich](https://immich.app/) integration

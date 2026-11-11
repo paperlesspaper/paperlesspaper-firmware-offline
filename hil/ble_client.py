@@ -15,12 +15,17 @@ import zlib
 from dataclasses import dataclass
 
 from bleak import BleakClient, BleakScanner
+from bleak.exc import BleakError
 
 from . import settings
 from .cloud import mask_uid, register_github_mask
 
 STATUS_UPLOAD_ERROR = 0xFFFF
 STATUS_SEQ_ERROR = 0xFFFE
+
+# Connection attempts per session and the base pause between them (2 s, 4 s, 6 s).
+CONNECT_ATTEMPTS = 4
+CONNECT_RETRY_DELAY = 2.0
 
 
 class BleError(RuntimeError):
@@ -57,8 +62,35 @@ class BleSession:
         self.advertised_name = None
 
     async def __aenter__(self):
-        target = self.uid.lower()
         register_github_mask(self.uid)
+        # Connecting can fail for a moment after the device was power-cycled: Windows is still
+        # tearing down the previous connection to the same address and then rejects the new one
+        # (OSError "The parameter is incorrect" / WinError -2147024809, or a bleak error). That
+        # state clears within seconds, so scan again and retry. The setup mode of the device
+        # lasts SETUP_MODE_TIMEOUT (30 s), the retries below stay well inside it.
+        last_error = None
+        for attempt in range(1, CONNECT_ATTEMPTS + 1):
+            try:
+                await self._connect_once()
+                return self
+            except (OSError, BleakError) as err:  # TimeoutError is an OSError
+                last_error = err
+                await self._close_client()
+                if attempt == CONNECT_ATTEMPTS:
+                    break
+                delay = CONNECT_RETRY_DELAY * attempt
+                print(
+                    f"ℹ️ BLE connect attempt {attempt}/{CONNECT_ATTEMPTS} failed "
+                    f"({type(err).__name__}: {err}), retrying in {delay:.0f} s..."
+                )
+                await asyncio.sleep(delay)
+        raise BleError(
+            f"BLE connection to '{mask_uid(self.uid)}' failed after {CONNECT_ATTEMPTS} attempts: "
+            f"{type(last_error).__name__}: {last_error}"
+        ) from last_error
+
+    async def _connect_once(self):
+        target = self.uid.lower()
         device = await BleakScanner.find_device_by_filter(
             lambda d, adv: target in ((adv.local_name or d.name or "").lower()),
             timeout=self.scan_timeout,
@@ -71,13 +103,19 @@ class BleSession:
         kwargs = {"winrt": {"use_cached_services": False}} if sys.platform == "win32" else {}
         self.client = BleakClient(device, timeout=25.0, **kwargs)
         await self.client.connect()
-        return self
 
-    async def __aexit__(self, exc_type, exc, tb):
+    async def _close_client(self):
+        """Releases the connection (and the Windows device object behind it), ignoring errors."""
+        client, self.client = self.client, None
+        if client is None:
+            return
         try:
-            await self.client.disconnect()
+            await client.disconnect()
         except Exception:
             pass  # the device may already have rebooted
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self._close_client()
 
     # --- characteristics --------------------------------------------------
 
