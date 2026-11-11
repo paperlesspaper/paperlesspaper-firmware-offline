@@ -3,10 +3,10 @@ run-name: "HIL Test 0.1.${{ github.run_number }} (${{ github.ref_name }})"
 
 # Runs on the self-hosted hardware runner. This repository is public:
 # never add a pull_request trigger here, it would run foreign code on that machine.
+#
+# No push trigger of its own: deploy.yml runs on every push to main and dev and calls this
+# workflow as its gate. A second trigger here would run the hardware test twice per dev push.
 on:
-  push:
-    branches:
-      - dev
   workflow_dispatch:
     inputs:
       target:
@@ -18,7 +18,7 @@ on:
           - all
           - epd7
           - epd13
-  # Called by deploy.yml: main is only deployed after the hardware test passed.
+  # Called by deploy.yml: main and dev are only deployed after the hardware test passed.
   workflow_call:
     inputs:
       target:

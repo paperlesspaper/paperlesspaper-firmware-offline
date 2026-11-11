@@ -58,6 +58,19 @@
   --term-bg: #000000;
   --term-fg: #ffffff;
 
+  /* Page canvas: slightly off-white so the white boxes stand out */
+  --canvas: #f4f4f0;
+
+  /* Section colours (header band of a box). One strong accent + one band tint per role:
+     ok = device / local / save, info = cloud / network / image, warn = tools / expert,
+     err = destructive. Black stays the colour of "selected" and "pressed". */
+  --cat-info: #7cc8f8;
+  --band-neutral: #e5e5e5;
+  --band-ok: #c4f1ea;
+  --band-info: #cfeafc;
+  --band-warn: #ffedab;
+  --band-err: #ffd6d6;
+
   --font-display: "Plus Jakarta Sans", sans-serif;
   --font-body: "Inter", -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", monospace;
@@ -65,6 +78,7 @@
   /* Layout */
   --gutter: 12px;
   --appbar-h: 56px;
+  --header-h: var(--appbar-h); /* whole sticky header; taller when the dev banner is shown */
   --nav-h: 60px;
   --dock-h: 48px;
   --safe-b: env(safe-area-inset-bottom, 0px);
@@ -96,7 +110,7 @@
 html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
-  scroll-padding-top: calc(var(--appbar-h) + 16px);
+  scroll-padding-top: calc(var(--header-h) + 16px);
   /* keyboard focus and scrollIntoView() must not end up under the fixed dock / navigation */
   scroll-padding-bottom: calc(var(--nav-h) + var(--dock-h) + var(--safe-b) + 24px);
 }
@@ -104,7 +118,7 @@ html {
 body {
   min-height: 100vh;
   min-height: 100dvh;
-  background-color: var(--bg);
+  background-color: var(--canvas);
   color: var(--text-primary);
   font-family: var(--font-body);
   font-size: 14px;
@@ -239,10 +253,63 @@ summary:focus-visible {
 
 .brand {
   display: flex;
+  flex-direction: column; /* phones: title above the version switch */
+  align-items: flex-start;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+  margin-right: auto;
+}
+
+.brand-line {
+  display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
-  margin-right: auto;
+  max-width: 100%;
+}
+
+/* Version switch (stable / preview) next to the product name */
+.brand-version {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 0 8px;
+  background: var(--muted-bg);
+  border: 2px solid var(--border);
+  box-shadow: 2px 2px 0px #000000;
+  left: -1px;
+  top: -1px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transition: all var(--dur-press) ease-out;
+}
+/* enlarges the touch target to 44px without making the chip bigger */
+.brand-version::after {
+  content: "";
+  position: absolute;
+  inset: -10px -8px;
+}
+.brand-version[data-channel="dev"] {
+  background: var(--status-warn);
+}
+.brand-version:active {
+  background: var(--btn-pressed);
+  color: #ffffff;
+  box-shadow: 0px 0px 0px #000000;
+  left: 1px;
+  top: 1px;
+}
+@media (hover: hover) {
+  .brand-version:hover {
+    background: var(--text-primary);
+    color: #ffffff;
+  }
 }
 
 .brand .badge {
@@ -415,9 +482,12 @@ summary:focus-visible {
 
 /* ---------- Panel ---------- */
 .neu-card {
+  --card-pad: 16px;
+  --card-band: var(--band-neutral);
+  --card-accent: var(--border);
   background-color: var(--bg);
   border: 2px solid var(--border);
-  padding: 16px;
+  padding: var(--card-pad);
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -429,14 +499,40 @@ summary:focus-visible {
   border-style: dashed; /* dashed = auxiliary / diagnostic zone */
 }
 
+/* Header band: tinted in the section colour, with a strong accent bar on the left */
 .card-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 6px 10px;
+  min-height: 48px;
+  margin: calc(-1 * var(--card-pad)) calc(-1 * var(--card-pad)) 0;
+  padding: 8px var(--card-pad) 8px calc(var(--card-pad) - 8px);
+  background: var(--card-band);
+  border-left: 8px solid var(--card-accent);
   border-bottom: 2px solid var(--border);
-  padding-bottom: 8px;
+}
+
+.neu-card[data-tone="ok"],
+.collapsible[data-tone="ok"] {
+  --card-band: var(--band-ok);
+  --card-accent: var(--status-ok);
+}
+.neu-card[data-tone="info"],
+.collapsible[data-tone="info"] {
+  --card-band: var(--band-info);
+  --card-accent: var(--cat-info);
+}
+.neu-card[data-tone="warn"],
+.collapsible[data-tone="warn"] {
+  --card-band: var(--band-warn);
+  --card-accent: var(--status-warn);
+}
+.neu-card[data-tone="err"],
+.collapsible[data-tone="err"] {
+  --card-band: var(--band-err);
+  --card-accent: var(--status-err);
 }
 .card-head h2,
 .card-head h3 {
@@ -488,7 +584,25 @@ summary:focus-visible {
   white-space: nowrap;
 }
 .badge-ok {
-  background: var(--tint-ok);
+  background: var(--band-ok);
+}
+.badge-info {
+  background: var(--band-info);
+}
+.badge-warn {
+  background: var(--band-warn);
+}
+.card-head .badge {
+  background: #ffffff; /* readable on every band colour */
+}
+.card-head .badge-ok {
+  background: var(--status-ok);
+}
+.card-head .badge-info {
+  background: var(--cat-info);
+}
+.card-head .badge-warn {
+  background: var(--status-warn);
 }
 .badge-mode {
   border-width: 2px;
@@ -547,13 +661,32 @@ summary:focus-visible {
   cursor: not-allowed;
 }
 
-.btn-neu-primary {
+/*
+ * Colour roles (face at rest). Hover and press always turn the button black.
+ *   signal    yellow  the main action of a screen or dialog
+ *   ready     teal    save / back up
+ *   info      blue    cloud, network, download
+ *   attention amber   tools and expert actions
+ *   danger    red     delete / reset
+ *   primary   white   calm main action;  no modifier = grey secondary action
+ * Doubled class selectors so the roles also win over the size tiers below (.btn-util).
+ */
+.btn-neu.btn-neu-primary {
   background-color: #ffffff;
 }
-.btn-neu-signal {
+.btn-neu.btn-neu-signal {
   background-color: var(--signal);
 }
-.btn-neu-danger {
+.btn-neu.btn-neu-ready {
+  background-color: var(--status-ok);
+}
+.btn-neu.btn-neu-info {
+  background-color: var(--cat-info);
+}
+.btn-neu.btn-neu-attention {
+  background-color: var(--status-warn);
+}
+.btn-neu.btn-neu-danger {
   background-color: var(--status-err);
   color: #ffffff;
 }
@@ -588,9 +721,6 @@ summary:focus-visible {
   box-shadow: 2px 2px 0px #000000;
   left: -1px;
   top: -1px;
-}
-.btn-util.btn-neu-signal {
-  background-color: var(--signal);
 }
 @media (hover: hover) {
   .btn-util:not(:disabled):hover {
@@ -1035,7 +1165,10 @@ input[type="range"]::-moz-range-thumb {
 
 /* ---------- Collapsible ---------- */
 .collapsible {
+  --card-band: var(--band-neutral);
+  --card-accent: var(--border);
   border: 2px solid var(--border);
+  background: var(--bg);
 }
 .collapsible-head {
   display: flex;
@@ -1044,8 +1177,9 @@ input[type="range"]::-moz-range-thumb {
   gap: 12px;
   width: 100%;
   min-height: 48px;
-  padding: 8px 14px;
-  background: var(--muted-bg);
+  padding: 8px 14px 8px 8px;
+  background: var(--card-band);
+  border-left: 8px solid var(--card-accent);
   font-family: var(--font-display);
   font-weight: 800;
   font-size: 13px;
@@ -1056,7 +1190,8 @@ input[type="range"]::-moz-range-thumb {
 }
 @media (hover: hover) {
   .collapsible-head:hover {
-    background: var(--btn-face);
+    background: var(--text-primary);
+    color: #ffffff;
   }
 }
 .collapsible-head:focus-visible {
@@ -1120,7 +1255,7 @@ input[type="range"]::-moz-range-thumb {
   color: #b5b5b5;
 }
 .status-led.state-0::after {
-  content: "3"; /* idle dash: keeps the empty LED from looking like a checkbox */
+  content: "\2013"; /* idle dash: keeps the empty LED from looking like a checkbox */
 }
 .status-led.state-1 {
   background-color: var(--status-err);
@@ -1557,6 +1692,17 @@ input[type="range"]::-moz-range-thumb {
   z-index: 90;
   background: var(--bg);
   border-top: 2px solid var(--border);
+  transition: background-color 0.15s ease;
+}
+.status-dock[data-level="ok"] {
+  background: var(--tint-ok);
+}
+.status-dock[data-level="busy"],
+.status-dock[data-level="warn"] {
+  background: var(--tint-warn);
+}
+.status-dock[data-level="err"] {
+  background: var(--tint-err);
 }
 .dock-inner {
   max-width: var(--content-max);
@@ -1894,6 +2040,102 @@ dialog.transfer::backdrop {
   min-width: min(260px, 100%);
 }
 
+/* ---------- Big choice buttons (version dialog) ---------- */
+.choice-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  padding: 2px 2px 4px 2px;
+}
+.btn-choice {
+  flex-direction: column;
+  gap: 8px;
+  min-height: 110px;
+  padding: 14px 8px;
+  background-color: #ffffff;
+  min-width: 0;
+}
+.choice-title {
+  font-size: 20px;
+  letter-spacing: 1px;
+}
+.choice-sub {
+  max-width: 100%;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  padding: 2px 6px;
+  border: 1px solid currentColor;
+  overflow-wrap: anywhere;
+}
+/* the version in use: pressed in and inverted, like an active tab */
+.btn-choice[aria-pressed="true"] {
+  background-color: #000000;
+  color: #ffffff;
+  box-shadow: 0px 0px 0px #000000;
+  left: 1px;
+  top: 1px;
+  cursor: default;
+}
+
+/* ---------- Danger zone ---------- */
+.zone-danger {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--tint-err);
+  border: 2px solid var(--border);
+  border-left: 8px solid var(--status-err);
+}
+
+/* ---------- Environment banner (dev / preview build) ---------- */
+.env-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px 12px;
+  padding: 6px var(--gutter);
+  background-color: var(--status-warn);
+  border-bottom: 2px solid var(--border);
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  text-align: center;
+}
+.env-banner-btn {
+  min-height: 32px;
+  padding: 2px 12px;
+  background: #ffffff;
+  border: 2px solid var(--border);
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  transition:
+    background-color var(--dur-press) ease-out,
+    color var(--dur-press) ease-out;
+}
+.env-banner-btn:active {
+  background: var(--btn-pressed);
+  color: #ffffff;
+}
+@media (hover: hover) {
+  .env-banner-btn:hover {
+    background: var(--text-primary);
+    color: #ffffff;
+  }
+}
+/* the sticky header is taller while the banner is shown */
+.has-env-banner {
+  --header-h: 104px;
+}
+
 /* ---------- Breakpoints ---------- */
 @media (max-width: 359px) {
   /* very narrow phones: a wrapped button fills its row instead of sitting half-width */
@@ -1919,7 +2161,7 @@ dialog.transfer::backdrop {
     --gutter: 16px;
   }
   .neu-card {
-    padding: 20px;
+    --card-pad: 20px;
   }
 
   /* centred dialog card instead of a bottom sheet */
@@ -1964,7 +2206,14 @@ dialog.transfer::backdrop {
     gap: 20px;
   }
   .brand {
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
     margin-right: 0;
+  }
+  .brand-version {
+    min-height: 30px;
+    font-size: 12px;
   }
 
   /* navigation moves into the app bar as tabs */
@@ -2019,7 +2268,7 @@ dialog.transfer::backdrop {
   }
   .editor-preview {
     position: sticky;
-    top: calc(var(--appbar-h) + 16px);
+    top: calc(var(--header-h) + 16px);
   }
   .grid-2 {
     grid-template-columns: repeat(2, minmax(0, 1fr));

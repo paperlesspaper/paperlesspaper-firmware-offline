@@ -38,10 +38,22 @@
     <a class="skip-link" href="#main">Zum Inhalt springen</a>
 
     <header class="app-bar">
+        <!-- Only shown in the dev (preview) build -->
+        <div class="env-banner" id="channelBanner" hidden>
+            <span>🧪 Vorschau-Version (dev) · wird noch getestet</span>
+            <button type="button" class="env-banner-btn" id="btnChannelBannerSwitch" hidden>Zur stabilen Version</button>
+        </div>
         <div class="app-bar-inner">
             <div class="brand">
-                <h1 class="brand-title">Paperlesspaper</h1>
-                <span class="badge">Offline</span>
+                <div class="brand-line">
+                    <h1 class="brand-title">Paperlesspaper</h1>
+                    <span class="badge">Offline</span>
+                </div>
+                <!-- Version switch (stable / preview): only shown when both versions are deployed -->
+                <button type="button" class="brand-version" id="btnVersion" aria-haspopup="dialog" hidden>
+                    <span id="versionLabel">Stabil</span>
+                    <span aria-hidden="true">▾</span>
+                </button>
             </div>
 
             <nav class="app-nav" aria-label="Hauptnavigation">
@@ -114,7 +126,7 @@
         <!-- ============================== VIEW: BILD ============================== -->
         <section id="viewEditor" class="view" aria-labelledby="imageSecTitle" hidden>
             <div class="editor-grid">
-                <div class="neu-card editor-preview">
+                <div class="neu-card editor-preview" data-tone="info">
                     <div class="card-head">
                         <h2 id="imageSecTitle">Bild</h2>
                         <div class="badges">
@@ -152,18 +164,18 @@
                 </div>
 
                 <div class="stack">
-                    <div class="neu-card">
+                    <div class="neu-card" data-tone="ok">
                         <div class="card-head">
                             <h2>Übertragen</h2>
                         </div>
                         <p class="card-desc" id="imageSecDesc">Das Bild wird automatisch für das 6-Farben-Display aufbereitet. Sende es per Bluetooth an das E-Paper oder lade es als BMP für den Server-Betrieb herunter.</p>
                         <div class="btn-row">
                             <button type="button" id="btnUploadImage" class="btn-neu btn-neu-signal btn-grow" disabled>Senden – kein Bild</button>
-                            <button type="button" id="btnDownloadBin" class="btn-neu" disabled>BMP herunterladen</button>
+                            <button type="button" id="btnDownloadBin" class="btn-neu btn-neu-info" disabled>BMP herunterladen</button>
                         </div>
                     </div>
 
-                    <div class="collapsible" id="imageSettingsDetails" data-collapsible>
+                    <div class="collapsible" id="imageSettingsDetails" data-collapsible data-tone="warn">
                         <button type="button" class="collapsible-head" aria-expanded="false" aria-controls="imageSettingsBody">
                             <span>Bild-Einstellungen</span>
                             <span class="collapsible-icon" aria-hidden="true">▲</span>
@@ -171,7 +183,7 @@
                         <div class="collapsible-body" id="imageSettingsBody">
                             <div class="collapsible-inner">
                                 <div class="collapsible-content" id="expertControls">
-                                    <button type="button" id="btnAutoDither" class="btn-neu btn-neu-primary btn-sys" disabled>Auto-Optimieren</button>
+                                    <button type="button" id="btnAutoDither" class="btn-neu btn-neu-attention btn-sys" disabled>Auto-Optimieren</button>
 
                                     <div class="field">
                                         <label class="form-label" for="displaySizeSelect">Display</label>
@@ -229,7 +241,7 @@
                                         <input type="range" id="processingSaturation" min="-100" max="100" value="0" />
                                         <output for="processingSaturation" id="processingSaturationOut">0</output>
                                     </div>
-                                    <button type="button" id="btnResetProcessing" class="btn-neu btn-util">Anpassungen zurücksetzen</button>
+                                    <button type="button" id="btnResetProcessing" class="btn-neu btn-util btn-neu-danger-text">Anpassungen zurücksetzen</button>
                                 </div>
                             </div>
                         </div>
@@ -240,7 +252,7 @@
 
         <!-- ============================== VIEW: GERÄT ============================== -->
         <section id="viewConnect" class="view" aria-label="Geräte-Einstellungen" hidden>
-            <div id="notConnectedState" class="neu-card empty-state view-narrow">
+            <div id="notConnectedState" class="neu-card empty-state view-narrow" data-tone="warn">
                 <div class="card-head">
                     <h2>Kein Gerät verbunden</h2>
                 </div>
@@ -279,7 +291,7 @@
 
             <div id="controls" class="grid-2" hidden>
                 <!-- WLAN -->
-                <div class="neu-card">
+                <div class="neu-card" data-tone="info">
                     <div class="card-head">
                         <h2>WLAN</h2>
                         <span id="syncBadgeWifi" class="badge badge-ok" hidden>✓ Vom Gerät geladen</span>
@@ -318,7 +330,7 @@
                             <label class="form-label" for="wifiSsid">WLAN-Name (SSID)</label>
                             <div class="input-group">
                                 <input type="text" id="wifiSsid" class="neu-input" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="32" placeholder="Name eingeben oder scannen" aria-describedby="wifiSsidError" />
-                                <button type="button" id="btnScanWifi" class="btn-neu btn-small">Scan</button>
+                                <button type="button" id="btnScanWifi" class="btn-neu btn-small btn-neu-info">Scan</button>
                             </div>
                             <p class="field-error" id="wifiSsidError" role="alert" hidden></p>
                         </div>
@@ -340,14 +352,14 @@
                         </div>
 
                         <div class="btn-row">
-                            <button type="submit" id="btnSaveWifi" class="btn-neu btn-neu-primary btn-sys">WLAN speichern</button>
+                            <button type="submit" id="btnSaveWifi" class="btn-neu btn-neu-ready btn-sys">WLAN speichern</button>
                         </div>
                     </form>
                 </div>
 
                 <div class="stack">
                     <!-- Bild-Abruf -->
-                    <div class="neu-card">
+                    <div class="neu-card" data-tone="ok">
                         <div class="card-head">
                             <h2>Bild-Abruf</h2>
                             <span id="syncBadgeSettings" class="badge badge-ok" hidden>✓ Vom Gerät geladen</span>
@@ -376,7 +388,7 @@
                                 </label>
                                 <div class="input-group">
                                     <input type="url" id="settingSettingsUrl" class="neu-input" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="http://mein-server.de/settings.json" aria-describedby="settingSettingsUrlError" />
-                                    <button type="button" id="btnPreviewJson" class="btn-neu btn-small">Prüfen</button>
+                                    <button type="button" id="btnPreviewJson" class="btn-neu btn-small btn-neu-info">Prüfen</button>
                                 </div>
                                 <p class="field-error" id="settingSettingsUrlError" role="alert" hidden></p>
                             </div>
@@ -408,14 +420,14 @@
                             <div class="save-zone" id="settingsSaveZone">
                                 <span class="dirty-note">Ungespeicherte Änderungen</span>
                                 <div class="btn-row">
-                                    <button type="submit" id="btnSaveSettings" class="btn-neu btn-neu-primary btn-sys">Einstellungen speichern</button>
+                                    <button type="submit" id="btnSaveSettings" class="btn-neu btn-neu-ready btn-sys">Einstellungen speichern</button>
                                 </div>
                             </div>
                         </form>
                     </div>
 
                     <!-- Experten-Bereich -->
-                    <div class="collapsible" data-collapsible>
+                    <div class="collapsible" data-collapsible data-tone="warn">
                         <button type="button" class="collapsible-head" aria-expanded="false" aria-controls="expertBody">
                             <span>Experten-Bereich</span>
                             <span class="collapsible-icon" aria-hidden="true">▲</span>
@@ -446,14 +458,14 @@
                                         </span>
                                     </label>
 
-                                    <hr class="divider" />
-
-                                    <div class="sub-head">
-                                        <h3>Gefahrenzone</h3>
-                                    </div>
-                                    <p class="field-hint">Löscht alle Einstellungen, WLAN-Zugangsdaten und gespeicherte Bilder auf dem Gerät.</p>
-                                    <div class="btn-row">
-                                        <button type="button" id="btnFactoryReset" class="btn-neu btn-neu-danger btn-sys">Gerät zurücksetzen</button>
+                                    <div class="zone-danger">
+                                        <div class="sub-head">
+                                            <h3>Gefahrenzone</h3>
+                                        </div>
+                                        <p class="field-hint">Löscht alle Einstellungen, WLAN-Zugangsdaten und gespeicherte Bilder auf dem Gerät.</p>
+                                        <div class="btn-row">
+                                            <button type="button" id="btnFactoryReset" class="btn-neu btn-neu-danger btn-sys">Gerät zurücksetzen</button>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -492,17 +504,18 @@
                 <div class="grid-2">
                     <div class="stack">
                         <!-- Offline Firmware -->
-                        <div id="offlineFirmwareCard" class="neu-card">
+                        <div id="offlineFirmwareCard" class="neu-card" data-tone="ok">
                             <div class="card-head">
                                 <h3>Offline Firmware</h3>
                                 <div class="badges">
                                     <span id="expectedOfflineFwBadge" class="badge">v0.1.0</span>
-                                    <span class="badge">Lokal</span>
+                                    <span class="badge badge-ok">Lokal</span>
+                                    <span class="badge badge-mode" id="offlineFwChannelBadge" hidden>Dev</span>
                                 </div>
                             </div>
                             <p class="card-desc">Open-Source-Firmware für maximale Unabhängigkeit. Alle Daten laufen lokal über Bluetooth oder WLAN.</p>
                             <div class="btn-row">
-                                <button type="button" id="btnUpdateOfflineFw" class="btn-neu btn-neu-primary btn-sys">
+                                <button type="button" id="btnUpdateOfflineFw" class="btn-neu btn-neu-signal btn-sys">
                                     Flashen
                                     <span class="btn-chip otaModeLabel">BLE</span>
                                 </button>
@@ -514,10 +527,10 @@
                         </div>
 
                         <!-- Eigene Firmware -->
-                        <div class="neu-card">
+                        <div class="neu-card" data-tone="warn">
                             <div class="card-head">
                                 <h3>Eigene Firmware</h3>
-                                <span class="badge">.bin</span>
+                                <span class="badge badge-warn">.bin</span>
                             </div>
                             <p class="card-desc">
                                 Flasht ein selbst gebautes App-Image (
@@ -525,7 +538,7 @@
                                 ) für den ESP32-C6.
                             </p>
                             <div class="btn-row">
-                                <button type="button" id="btnSelectFw" class="btn-neu btn-sys">
+                                <button type="button" id="btnSelectFw" class="btn-neu btn-neu-attention btn-sys">
                                     Datei wählen
                                     <span class="btn-chip otaModeLabel">BLE</span>
                                 </button>
@@ -537,14 +550,14 @@
 
                     <div class="stack">
                         <!-- Original Cloud Firmware -->
-                        <div class="neu-card">
+                        <div class="neu-card" data-tone="info">
                             <div class="card-head">
                                 <h3>Original Cloud Firmware</h3>
-                                <span class="badge">Cloud</span>
+                                <span class="badge badge-info">Cloud</span>
                             </div>
                             <p class="card-desc">Offizielle Firmware zur Verbindung mit der Paperlesspaper Cloud und Bildanzeige über die App.</p>
                             <div class="btn-row">
-                                <button type="button" id="btnFetchOriginalFw" class="btn-neu btn-neu-primary btn-sys">
+                                <button type="button" id="btnFetchOriginalFw" class="btn-neu btn-neu-info btn-sys">
                                     Flashen
                                     <span class="btn-chip otaModeLabel">BLE</span>
                                 </button>
@@ -564,12 +577,12 @@
 
                             <div id="spiffsBleNotice" class="callout callout-warn callout-action">
                                 <span>Backup und Wiederherstellung der Zertifikate funktionieren nur über das USB-Kabel.</span>
-                                <button type="button" id="btnSwitchToUsb" class="btn-neu btn-util">Zu USB wechseln</button>
+                                <button type="button" id="btnSwitchToUsb" class="btn-neu btn-util btn-neu-primary">Zu USB wechseln</button>
                             </div>
 
                             <div id="spiffsUsbTools" class="btn-row" hidden>
-                                <button type="button" id="btnBackupSpiffs" class="btn-neu btn-sys">Zertifikate sichern</button>
-                                <button type="button" id="btnSelectSpiffs" class="btn-neu btn-sys">Zertifikate wiederherstellen</button>
+                                <button type="button" id="btnBackupSpiffs" class="btn-neu btn-neu-ready btn-sys">Zertifikate sichern</button>
+                                <button type="button" id="btnSelectSpiffs" class="btn-neu btn-neu-attention btn-sys">Zertifikate wiederherstellen</button>
                             </div>
                         </div>
 
@@ -581,7 +594,7 @@
                             </div>
                             <div class="btn-row">
                                 <button type="button" id="btnToggleSerialMonitor" class="btn-neu btn-sys btn-grow">Monitor verbinden</button>
-                                <button type="button" id="btnClearSerialLog" class="btn-neu btn-sys">Log leeren</button>
+                                <button type="button" id="btnClearSerialLog" class="btn-neu btn-neu-danger-text btn-sys">Log leeren</button>
                             </div>
                             <div id="serialLogBox" hidden>
                                 <pre id="serialLogOutput" class="terminal terminal-serial" tabindex="0" aria-label="Serielle Ausgabe"></pre>
@@ -595,7 +608,7 @@
         <!-- ============================== VIEW: HILFE ============================== -->
         <section id="viewHelp" class="view" aria-labelledby="helpTitle" hidden>
             <div class="stack view-narrow">
-                <div class="neu-card">
+                <div class="neu-card" data-tone="info">
                     <div class="card-head">
                         <h2 id="helpTitle">Hilfe &amp; FAQ</h2>
                     </div>
@@ -803,6 +816,7 @@
                     </div>
                 </div>
 
+                <p class="field-hint mono" id="buildInfo" hidden></p>
                 <p class="field-hint">
                     Weitere technische Details zur Offline-Firmware stehen in der
                     <a href="https://github.com/paperlesspaper/paperlesspaper-firmware-offline" target="_blank" rel="noopener noreferrer">README auf GitHub ↗</a>
@@ -967,6 +981,32 @@
             <div class="modal-actions">
                 <button type="button" id="btnCancelUsbBackup" class="btn-neu">Abbrechen</button>
                 <button type="button" id="btnConfirmUsbBackup" class="btn-neu btn-neu-signal btn-grow">COM-Port wählen &amp; sichern</button>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- Version switch: stable (main) / preview (dev) -->
+    <dialog id="versionDialog" class="modal" aria-labelledby="versionTitle">
+        <div class="modal-body">
+            <h3 id="versionTitle">Version wählen</h3>
+            <p class="modal-text">Web-Oberfläche und Offline-Firmware gehören zusammen: Jede Version zeigt ihre eigene Oberfläche und flasht die Firmware desselben Stands.</p>
+            <div class="choice-grid">
+                <button type="button" class="btn-neu btn-choice" id="btnChannelMain" aria-pressed="false">
+                    <span class="choice-title">Stabil</span>
+                    <span class="choice-sub" id="channelMainInfo">main</span>
+                </button>
+                <button type="button" class="btn-neu btn-choice" id="btnChannelDev" aria-pressed="false">
+                    <span class="choice-title">Vorschau</span>
+                    <span class="choice-sub" id="channelDevInfo">dev</span>
+                </button>
+            </div>
+            <p class="callout callout-warn">
+                <span class="callout-caption">🧪 Vorschau (dev)</span>
+                Enthält die neuesten Änderungen an Oberfläche und Firmware. Sie werden noch getestet und können Fehler enthalten.
+            </p>
+            <p class="field-hint" id="versionSwitchNote" hidden></p>
+            <div class="modal-actions">
+                <button type="button" id="btnCloseVersion" class="btn-neu">Schließen</button>
             </div>
         </div>
     </dialog>

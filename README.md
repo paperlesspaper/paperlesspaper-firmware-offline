@@ -63,6 +63,7 @@ Offline first Firmware for an ESP32-C6 based E-Paper display device, featuring W
     
     *   **Wireless Flashing**: Update settings and upload images/firmware wirelessly via Bluetooth (Web-BLE).
     *   **USB Flashing**: Flash the firmware binary directly over a USB-C cable (Web Serial) using the built-in esptool.
+    *   **Stable / Preview**: The link opens the stable version (branch `main`). The version button next to the title switches to the preview version (branch `dev`): the newest web UI together with the newest, still-in-testing offline firmware. Web UI and firmware always belong together – each version flashes the firmware built from its own branch.
 
     *Alternatively, to run the web frontend locally:*
     - Navigate to the `web/` folder.

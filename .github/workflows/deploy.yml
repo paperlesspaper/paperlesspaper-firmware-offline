@@ -1,9 +1,23 @@
 name: Build and Deploy
 
+# Publishes two release channels to GitHub Pages:
+#   main -> site root   (stable web UI + offline firmware built from main)
+#   dev  -> ./dev/      (preview web UI + offline firmware built from dev)
+# The web UI switches between them (Firmware tab), so there is one entry URL.
+#
+# GitHub Pages holds one site per repository and every deployment replaces all of it. Each run
+# therefore publishes both channels: the branch that triggered the run is built from its new
+# commit, the other channel is rebuilt from the commit of its last successful deployment. That
+# way a channel only ever changes through its own run and its own hardware test.
+#
+# One-time repository setting: Settings -> Environments -> github-pages -> Deployment branches
+# must allow "dev" in addition to "main", otherwise the deploy job of a dev run is rejected.
+
 on:
   push:
     branches:
       - main
+      - dev
   workflow_dispatch:
   repository_dispatch:
     types: [trigger-web-build]
@@ -23,14 +37,78 @@ jobs:
     uses: ./.github/workflows/hil-test.yml
     secrets: inherit
 
-  build_firmware:
+  # Decides which commit each channel is built from.
+  plan:
+    name: "Plan channels"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # look up the last successful deployment of the other branch
+    outputs:
+      sites: ${{ steps.resolve.outputs.sites }}
+      firmware: ${{ steps.resolve.outputs.firmware }}
+    steps:
+      - name: Resolve the commit of each channel
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          THIS_BRANCH: ${{ github.ref_name }}
+          THIS_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          case "$THIS_BRANCH" in
+            main) other=dev ;;
+            dev)  other=main ;;
+            *)
+              echo "::error::Deployments run only from main or dev (got '$THIS_BRANCH')."
+              exit 1
+              ;;
+          esac
+
+          # Commit of the last run of this workflow on the other branch that deployed successfully.
+          other_sha=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow deploy.yml \
+            --branch "$other" --status success --limit 1 --json headSha --jq '.[0].headSha // empty')
+
+          if [ -z "$other_sha" ] && [ "$other" = "main" ]; then
+            # The site root must never be empty: fall back to the head of main.
+            other_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+            echo "::warning::No successful deployment of main found, using its head ($other_sha)."
+          fi
+          if [ -z "$other_sha" ]; then
+            echo "::notice::No successful deployment of '$other' yet: publishing '$THIS_BRANCH' only."
+          fi
+
+          if [ "$THIS_BRANCH" = "main" ]; then
+            main_sha=$THIS_SHA; dev_sha=$other_sha
+          else
+            main_sha=$other_sha; dev_sha=$THIS_SHA
+          fi
+
+          sites=$(jq -cn --arg main "$main_sha" --arg dev "$dev_sha" \
+            '[{channel: "main", ref: $main}, {channel: "dev", ref: $dev}] | map(select(.ref != ""))')
+          firmware=$(jq -cn --argjson sites "$sites" \
+            '[$sites[] as $s | ("epd13", "epd7") as $t | {channel: $s.channel, ref: $s.ref, target: $t}]')
+
+          echo "sites=$sites" >> "$GITHUB_OUTPUT"
+          echo "firmware=$firmware" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Channels in this deployment"
+            echo "$sites" | jq -r '.[] | "- **\(.channel)**: `\(.ref)`"'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build_firmware:
+    name: "Firmware ${{ matrix.channel }}/${{ matrix.target }}"
+    runs-on: ubuntu-latest
+    needs: plan
     strategy:
       matrix:
-        target: [epd13, epd7]
+        include: ${{ fromJson(needs.plan.outputs.firmware) }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
 
       - name: Setup Python for PlatformIO
         uses: actions/setup-python@v5
@@ -77,15 +155,22 @@ jobs:
       - name: Upload Firmware Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: offline_firmware_${{ matrix.target }}
+          name: offline_firmware_${{ matrix.channel }}_${{ matrix.target }}
           path: .pio/build/${{ matrix.target }}/firmware.bin
 
-  build_web:
+  # One complete site per channel: web UI of that branch + the firmware built from the same commit.
+  build_site:
+    name: "Web UI ${{ matrix.channel }}"
     runs-on: ubuntu-latest
-    needs: [hil, build_firmware]
+    needs: [plan, build_firmware]
+    strategy:
+      matrix:
+        include: ${{ fromJson(needs.plan.outputs.sites) }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -106,45 +191,92 @@ jobs:
 
       - name: Build Web UI
         working-directory: web
+        env:
+          RELEASE_CHANNEL: ${{ matrix.channel }} # see web/vite.config.js
+          BUILD_COMMIT: ${{ matrix.ref }}
         run: npm run build
 
       - name: Download Offline Firmwares
         uses: actions/download-artifact@v4
         with:
+          pattern: offline_firmware_${{ matrix.channel }}_*
           path: downloaded_offline
 
       - name: Move Offline Firmwares to Dist
         run: |
-          mv downloaded_offline/offline_firmware_epd13/firmware.bin web/dist/firmware_offline_epd13.bin
-          mv downloaded_offline/offline_firmware_epd7/firmware.bin web/dist/firmware_offline_epd7.bin
+          mv downloaded_offline/offline_firmware_${{ matrix.channel }}_epd13/firmware.bin web/dist/firmware_offline_epd13.bin
+          mv downloaded_offline/offline_firmware_${{ matrix.channel }}_epd7/firmware.bin web/dist/firmware_offline_epd7.bin
           rm -rf downloaded_offline
+
+      # Read by the web UI of the other channel: is this channel deployed, and which build is it?
+      - name: Write channel.json
+        env:
+          CHANNEL: ${{ matrix.channel }}
+          COMMIT: ${{ matrix.ref }}
+        run: |
+          fw_version=$(sed -nE 's/^#define[[:space:]]+SOFTWARE_VERSION[[:space:]]+"([^"]+)".*/\1/p' src/types.h | head -n 1)
+          jq -n --arg channel "$CHANNEL" --arg commit "$COMMIT" --arg fwVersion "$fw_version" \
+            --arg builtAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{channel: $channel, commit: $commit, fwVersion: $fwVersion, builtAt: $builtAt}' > web/dist/channel.json
+          cat web/dist/channel.json
+
+      - name: Upload Site Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: site_${{ matrix.channel }}
+          path: web/dist
+
+  # Assembles main (root) and dev (./dev/) into the one site that GitHub Pages serves.
+  publish:
+    name: "Assemble site"
+    runs-on: ubuntu-latest
+    needs: [hil, build_site]
+    steps:
+      - name: Download main site
+        uses: actions/download-artifact@v4
+        with:
+          name: site_main
+          path: site
+
+      # A pattern (unlike a name) does not fail when dev has never been deployed.
+      - name: Download dev site
+        uses: actions/download-artifact@v4
+        with:
+          pattern: site_dev
+          path: site/dev
+          merge-multiple: true
 
       - name: Download Original Firmware from S3
         run: |
-          mkdir -p web/dist/factory
+          mkdir -p site/factory
           # Pre-release versions (main branch, deploy_pre)
-          curl -L -o web/dist/factory/espfota_epd7_pre.json http://ul.epaperframe.de/espfota_epd7_pre.json
-          curl -L -o web/dist/factory/firmware_epd7_pre.bin http://ul.epaperframe.de/firmware_epd7_pre.bin
-          curl -L -o web/dist/factory/espfota_epd13_pre.json http://ul.epaperframe.de/espfota_epd13_pre.json
-          curl -L -o web/dist/factory/firmware_epd13_pre.bin http://ul.epaperframe.de/firmware_epd13_pre.bin
+          curl -L -o site/factory/espfota_epd7_pre.json http://ul.epaperframe.de/espfota_epd7_pre.json
+          curl -L -o site/factory/firmware_epd7_pre.bin http://ul.epaperframe.de/firmware_epd7_pre.bin
+          curl -L -o site/factory/espfota_epd13_pre.json http://ul.epaperframe.de/espfota_epd13_pre.json
+          curl -L -o site/factory/firmware_epd13_pre.bin http://ul.epaperframe.de/firmware_epd13_pre.bin
           # Release versions (main branch, approved)
-          curl -L -o web/dist/factory/espfota_epd7.json http://ul.epaperframe.de/espfota_epd7.json
-          curl -L -o web/dist/factory/firmware_epd7.bin http://ul.epaperframe.de/firmware_epd7.bin
-          curl -L -o web/dist/factory/espfota_epd13.json http://ul.epaperframe.de/espfota_epd13.json
-          curl -L -o web/dist/factory/firmware_epd13.bin http://ul.epaperframe.de/firmware_epd13.bin
-          ls -la web/dist/factory/
+          curl -L -o site/factory/espfota_epd7.json http://ul.epaperframe.de/espfota_epd7.json
+          curl -L -o site/factory/firmware_epd7.bin http://ul.epaperframe.de/firmware_epd7.bin
+          curl -L -o site/factory/espfota_epd13.json http://ul.epaperframe.de/espfota_epd13.json
+          curl -L -o site/factory/firmware_epd13.bin http://ul.epaperframe.de/firmware_epd13.bin
+          # The dev UI loads ./factory/ relative to its own folder.
+          if [ -f site/dev/index.html ]; then
+            cp -r site/factory site/dev/factory
+          fi
+          ls -la site site/factory
+          if [ -d site/dev ]; then ls -la site/dev; fi
 
       - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: web/dist
+          path: site
 
   deploy:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
-    needs: build_web
+    needs: publish
     permissions:
       pages: write
       id-token: write

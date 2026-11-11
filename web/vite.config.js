@@ -73,9 +73,10 @@ function ditherTestImagesPlugin() {
 
         if (fs.existsSync(dir)) {
           const exts = Object.keys(MIME);
-          const files = fs.readdirSync(dir).filter((f) =>
-            exts.includes(f.split(".").pop().toLowerCase())
-          ).sort();
+          const files = fs
+            .readdirSync(dir)
+            .filter((f) => exts.includes(f.split(".").pop().toLowerCase()))
+            .sort();
 
           for (const file of files) {
             const ext = file.split(".").pop().toLowerCase();
@@ -108,11 +109,29 @@ function readExpectedFirmwareVersion() {
   return "0.1.0";
 }
 
+/**
+ * Release channel of this build. The deploy workflow builds the site twice:
+ * "main" (stable) is published at the site root, "dev" (preview) in ./dev/.
+ * Anything else is a local build without a channel switch.
+ */
+function readReleaseChannel() {
+  const channel = String(process.env.RELEASE_CHANNEL || "")
+    .trim()
+    .toLowerCase();
+  return channel === "main" || channel === "dev" ? channel : "local";
+}
+
 export default defineConfig({
   root: "src",
   base: "./",
   define: {
     __EXPECTED_FW_VERSION__: JSON.stringify(readExpectedFirmwareVersion()),
+    __RELEASE_CHANNEL__: JSON.stringify(readReleaseChannel()),
+    __BUILD_COMMIT__: JSON.stringify(
+      String(process.env.BUILD_COMMIT || "")
+        .trim()
+        .slice(0, 7),
+    ),
   },
   plugins: [colorProfilesPlugin(), ditherTestImagesPlugin(), viteSingleFile()],
   build: {

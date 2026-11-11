@@ -5,6 +5,13 @@ import { $, setStatus, onStatus, currentStatus, setProgress, onProgress, setLed,
 
 const EXPECTED_FW_VERSION = typeof __EXPECTED_FW_VERSION__ !== "undefined" ? __EXPECTED_FW_VERSION__ : "0.1.0";
 
+// Release channel of this build: "main" (stable, site root), "dev" (preview, ./dev/) or "local".
+// Each channel is a complete build that flashes the offline firmware of its own branch.
+const RELEASE_CHANNEL = typeof __RELEASE_CHANNEL__ !== "undefined" ? __RELEASE_CHANNEL__ : "local";
+const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== "undefined" ? __BUILD_COMMIT__ : "";
+const IS_DEV_CHANNEL = RELEASE_CHANNEL === "dev";
+const PUBLIC_SITE_URL = "https://paperlesspaper.github.io/paperlesspaper-firmware-offline/";
+
 // Limits enforced by the firmware (src/main.cpp). Values outside are silently ignored by the
 // device, so they are validated here before writing.
 const DEVICE_LIMITS = {
@@ -1352,7 +1359,7 @@ function renderPaletteEditor() {
 
   const reset = document.createElement("button");
   reset.type = "button";
-  reset.className = "btn-neu btn-util";
+  reset.className = "btn-neu btn-util btn-neu-danger-text";
   reset.textContent = "Farben zurücksetzen";
   reset.addEventListener("click", () => {
     generatePicture.setCustomPalette(null);
@@ -1774,7 +1781,7 @@ btnConfirmOfflineOta.addEventListener("click", async () => {
     const isHtml = res.ok && res.headers.get("content-type")?.includes("text/html");
     if (!res.ok || isHtml) {
       console.log("Local offline firmware fetch failed or returned HTML. Trying remote fallback...");
-      res = await fetchWithProxy(`https://paperlesspaper.github.io/paperlesspaper-firmware-offline/firmware_offline_${type}.bin`);
+      res = await fetchWithProxy(`${PUBLIC_SITE_URL}${IS_DEV_CHANNEL ? "dev/" : ""}firmware_offline_${type}.bin`);
     }
     const buffer = await downloadFirmware(res, "Die Offline-Firmware");
 
@@ -2030,6 +2037,105 @@ btnClearSerialLog.addEventListener("click", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Release channel (stable "main" / preview "dev")
+// ---------------------------------------------------------------------------
+
+const CHANNEL_LABEL = { main: "Stabil", dev: "Vorschau" };
+const versionDialog = $("versionDialog");
+
+/** main is published at the site root, dev in ./dev/ below it. */
+function channelUrl(channel) {
+  const here = new URL("./", location.href);
+  if (channel === RELEASE_CHANNEL) return here;
+  return new URL(IS_DEV_CHANNEL ? "../" : "dev/", here);
+}
+
+/** "main · v0.1.0 · a827d05" */
+function describeBuild(channel, info) {
+  const parts = [channel];
+  if (info?.fwVersion) parts.push(`v${info.fwVersion}`);
+  if (info?.commit) parts.push(String(info.commit).slice(0, 7));
+  return parts.join(" · ");
+}
+
+function openVersionDialog() {
+  if (state.busy) return;
+  const notes = [];
+  if (state.conn !== "disconnected") notes.push("Beim Wechsel wird die Bluetooth-Verbindung getrennt – danach einfach neu verbinden.");
+  if (state.hasImage) notes.push("Das geladene Bild muss neu ausgewählt werden.");
+  const note = $("versionSwitchNote");
+  note.textContent = notes.join(" ");
+  note.hidden = notes.length === 0;
+  openDialog(versionDialog);
+}
+
+/** Loads the other version: a complete build with its own web UI and its own firmware. */
+function switchChannel(target) {
+  closeDialog(versionDialog);
+  if (target === RELEASE_CHANNEL || state.busy) return;
+  // keep the current view (#firmware, …)
+  location.href = channelUrl(target).href + location.hash;
+}
+
+async function initReleaseChannel() {
+  const ownInfo = { fwVersion: EXPECTED_FW_VERSION, commit: BUILD_COMMIT };
+  const buildInfo = $("buildInfo");
+  buildInfo.textContent = "Version: " + (RELEASE_CHANNEL === "local" ? ["Lokaler Build", `v${EXPECTED_FW_VERSION}`].join(" · ") : `${CHANNEL_LABEL[RELEASE_CHANNEL]} (${describeBuild(RELEASE_CHANNEL, ownInfo)})`);
+  buildInfo.hidden = false;
+
+  if (RELEASE_CHANNEL === "local") return; // nothing to switch to
+
+  // The offline firmware card names the build it flashes: always the one of this web UI.
+  const fwBadge = $("offlineFwChannelBadge");
+  fwBadge.textContent = describeBuild(RELEASE_CHANNEL, { commit: BUILD_COMMIT });
+  fwBadge.classList.toggle("badge-mode", IS_DEV_CHANNEL);
+  fwBadge.hidden = false;
+
+  if (IS_DEV_CHANNEL) {
+    $("channelBanner").hidden = false;
+    document.documentElement.classList.add("has-env-banner");
+  }
+
+  // Offer the switch only if the other version is really deployed next to this one.
+  const other = IS_DEV_CHANNEL ? "main" : "dev";
+  let otherInfo = null;
+  try {
+    const res = await fetch(new URL("channel.json", channelUrl(other)), { cache: "no-store" });
+    if (res.ok) otherInfo = await res.json();
+  } catch (e) {
+    console.info("Release channel check:", e);
+  }
+  if (otherInfo?.channel !== other) return;
+
+  const infos = { [RELEASE_CHANNEL]: ownInfo, [other]: otherInfo };
+  $("channelMainInfo").textContent = describeBuild("main", infos.main);
+  $("channelDevInfo").textContent = describeBuild("dev", infos.dev);
+  for (const [channel, btn] of [
+    ["main", $("btnChannelMain")],
+    ["dev", $("btnChannelDev")],
+  ]) {
+    const current = channel === RELEASE_CHANNEL;
+    btn.setAttribute("aria-pressed", String(current));
+    btn.setAttribute("aria-label", `${CHANNEL_LABEL[channel]} (${channel})${current ? " – aktuell geöffnet" : " – jetzt wechseln"}`);
+    btn.addEventListener("click", () => switchChannel(channel));
+  }
+  $("btnCloseVersion").addEventListener("click", () => closeDialog(versionDialog));
+
+  const btnVersion = $("btnVersion");
+  $("versionLabel").textContent = IS_DEV_CHANNEL ? "Dev" : "Stabil";
+  btnVersion.dataset.channel = RELEASE_CHANNEL;
+  btnVersion.setAttribute("aria-label", `Version: ${CHANNEL_LABEL[RELEASE_CHANNEL]} (${RELEASE_CHANNEL}). Version wechseln`);
+  btnVersion.hidden = false;
+  btnVersion.addEventListener("click", openVersionDialog);
+
+  if (IS_DEV_CHANNEL) {
+    const bannerSwitch = $("btnChannelBannerSwitch");
+    bannerSwitch.hidden = false;
+    bannerSwitch.addEventListener("click", openVersionDialog);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Start
 // ---------------------------------------------------------------------------
 
@@ -2040,3 +2146,4 @@ renderPaletteEditor();
 updateSliderOutputs();
 setOtaMode("ble");
 syncUi();
+initReleaseChannel();

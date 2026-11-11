@@ -29,6 +29,7 @@ export function setLed(el, level) {
 const statusEl = $("status");
 const statusLed = $("statusLed");
 const statusLogOutput = $("statusLogOutput");
+const statusDock = $("statusDock");
 const dockLogToggle = $("dockLogToggle");
 const dockLog = $("dockLog");
 
@@ -70,6 +71,7 @@ export function setStatus(text, level = "idle") {
   currentStatus.level = level;
   if (statusEl) statusEl.textContent = message;
   setLed(statusLed, level);
+  if (statusDock) statusDock.dataset.level = level; // tints the dock in the status colour
   appendLog(message, level);
   statusListeners.forEach((fn) => fn(message, level));
 }
