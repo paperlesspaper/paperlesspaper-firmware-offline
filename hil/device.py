@@ -10,6 +10,7 @@ counter, 3 s after boot.
 """
 
 import re
+import threading
 import time
 from dataclasses import dataclass
 
@@ -115,14 +116,30 @@ class OfflineDevice:
     def _power_cycle(self):
         self.ctrl.clear_logs()
         ESP32HardwareController.set_relay_power(self.target.relay_port, power_on=False)
+        self._release_port()
         time.sleep(self.target.relay_off_seconds)
         ESP32HardwareController.set_relay_power(self.target.relay_port, power_on=True)
         self._last_power_on = time.time()
-        if not (self.ctrl._running and self.ctrl.ser and self.ctrl.ser.is_open):
-            try:
-                self.ctrl.connect(retries=12, retry_delay=0.25)
-            except ConnectionError:
-                pass  # the reader thread keeps retrying
+
+    def _release_port(self):
+        """Hands the serial port back to the reader thread, which reopens it on its own.
+
+        On the 13" board the USB bridge loses power with the device, so the COM port
+        disappears during a power cycle and comes back some time after power-on. The
+        reader thread retries until then. Nothing here may block: the timing of quick
+        presses depends on it. (ESP32HardwareController.connect() is not used for
+        this: it stops the reader thread and leaves it stopped if the port is late.)
+        """
+        ctrl = self.ctrl
+        try:
+            if ctrl.ser:
+                ctrl.ser.close()
+        except Exception:
+            pass
+        if not (ctrl._thread and ctrl._thread.is_alive()):
+            ctrl._running = True
+            ctrl._thread = threading.Thread(target=ctrl._reader_loop, daemon=True)
+            ctrl._thread.start()
 
     def press(self, count=1):
         """Simulates `count` quick presses of the reset button; power stays on afterwards."""
@@ -186,9 +203,16 @@ class OfflineDevice:
 
     def identify(self):
         """Restarts the device once and reports which firmware it runs."""
-        since = self.log_position()
-        self.press(1)
-        return self.read_boot_info(since)
+        try:
+            since = self.log_position()
+            self.press(1)
+            return self.read_boot_info(since)
+        except RuntimeError as first_error:
+            # The COM port can come back too late to catch the first lines of the boot log.
+            print(f"ℹ️ [{self.target.name}] No boot log seen, restarting once more ({str(first_error).splitlines()[0]})")
+            since = self.log_position()
+            self.press(1)
+            return self.read_boot_info(since)
 
     def wait_for_reboot(self, since, timeout=60):
         """Reads the boot log of a boot the device starts on its own (after OTA or reset).
@@ -204,9 +228,14 @@ class OfflineDevice:
         for attempt in (1, 2):
             self.press(1)
             try:
-                self.wait_for(r"\[BLE\] BLE Advertising started", timeout=settings.BLE_READY_TIMEOUT)
+                self.wait_for(r"\[BLE\] BLE Advertising started", timeout=10)
                 return
             except TimeoutError:
+                if not self.ctrl.get_logs():
+                    # The COM port came back after the boot log (13" board). Setup mode
+                    # lasts 30 s, so the BLE scan that follows shows whether it is active.
+                    print(f"ℹ️ [{self.target.name}] Boot log missed, continuing with the BLE scan.")
+                    return
                 if attempt == 2:
                     raise
                 print(f"ℹ️ [{self.target.name}] Setup mode not reached, pressing again...")
