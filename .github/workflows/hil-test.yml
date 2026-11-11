@@ -34,9 +34,41 @@ env:
   CLOUD_TESTBENCH_REF: ${{ vars.CLOUD_TESTBENCH_REF || 'paper-l' }}
 
 jobs:
+  pre_flight:
+    name: "Pre-Flight & Risk Analysis"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      # Compares against the state before the push, so every commit of the push is covered.
+      # A HIGH rating stops the run before anything is flashed.
+      - name: AI Firmware Risk Analysis
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          DIFF_BASE: ${{ github.event.before }}
+        run: python tools/ai_risk_analysis.py --base "$DIFF_BASE" --output risk_report.md
+
+      - name: Upload risk report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hil_risk_report
+          path: risk_report.md
+          if-no-files-found: ignore
+
   build:
     name: "Build ${{ matrix.target }}"
     runs-on: ubuntu-latest
+    needs: pre_flight
     strategy:
       matrix:
         target: [epd7, epd13]
@@ -183,9 +215,9 @@ jobs:
           if-no-files-found: ignore
 
   report:
-    name: "Test report"
+    name: "Test protocol"
     runs-on: ubuntu-latest
-    needs: [build, hil_epd7, hil_epd13]
+    needs: [pre_flight, build, hil_epd7, hil_epd13]
     if: always()
     steps:
       - name: Checkout repository
@@ -204,14 +236,43 @@ jobs:
           path: results
           merge-multiple: true
 
-      - name: Write summary
-        run: python hil/report.py results/junit_epd7.xml results/junit_epd13.xml >> "$GITHUB_STEP_SUMMARY"
+      - name: Download risk report
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: hil_risk_report
+          path: results
+
+      # The WiFi secrets are only set so that they are masked before a log excerpt goes to the AI.
+      - name: Generate test protocol
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          HIL_WIFI_SSID: ${{ secrets.HIL_WIFI_SSID }}
+          HIL_WIFI_PASSWORD: ${{ secrets.HIL_WIFI_PASSWORD }}
+        run: >
+          python hil/report.py results/junit_epd7.xml results/junit_epd13.xml
+          --risk-report results/risk_report.md
+          --fw-version "$FW_VERSION" --commit "$GITHUB_SHA"
+          --output-md hil_test_protocol.md --output-json hil_test_protocol.json
+          >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test protocol
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hil_test_protocol
+          path: |
+            hil_test_protocol.md
+            hil_test_protocol.json
+          if-no-files-found: ignore
 
       - name: Enforce result
+        if: always()
         run: |
-          for result in "${{ needs.build.result }}" "${{ needs.hil_epd7.result }}" "${{ needs.hil_epd13.result }}"; do
+          for result in "${{ needs.pre_flight.result }}" "${{ needs.build.result }}" "${{ needs.hil_epd7.result }}" "${{ needs.hil_epd13.result }}"; do
             if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
-              echo "::error::Build or hardware test did not pass ($result)."
+              echo "::error::Risk analysis, build or hardware test did not pass ($result)."
               exit 1
             fi
           done

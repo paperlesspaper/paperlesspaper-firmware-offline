@@ -222,6 +222,7 @@ Die Firmware wird auf echter Hardware getestet (`hil/`), auf demselben Windows-R
   pio run -e epd7
   python -m hil.run --target epd7 -v
   ```
+- **KI-Schritte** (`tools/`, Google Gemini, Secret `GEMINI_API_KEY`): Vor dem Build bewertet `ai_risk_analysis.py` die Änderungen des Pushs; bei der Bewertung HOCH / BLOCKIERT stoppt der Lauf, bevor ein Gerät geflasht wird. Das Testprotokoll (`hil/report.py`) fasst Tests und Risikobewertung zusammen und ergänzt bei fehlgeschlagenen Tests eine KI-Fehlerdiagnose. Ohne Secret laufen die Tests ohne diese Schritte. An die API gehen der Diff, der Quellcode aus `src/` und Log-Auszüge; Secrets, Geräte-IDs und Pfade werden vorher maskiert.
 - **Nicht abbrechen:** Ein laufender Test flasht Geräte per BLE. Ohne verdrahteten Boot-Taster lässt sich ein Gerät mit unvollständiger oder defekter Firmware nur von Hand wiederbeleben.
 
 ## Roadmap (not ordered)
