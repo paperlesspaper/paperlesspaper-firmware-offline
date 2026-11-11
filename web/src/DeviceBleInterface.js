@@ -92,8 +92,16 @@ export class DeviceBleInterface {
     this.isScanningWifi = false;
     this.isWritingDirectSettings = false;
 
+    // "disconnected" | "connecting" | "connected" | "reconnecting"
+    this.connectionState = "disconnected";
+    this._connecting = false;
+    // Web Bluetooth allows only one GATT operation at a time: settings writes are queued.
+    this._opChain = Promise.resolve();
+
     // Callbacks
+    // onStatusChange(text, level) – level is "idle" | "busy" | "ok" | "warn" | "err"
     this.onStatusChange = () => {};
+    this.onConnectionStateChange = () => {};
     this.onConnected = () => {};
     this.onDisconnected = () => {};
     this.onWifiStatusChange = () => {};
@@ -127,17 +135,54 @@ export class DeviceBleInterface {
     return name.startsWith("epd13");
   }
 
+  /** Web Bluetooth needs a supporting browser and a secure context (https or localhost). */
+  static isSupported() {
+    return typeof navigator !== "undefined" && "bluetooth" in navigator && Boolean(navigator.bluetooth);
+  }
+
+  _setState(state) {
+    if (this.connectionState === state) return;
+    this.connectionState = state;
+    this.onConnectionStateChange(state);
+  }
+
+  _clearReconnect() {
+    if (this.reconnectInterval) clearTimeout(this.reconnectInterval);
+    this.reconnectInterval = null;
+  }
+
+  /** Runs GATT work strictly one after another ("GATT operation already in progress" otherwise). */
+  _enqueue(task) {
+    const run = this._opChain.then(task, task);
+    this._opChain = run.catch(() => {});
+    return run;
+  }
+
   async connect() {
+    if (!DeviceBleInterface.isSupported()) {
+      this.onStatusChange("Dieser Browser unterstützt kein Web Bluetooth. Nutze Chrome, Edge oder Opera.", "err");
+      return;
+    }
     try {
       this.manualDisconnect = false;
-      if (this.reconnectInterval) clearTimeout(this.reconnectInterval);
+      this.reconnectAttempts = 0;
+      this._clearReconnect();
       if (this.bleDevice) {
         this.bleDevice.removeEventListener("gattserverdisconnected", this._boundHandleDisconnect);
         if (this.bleDevice.gatt?.connected) {
           this.bleDevice.gatt.disconnect();
         }
+        if (this.isConnected) {
+          // The listener is already removed, so reset the state by hand.
+          this.isConnected = false;
+          this.settingsService = null;
+          this.wifiService = null;
+          this.deviceDataService = null;
+          this.onDisconnected();
+        }
       }
-      this.onStatusChange("Fordere Bluetooth-Kopplung an...", "text-blue-500");
+      this._setState("connecting");
+      this.onStatusChange("Fordere Bluetooth-Kopplung an...", "busy");
       this.bleDevice = await navigator.bluetooth.requestDevice({
         filters: [{ namePrefix: "epd" }],
         optionalServices: [this.SETTINGS_SERVICE_UUID, this.WIFI_SERVICE_UUID, this.DEVICE_DATA_SERVICE_UUID],
@@ -149,22 +194,34 @@ export class DeviceBleInterface {
       await this.connectToGatt(this.isPaperL);
     } catch (error) {
       console.error(error);
-      this.onStatusChange("Kopplung abgebrochen oder Fehler: " + error.message, "text-red-500");
+      this._setState("disconnected");
+      if (error?.name === "NotFoundError") {
+        // The user closed the device chooser.
+        this.onStatusChange("Geräteauswahl abgebrochen.", "warn");
+      } else if (error?.name === "SecurityError") {
+        this.onStatusChange("Bluetooth ist nur über HTTPS (oder localhost) verfügbar.", "err");
+      } else {
+        this.onStatusChange("Kopplung fehlgeschlagen: " + (error?.message || error), "err");
+      }
     }
   }
 
   async connectToGatt(isPaperL) {
-    if (this.bleDevice && this.bleDevice.gatt.connected) return;
+    if (!this.bleDevice || this._connecting) return;
+    if (this.bleDevice.gatt.connected && this.isConnected) return;
 
     const resolvedIsPaperL = typeof isPaperL === "boolean" ? isPaperL : this.detectIsPaperL();
     this.isPaperL = resolvedIsPaperL;
+    this._connecting = true;
 
     try {
-      this.onStatusChange(`Verbinde zu GATT Server... ${this.reconnectAttempts > 0 ? `(Versuch ${this.reconnectAttempts})` : ""}`, "text-blue-500");
+      this._setState(this.reconnectAttempts > 0 ? "reconnecting" : "connecting");
+      this.onStatusChange(`Verbinde zu GATT Server... ${this.reconnectAttempts > 0 ? `(Versuch ${this.reconnectAttempts})` : ""}`, "busy");
       const server = await this.bleDevice.gatt.connect();
+      if (this.manualDisconnect) throw new Error("Verbindungsaufbau abgebrochen");
       this.reconnectAttempts = 0;
 
-      this.onStatusChange("Lade Services...", "text-blue-500");
+      this.onStatusChange("Lade Services...", "busy");
       this.deviceFirmwareVersion = null;
       this.deviceFirmwareType = null;
       this.settingsService = await server.getPrimaryService(this.SETTINGS_SERVICE_UUID);
@@ -192,80 +249,119 @@ export class DeviceBleInterface {
       }
 
       this.isConnected = true;
+      this._setState("connected");
       this.onFirmwareVersionCheck({
         version: this.deviceFirmwareVersion,
         fw: this.deviceFirmwareType,
         isPaperL: Boolean(this.isPaperL),
       });
-      this.onStatusChange("Erfolgreich Verbunden!", "text-green-600");
+      this.onStatusChange("Erfolgreich Verbunden!", "ok");
       this.onConnected(this.isPaperL);
     } catch (error) {
       console.error(error);
       this.isConnected = false;
+      this.settingsService = null;
+      this.wifiService = null;
+      this.deviceDataService = null;
+      // A half-open link (GATT connected, service discovery failed) would make every retry return
+      // early and hang forever. handleDisconnect() ignores this event because isConnected is false.
+      try {
+        if (this.bleDevice?.gatt?.connected) this.bleDevice.gatt.disconnect();
+      } catch (e) {
+        console.warn("Could not close half-open GATT link", e);
+      }
       if (!this.manualDisconnect) {
         this.reconnectAttempts++;
         if (this.reconnectAttempts <= 12) {
-          this.onStatusChange(`Verbindungsfehler. Reconnect in 5s... (${this.reconnectAttempts}/12)`, "text-orange-500");
-          if (this.reconnectInterval) clearTimeout(this.reconnectInterval);
+          this._setState("reconnecting");
+          this.onStatusChange(`Verbindungsfehler. Reconnect in 5s... (${this.reconnectAttempts}/12)`, "warn");
+          this._clearReconnect();
           this.reconnectInterval = setTimeout(() => {
             this.connectToGatt(this.isPaperL);
           }, 5000);
         } else {
-          this.onStatusChange("Verbindung endgültig verloren.", "text-red-500");
+          this._setState("disconnected");
+          this.onStatusChange("Verbindung endgültig verloren.", "err");
           this.onDisconnected();
         }
       } else {
-        this.onStatusChange("Verbindung abgebrochen oder getrennt.", "text-orange-500");
+        this._setState("disconnected");
+        this.onStatusChange("Verbindung abgebrochen oder getrennt.", "warn");
         this.onDisconnected();
       }
+    } finally {
+      this._connecting = false;
     }
   }
 
   handleDisconnect() {
+    // Drops during connection setup are handled by the retry logic in connectToGatt().
+    if (!this.isConnected) return;
+
     this.isConnected = false;
     this.settingsService = null;
     this.wifiService = null;
     this.deviceDataService = null;
     this.isScanningWifi = false;
 
-    if (this.reconnectInterval) clearTimeout(this.reconnectInterval);
+    this._clearReconnect();
 
     if (!this.manualDisconnect) {
       this.reconnectAttempts = 1;
-      this.onStatusChange(`Verbindung unterbrochen. Reconnect in 5s... (${this.reconnectAttempts}/12)`, "text-orange-500");
+      this._setState("reconnecting");
+      this.onStatusChange(`Verbindung unterbrochen. Reconnect in 5s... (${this.reconnectAttempts}/12)`, "warn");
       this.reconnectInterval = setTimeout(() => {
         this.connectToGatt(this.isPaperL);
       }, 5000);
     } else if (this.otaRebooting) {
       this.otaRebooting = false;
-      this.onStatusChange("Firmware erfolgreich installiert! Gerät startet neu... 🚀", "text-green-600");
+      this._setState("disconnected");
+      this.onStatusChange("Firmware erfolgreich installiert! Gerät startet neu... 🚀", "ok");
     } else {
-      this.onStatusChange("Gerät getrennt.", "text-orange-500");
+      this._setState("disconnected");
+      this.onStatusChange("Gerät getrennt.", "warn");
     }
 
     // UI disconnect aufrufen
     this.onDisconnected();
   }
 
+  /** Disconnects, or cancels a pending connection / reconnect attempt. */
   async disconnect() {
-    if (this.bleDevice && this.bleDevice.gatt.connected) {
-      this.manualDisconnect = true;
-      if (this.reconnectInterval) clearTimeout(this.reconnectInterval);
-      this.onStatusChange("Trenne Verbindung...", "text-orange-500");
+    this.manualDisconnect = true;
+    this._clearReconnect();
 
-      try {
-        const cmdChar = await this.settingsService.getCharacteristic(this.UPLOAD_CMD_UUID);
-        await cmdChar.writeValue(this.encodeText("EXIT_SETUP"));
-      } catch (e) {
-        console.warn("Could not send EXIT_SETUP", e);
+    if (this.bleDevice && this.bleDevice.gatt.connected) {
+      this.onStatusChange("Trenne Verbindung...", "busy");
+
+      if (this.settingsService) {
+        try {
+          const cmdChar = await this.settingsService.getCharacteristic(this.UPLOAD_CMD_UUID);
+          await cmdChar.writeValue(this.encodeText("EXIT_SETUP"));
+        } catch (e) {
+          console.warn("Could not send EXIT_SETUP", e);
+        }
       }
 
+      // Fires "gattserverdisconnected" -> handleDisconnect() (or the catch in connectToGatt()).
       this.bleDevice.gatt.disconnect();
+    } else if (this._connecting) {
+      // Aborts the pending gatt.connect(); connectToGatt() then reports the cancelled attempt.
+      try {
+        this.bleDevice?.gatt?.disconnect();
+      } catch (e) {
+        console.warn("Could not abort pending connection", e);
+      }
+    } else if (this.connectionState !== "disconnected") {
+      // Waiting for the next reconnect attempt: nothing is connected, just stop trying.
+      this._setState("disconnected");
+      this.onStatusChange("Verbindungsversuch abgebrochen.", "warn");
+      this.onDisconnected();
     }
   }
 
   async readAllSettings() {
-    this.onStatusChange("Lese Geräteeinstellungen...", "text-blue-500");
+    this.onStatusChange("Lese Geräteeinstellungen...", "busy");
     const settings = {};
 
     try {
@@ -421,35 +517,44 @@ export class DeviceBleInterface {
     }
   }
 
-  async scanWifi() {
-    if (this.settingsService && !this.isScanningWifi) {
-      try {
-        this.isScanningWifi = true;
-        const cmdChar = await this.settingsService.getCharacteristic(this.UPLOAD_CMD_UUID);
-        await cmdChar.writeValue(this.encodeText("SCAN_WIFI"));
-        setTimeout(() => {
-          this.isScanningWifi = false;
-        }, 5000);
-      } catch (e) {
-        console.error("Failed to trigger WLAN Scan:", e);
+  /** Resolves to true when a scan was started (results arrive via onWifiScanResult). */
+  scanWifi() {
+    return this._enqueue(() => this._scanWifi());
+  }
+
+  async _scanWifi() {
+    if (!this.settingsService || this.isScanningWifi) return false;
+    try {
+      this.isScanningWifi = true;
+      const cmdChar = await this.settingsService.getCharacteristic(this.UPLOAD_CMD_UUID);
+      await cmdChar.writeValue(this.encodeText("SCAN_WIFI"));
+      setTimeout(() => {
         this.isScanningWifi = false;
-        throw e;
-      }
+      }, 5000);
+      return true;
+    } catch (e) {
+      console.error("Failed to trigger WLAN Scan:", e);
+      this.isScanningWifi = false;
+      throw e;
     }
   }
 
-  async saveWifi(ssid, password) {
+  saveWifi(ssid, password) {
+    return this._enqueue(() => this._saveWifi(ssid, password));
+  }
+
+  async _saveWifi(ssid, password) {
     if (!this.wifiService) return false;
 
     try {
-      this.onStatusChange("Speichere WLAN...", "text-blue-500");
+      this.onStatusChange("Speichere WLAN...", "busy");
       const ssidChar = await this.wifiService.getCharacteristic(this.WIFI_SSID_UUID);
       await ssidChar.writeValue(this.encodeText(ssid));
 
       const passChar = await this.wifiService.getCharacteristic(this.WIFI_PASS_UUID);
       await passChar.writeValue(this.encodeText(password));
 
-      this.onStatusChange("Prüfe WLAN-Verbindung...", "text-yellow-500");
+      this.onStatusChange("Prüfe WLAN-Verbindung...", "busy");
 
       const connectedChar = await this.deviceDataService.getCharacteristic(this.WIFI_CONNECTED_UUID);
       await new Promise((r) => setTimeout(r, 2000));
@@ -471,7 +576,7 @@ export class DeviceBleInterface {
 
       if (isConnected) {
         this.onWifiStatusChange(true);
-        this.onStatusChange("WLAN gespeichert & Erfolgreich Verbunden! ✅", "text-green-600");
+        this.onStatusChange("WLAN gespeichert & Erfolgreich Verbunden! ✅", "ok");
         try {
           const modeChar = await this.settingsService.getCharacteristic(this.MODE_UUID);
           await modeChar.writeValue(this.encodeText("1"));
@@ -479,20 +584,24 @@ export class DeviceBleInterface {
         return true;
       } else {
         this.onWifiStatusChange(false);
-        this.onStatusChange("WLAN gespeichert, aber Verbindung fehlgeschlagen (Passwort falsch?)", "text-red-500");
+        this.onStatusChange("WLAN gespeichert, aber Verbindung fehlgeschlagen (Passwort falsch?)", "err");
         return false;
       }
     } catch (e) {
       console.error(e);
-      this.onStatusChange("Fehler beim Speichern des WLANs.", "text-red-500");
+      this.onStatusChange("Fehler beim Speichern des WLANs.", "err");
       return false;
     }
   }
 
-  async saveSettings(settings) {
+  saveSettings(settings) {
+    return this._enqueue(() => this._saveSettings(settings));
+  }
+
+  async _saveSettings(settings) {
     if (!this.settingsService) return false;
     try {
-      this.onStatusChange("Speichere Einstellungen...", "text-purple-500");
+      this.onStatusChange("Speichere Einstellungen...", "busy");
       const encoder = new TextEncoder();
 
       const urlChar = await this.settingsService.getCharacteristic(this.URL_UUID);
@@ -529,17 +638,22 @@ export class DeviceBleInterface {
       const cmdChar = await this.settingsService.getCharacteristic(this.UPLOAD_CMD_UUID);
       await cmdChar.writeValue(encoder.encode("SAVE_SETTINGS"));
 
-      this.onStatusChange("Einstellungen gespeichert!", "text-green-500");
+      this.onStatusChange("Einstellungen gespeichert!", "ok");
       return true;
     } catch (error) {
       console.error(error);
-      this.onStatusChange("Fehler beim Speichern der Einstellungen", "text-red-500");
+      this.onStatusChange("Fehler beim Speichern der Einstellungen", "err");
       return false;
     }
   }
 
-  async directSaveSetting(type, value) {
-    if (!this.settingsService) return;
+  /** Writes a single switch and persists it. Resolves to true when the device accepted it. */
+  directSaveSetting(type, value) {
+    return this._enqueue(() => this._directSaveSetting(type, value));
+  }
+
+  async _directSaveSetting(type, value) {
+    if (!this.settingsService) return false;
     try {
       this.isWritingDirectSettings = true;
       let charUUID = null;
@@ -553,21 +667,28 @@ export class DeviceBleInterface {
 
         const cmdChar = await this.settingsService.getCharacteristic(this.UPLOAD_CMD_UUID);
         await cmdChar.writeValue(this.encodeText("SAVE_SETTINGS"));
+        return true;
       }
+      return false;
     } catch (err) {
       console.error(`Failed to update ${type} directly`, err);
+      return false;
     } finally {
       this.isWritingDirectSettings = false;
     }
   }
 
-  async factoryReset() {
+  factoryReset() {
+    return this._enqueue(() => this._factoryReset());
+  }
+
+  async _factoryReset() {
     if (!this.settingsService) return;
     try {
-      this.onStatusChange("Führe Factory Reset aus...", "text-red-500");
+      this.onStatusChange("Führe Factory Reset aus...", "busy");
       const cmdChar = await this.settingsService.getCharacteristic(this.UPLOAD_CMD_UUID);
       await cmdChar.writeValue(this.encodeText("RESET"));
-      this.onStatusChange("Gerät wird zurückgesetzt und neugestartet.", "text-green-600");
+      this.onStatusChange("Gerät wird zurückgesetzt und neugestartet.", "ok");
 
       setTimeout(() => {
         if (this.bleDevice && this.bleDevice.gatt.connected) {
@@ -576,19 +697,22 @@ export class DeviceBleInterface {
       }, 1500);
     } catch (e) {
       console.error(e);
-      this.onStatusChange("Fehler beim Factory Reset.", "text-red-500");
+      this.onStatusChange("Fehler beim Factory Reset.", "err");
     }
   }
 
   async uploadData(buffer, isFirmware = false) {
-    if (!this.settingsService) return;
+    if (!this.settingsService) {
+      // Silently returning here looked like a successful upload to the caller.
+      throw new Error("Keine Verbindung zum E-Paper.");
+    }
 
     try {
       this.onUploadProgress(isFirmware ? "firmware" : "image", 0);
       const dataBytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
 
       if (isFirmware) {
-        this.onStatusChange("Prüfe Firmware-Datei...", "text-blue-500");
+        this.onStatusChange("Prüfe Firmware-Datei...", "busy");
         await validateEsp32FirmwareBinary(dataBytes);
       } else {
         try {
@@ -602,7 +726,7 @@ export class DeviceBleInterface {
       const dataChar = await this.settingsService.getCharacteristic(this.UPLOAD_DATA_UUID);
       const cmdChar = await this.settingsService.getCharacteristic(this.UPLOAD_CMD_UUID);
 
-      this.onStatusChange(isFirmware ? "Starte Firmware Update..." : "Öffne Flash Puffer...", "text-blue-500");
+      this.onStatusChange(isFirmware ? "Starte Firmware Update..." : "Öffne Flash Puffer...", "busy");
       await cmdChar.writeValue(this.encodeText(isFirmware ? "START_FW" : "START"));
 
       const initView = await cmdChar.readValue();
@@ -735,18 +859,21 @@ export class DeviceBleInterface {
           if (retryCount > 10) {
             throw new Error(`Upload fehlgeschlagen! Checkpoint bei ${offset} konnte nicht übertragen werden.`);
           }
-          this.onStatusChange(`Paketverlust korrigiert – wiederhole Checkpoint... (Versuch ${retryCount})`, "text-orange-500");
+          this.onStatusChange(`Paketverlust korrigiert – wiederhole Checkpoint... (Versuch ${retryCount})`, "warn");
         }
 
         let percent = Math.round((offset / dataBytes.length) * 100);
         this.onUploadProgress(isFirmware ? "firmware" : "image", percent);
-        this.onStatusChange(`Sende ${isFirmware ? "Firmware" : "Daten"}... ${percent}%`, "text-green-500");
+        if (isWindowValid) {
+          // keep the "retrying checkpoint" warning visible instead of overwriting it right away
+          this.onStatusChange(`Sende ${isFirmware ? "Firmware" : "Daten"}... ${percent}%`, "busy");
+        }
       }
 
       this.onUploadProgress(isFirmware ? "firmware" : "image", 100);
 
       if (isFirmware) {
-        this.onStatusChange("Verifiziere Firmware im Flash (CRC32 & SHA-256)...", "text-blue-500");
+        this.onStatusChange("Verifiziere Firmware im Flash (CRC32 & SHA-256)...", "busy");
         const hasDeferredReboot = Boolean(this.deviceFirmwareVersion);
 
         try {
@@ -769,7 +896,7 @@ export class DeviceBleInterface {
         this.manualDisconnect = true;
         this.otaRebooting = true;
         if (this.reconnectInterval) clearTimeout(this.reconnectInterval);
-        this.onStatusChange("Firmware erfolgreich verifiziert! Gerät startet neu... 🚀", "text-green-600");
+        this.onStatusChange("Firmware erfolgreich verifiziert! Gerät startet neu... 🚀", "ok");
 
         setTimeout(() => {
           if (this.bleDevice && this.bleDevice.gatt.connected) {
@@ -777,7 +904,7 @@ export class DeviceBleInterface {
           }
         }, 800);
       } else {
-        this.onStatusChange("Prüfe & speichere im Flash...", "text-blue-500");
+        this.onStatusChange("Prüfe & speichere im Flash...", "busy");
         await cmdChar.writeValue(this.encodeText(useV2 ? `END:${totalCrcHex}` : "END"));
         if (useV2) {
           const endStatusView = await cmdChar.readValue();
@@ -787,14 +914,15 @@ export class DeviceBleInterface {
             throw new Error(`Bild-Integritätsprüfung im Flash fehlgeschlagen (Flash-CRC 0x${flashCrc.toString(16)} != 0x${totalCrcHex}).`);
           }
         }
-        this.onStatusChange("Aktualisiere das Display...", "text-blue-500");
+        this.onStatusChange("Aktualisiere das Display...", "busy");
         await new Promise((r) => setTimeout(r, 200));
         await cmdChar.writeValue(this.encodeText("APPLY"));
-        this.onStatusChange("Upload abgeschlossen! 🚀", "text-green-600");
+        this.onStatusChange("Upload abgeschlossen! 🚀", "ok");
       }
     } catch (error) {
       console.error(error);
-      this.onStatusChange(`Fehler beim ${isFirmware ? "Firmware " : ""}Upload: ` + error.message, "text-red-500");
+      this.onStatusChange(`Fehler beim ${isFirmware ? "Firmware " : ""}Upload: ` + error.message, "err");
+      error.reported = true; // the status line already shows this error
       throw error;
     }
   }

@@ -3,784 +3,996 @@
 
 <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#ffffff" />
+    <meta name="color-scheme" content="light" />
+    <meta name="description" content="Paperlesspaper Offline: E-Paper per Bluetooth einrichten, Bilder aufbereiten und senden, Firmware flashen." />
     <title>E-Paper Konfiguration</title>
-    <link rel="icon" href="data:,">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <!-- prettier-ignore -->
-    <style>
-            details > summary svg { transition: transform 0.2s ease-in-out; }
-            details[open] > summary svg { transform: rotate(180deg); }
-        </style>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M0 0h32v32H0z'/%3E%3Cpath d='M9 7h10v10h-6v8H9z' fill='%23fff'/%3E%3Cpath d='M13 11h2v2h-2z'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="./styles.css" />
 </head>
 
-<body class="bg-gray-50 text-gray-800 font-sans p-4 sm:p-6 lg:p-8 flex flex-col items-center min-h-screen">
-    <div class="max-w-xl w-full bg-white p-6 sm:p-8 rounded-2xl shadow-xl">
-        <h1 class="text-3xl font-bold mb-6 text-center text-blue-600">Paperlesspaper Offline</h1>
+<body>
+    <!-- Icon sprite: monochrome line icons, square caps, miter joins -->
+    <svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" style="position: absolute" aria-hidden="true" focusable="false">
+        <symbol id="i-image" viewBox="0 0 24 24">
+            <path d="M3 4h18v16H3z M3 16l5-5 4 4 3-3 6 6 M15 8h2v2h-2z" />
+        </symbol>
+        <symbol id="i-device" viewBox="0 0 24 24">
+            <path d="M4 7h10 M18 7h2 M4 17h2 M10 17h10 M14 4h4v6h-4z M6 14h4v6H6z" />
+        </symbol>
+        <symbol id="i-chip" viewBox="0 0 24 24">
+            <path d="M7 7h10v10H7z M10 3v4 M14 3v4 M10 17v4 M14 17v4 M3 10h4 M3 14h4 M17 10h4 M17 14h4" />
+        </symbol>
+        <symbol id="i-help" viewBox="0 0 24 24">
+            <path d="M3 3h18v18H3z M9 9V7h6v5h-3v2 M12 16v2" />
+        </symbol>
+        <symbol id="i-eye" viewBox="0 0 24 24">
+            <path d="M2 12l4-5h12l4 5-4 5H6z M10 10h4v4h-4z" />
+        </symbol>
+        <symbol id="i-eye-off" viewBox="0 0 24 24">
+            <path d="M2 12l4-5h12l4 5-4 5H6z M10 10h4v4h-4z M4 3l16 18" />
+        </symbol>
+    </svg>
 
-        <div class="flex flex-col items-center mb-6">
-            <div class="flex space-x-4 w-full sm:w-auto">
-                <button id="btnConnect" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-8 rounded-xl shadow-lg transition-transform transform active:scale-95">Mit E-Paper verbinden</button>
-                <button id="btnDisconnect" class="hidden flex-1 bg-orange-600 hover:bg-orange-700 text-white font-bold py-3 px-8 rounded-xl shadow-lg transition-transform transform active:scale-95">Trennen</button>
+    <a class="skip-link" href="#main">Zum Inhalt springen</a>
+
+    <header class="app-bar">
+        <div class="app-bar-inner">
+            <div class="brand">
+                <h1 class="brand-title">Paperlesspaper</h1>
+                <span class="badge">Offline</span>
             </div>
-            <div id="statusText" class="mt-3 text-sm font-semibold text-gray-400">Warte auf Verbindung...</div>
+
+            <nav class="app-nav" aria-label="Hauptnavigation">
+                <button type="button" class="nav-btn" id="tabEditor" data-view-target="bild">
+                    <svg class="icon" aria-hidden="true"><use href="#i-image" /></svg>
+                    <span>Bild</span>
+                </button>
+                <button type="button" class="nav-btn" id="tabConnect" data-view-target="geraet">
+                    <svg class="icon" aria-hidden="true"><use href="#i-device" /></svg>
+                    <span>Gerät</span>
+                </button>
+                <button type="button" class="nav-btn" id="tabOta" data-view-target="firmware">
+                    <svg class="icon" aria-hidden="true"><use href="#i-chip" /></svg>
+                    <span>Firmware</span>
+                </button>
+                <button type="button" class="nav-btn" id="tabHelp" data-view-target="hilfe">
+                    <svg class="icon" aria-hidden="true"><use href="#i-help" /></svg>
+                    <span>Hilfe</span>
+                </button>
+            </nav>
+
+            <div class="conn">
+                <span class="status-led state-0" id="connLed" role="img" aria-label="Nicht verbunden"></span>
+                <button type="button" id="btnConnect" class="btn-neu btn-util btn-neu-signal">Verbinden</button>
+                <button type="button" id="btnDisconnect" class="btn-neu btn-util btn-neu-danger-text" hidden>Trennen</button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Telemetry of the connected device -->
+    <div id="systemStatusBar" class="device-strip" hidden>
+        <div class="device-strip-inner">
+            <span class="chip" id="chipDevice">
+                <span class="chip-key">Gerät</span>
+                <span id="systemDeviceName">--</span>
+            </span>
+            <span class="chip" id="chipBattery">
+                <span class="chip-key">Batterie</span>
+                <span id="systemVoltage">-- V</span>
+            </span>
+            <span class="chip" id="chipUsb">
+                <span class="chip-key">USB</span>
+                <span id="systemChargerStatus">Prüfe…</span>
+            </span>
+            <span class="chip" id="chipFw">
+                <span class="chip-key">Firmware</span>
+                <span id="systemFwVersion">--</span>
+            </span>
+        </div>
+    </div>
+
+    <main id="main" class="app-main">
+        <!-- Browser cannot talk to the device -->
+        <div id="bluetoothUnsupported" class="banner banner-err" role="alert" hidden>
+            <div class="banner-body">
+                <p class="banner-title">⚠️ Bluetooth nicht verfügbar</p>
+                <p class="banner-text" id="bluetoothUnsupportedText">Dieser Browser unterstützt kein Web Bluetooth. Nutze Chrome, Edge oder Opera auf Android, Windows, macOS oder Linux. Bild-Editor und BMP-Download funktionieren auch ohne Verbindung.</p>
+            </div>
         </div>
 
-        <!-- Global System Status Bar (Hidden until connected) -->
-        <div id="systemStatusBar" class="hidden mb-4 w-full bg-white border border-gray-200 rounded-xl shadow-sm p-4 flex flex-wrap gap-3 justify-around items-center transition-all duration-500 transform scale-95 opacity-0">
-            <div class="flex items-center space-x-3">
-                <div id="batteryIconBg" class="bg-blue-100 p-2 rounded-full">
-                    <svg id="batteryIcon" class="w-5 h-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7h14a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V9a2 2 0 012-2zm16 4h2" />
-                    </svg>
-                </div>
-                <div>
-                    <p class="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Batterie</p>
-                    <p id="systemVoltage" class="text-sm font-bold text-gray-800">-- V</p>
-                </div>
+        <!-- Connected device runs outdated firmware -->
+        <div id="firmwareVersionWarning" class="banner banner-warn" hidden>
+            <div class="banner-body">
+                <p class="banner-title" id="firmwareVersionWarningTitle">⚠️ Veraltete Firmware erkannt</p>
+                <p class="banner-text" id="firmwareVersionWarningText">Auf dem Gerät ist nicht die aktuelle Firmware-Version installiert.</p>
             </div>
-            <div class="h-10 w-px bg-gray-200 hidden sm:block"></div>
-            <div class="flex items-center space-x-3">
-                <div id="chargerIconBg" class="bg-gray-100 p-2 rounded-full transition-colors">
-                    <svg id="chargerIcon" class="w-5 h-5 text-gray-500 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                    </svg>
-                </div>
-                <div>
-                    <p class="text-[10px] text-gray-500 font-bold uppercase tracking-widest">USB-Verbindung</p>
-                    <p id="systemChargerStatus" class="text-sm font-bold text-gray-800">Prüfe...</p>
-                </div>
-            </div>
-            <div class="h-10 w-px bg-gray-200 hidden sm:block"></div>
-            <div class="flex items-center space-x-3">
-                <div id="fwVersionIconBg" class="bg-purple-100 p-2 rounded-full transition-colors">
-                    <svg id="fwVersionIcon" class="w-5 h-5 text-purple-600 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                    </svg>
-                </div>
-                <div>
-                    <p class="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Firmware</p>
-                    <p id="systemFwVersion" class="text-sm font-bold text-gray-800">--</p>
-                </div>
-            </div>
+            <button type="button" id="btnJumpToOta" class="btn-neu btn-util btn-neu-signal">Zum Update</button>
         </div>
 
-        <!-- Firmware Version Warning Banner (Shown when connected device has outdated firmware) -->
-        <div id="firmwareVersionWarning" class="hidden mb-6 p-4 bg-amber-50 border border-amber-300 rounded-xl shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div class="flex items-start space-x-3">
-                <span class="text-xl leading-none mt-0.5">⚠️</span>
-                <div>
-                    <p id="firmwareVersionWarningTitle" class="text-sm font-bold text-amber-900">Veraltete Firmware erkannt</p>
-                    <p id="firmwareVersionWarningText" class="text-xs text-amber-800 mt-0.5 leading-relaxed">Auf dem Gerät ist nicht die aktuelle Firmware-Version installiert.</p>
+        <!-- ============================== VIEW: BILD ============================== -->
+        <section id="viewEditor" class="view" aria-labelledby="imageSecTitle" hidden>
+            <div class="editor-grid">
+                <div class="neu-card editor-preview">
+                    <div class="card-head">
+                        <h2 id="imageSecTitle">Bild</h2>
+                        <div class="badges">
+                            <span class="badge" id="displayBadge">7.3" · 800×480</span>
+                            <span class="badge badge-ok" id="displayAutoBadge" hidden>✓ Vom Gerät</span>
+                        </div>
+                    </div>
+
+                    <div class="preview-frame" id="previewContainer">
+                        <button type="button" class="preview-empty" id="previewEmpty">
+                            <svg class="icon" aria-hidden="true"><use href="#i-image" /></svg>
+                            <span class="preview-empty-title">Kein Bild geladen</span>
+                            <span class="preview-empty-sub">Tippen, um ein Bild auszuwählen – oder Datei hierher ziehen</span>
+                        </button>
+                        <div class="preview-stage" id="previewStage" hidden>
+                            <canvas id="previewCanvas" role="img" aria-label="Vorschau des aufbereiteten Bildes"></canvas>
+                            <canvas id="previewHoverCanvas" aria-hidden="true"></canvas>
+                        </div>
+                        <div class="preview-busy" aria-hidden="true">
+                            <span class="spinner spinner-sm"></span>
+                            Berechne
+                        </div>
+                    </div>
+
+                    <div class="preview-tools" id="previewModeRow" hidden>
+                        <button type="button" class="btn-toggle" id="btnPreviewRaw" aria-pressed="false">Rohdaten zeigen</button>
+                        <span class="field-hint">Die Vorschau simuliert die echten Display-Farben. „Rohdaten“ zeigt die Farben, die an das Gerät gesendet werden.</span>
+                    </div>
+
+                    <input type="file" id="fileInput" accept="image/*" class="visually-hidden" tabindex="-1" aria-hidden="true" />
+                    <div class="btn-row">
+                        <button type="button" id="btnPickImage" class="btn-neu btn-neu-signal">Bild wählen</button>
+                        <button type="button" id="btnRotate" class="btn-neu btn-fit" disabled>↻ Drehen</button>
+                    </div>
                 </div>
-            </div>
-            <button type="button" id="btnJumpToOta" class="bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold py-2 px-3.5 rounded-lg shadow-sm transition-colors whitespace-nowrap self-end sm:self-center">
-                Zum Update →
-            </button>
-        </div>
 
-        <div class="flex border-b border-gray-200 mb-6">
-            <button id="tabEditor" class="flex-1 py-2 text-center font-bold text-blue-600 border-b-2 border-blue-600 outline-none transition-colors">Bild-Editor</button>
-            <button id="tabConnect" class="flex-1 py-2 text-center font-bold text-gray-400 border-b-2 border-transparent hover:text-blue-500 outline-none transition-colors">Einstellungen</button>
-            <button id="tabOta" class="flex-1 py-2 text-center font-bold text-gray-400 border-b-2 border-transparent hover:text-blue-500 outline-none transition-colors">Firmware Update</button>
-            <button id="tabHelp" class="flex-1 py-2 text-center font-bold text-gray-400 border-b-2 border-transparent hover:text-blue-500 outline-none transition-colors">Hilfe</button>
-        </div>
+                <div class="stack">
+                    <div class="neu-card">
+                        <div class="card-head">
+                            <h2>Übertragen</h2>
+                        </div>
+                        <p class="card-desc" id="imageSecDesc">Das Bild wird automatisch für das 6-Farben-Display aufbereitet. Sende es per Bluetooth an das E-Paper oder lade es als BMP für den Server-Betrieb herunter.</p>
+                        <div class="btn-row">
+                            <button type="button" id="btnUploadImage" class="btn-neu btn-neu-signal btn-grow" disabled>Senden – kein Bild</button>
+                            <button type="button" id="btnDownloadBin" class="btn-neu" disabled>BMP herunterladen</button>
+                        </div>
+                    </div>
 
-        <div id="viewConnect" class="hidden space-y-6">
-            <div id="controls" class="hidden space-y-6 opacity-0 transition-opacity duration-500">
-                <div class="bg-blue-50/50 p-5 rounded-xl border border-blue-100">
-                    <h2 class="text-xl font-bold mb-4 text-gray-700 flex items-center justify-between">
-                        WLAN Zugangsdaten
-                        <span id="syncBadgeWifi" class="hidden text-xs font-semibold bg-green-100 text-green-700 px-2 py-1 rounded-full">✓ Vom Gerät geladen</span>
-                    </h2>
+                    <div class="collapsible" id="imageSettingsDetails" data-collapsible>
+                        <button type="button" class="collapsible-head" aria-expanded="false" aria-controls="imageSettingsBody">
+                            <span>Bild-Einstellungen</span>
+                            <span class="collapsible-icon" aria-hidden="true">▲</span>
+                        </button>
+                        <div class="collapsible-body" id="imageSettingsBody">
+                            <div class="collapsible-inner">
+                                <div class="collapsible-content" id="expertControls">
+                                    <button type="button" id="btnAutoDither" class="btn-neu btn-neu-primary btn-sys" disabled>Auto-Optimieren</button>
 
-                    <div id="wifiConnectedInfo" class="hidden space-y-4 mb-3">
-                        <div class="flex items-center space-x-4 bg-white p-4 rounded-lg shadow-sm border border-green-200">
-                            <div class="flex-shrink-0 bg-green-100 p-2 rounded-full">
-                                <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.906 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0" />
-                                </svg>
+                                    <div class="field">
+                                        <label class="form-label" for="displaySizeSelect">Display</label>
+                                        <select id="displaySizeSelect" class="neu-select">
+                                            <option value="7" selected>7.3" (800×480)</option>
+                                            <option value="13">13.3" (1200×1600)</option>
+                                        </select>
+                                    </div>
+
+                                    <div class="field">
+                                        <label class="form-label" for="paletteSelect">Palette</label>
+                                        <select id="paletteSelect" class="neu-select">
+                                            <option value="spectra6Original">Spectra 6 Originalfarben (knallig)</option>
+                                            <option value="spectra6Custom" selected>Spectra 6 Custom</option>
+                                            <option value="new">Spectra 6 Profil (kalibriert)</option>
+                                        </select>
+                                    </div>
+
+                                    <div id="paletteEditor" class="palette-editor" role="group" aria-label="Palettenfarben anpassen">
+                                        <!-- Palette colors are injected here -->
+                                    </div>
+
+                                    <div class="field">
+                                        <label class="form-label" for="errorDiffusionMatrix">Dithering-Algorithmus</label>
+                                        <select id="errorDiffusionMatrix" class="neu-select">
+                                            <option value="floydSteinberg" selected>Floyd-Steinberg</option>
+                                            <option value="atkinson">Atkinson</option>
+                                            <option value="jarvisJudiceNinke">Jarvis-Judice-Ninke</option>
+                                            <option value="sierra2">Sierra 2</option>
+                                        </select>
+                                    </div>
+
+                                    <label class="form-check-neu">
+                                        <input type="checkbox" id="serpentine" checked />
+                                        <span class="check-text">
+                                            <span class="check-title">Serpentine Dithering</span>
+                                            <span class="check-desc">Wechselt die Richtung pro Zeile – vermeidet sichtbare Muster.</span>
+                                        </span>
+                                    </label>
+
+                                    <hr class="divider" />
+
+                                    <div class="range-row">
+                                        <label for="processingBrightness">Helligkeit</label>
+                                        <input type="range" id="processingBrightness" min="-100" max="100" value="0" />
+                                        <output for="processingBrightness" id="processingBrightnessOut">0</output>
+                                    </div>
+                                    <div class="range-row">
+                                        <label for="processingContrast">Kontrast</label>
+                                        <input type="range" id="processingContrast" min="-100" max="100" value="0" />
+                                        <output for="processingContrast" id="processingContrastOut">0</output>
+                                    </div>
+                                    <div class="range-row">
+                                        <label for="processingSaturation">Sättigung</label>
+                                        <input type="range" id="processingSaturation" min="-100" max="100" value="0" />
+                                        <output for="processingSaturation" id="processingSaturationOut">0</output>
+                                    </div>
+                                    <button type="button" id="btnResetProcessing" class="btn-neu btn-util">Anpassungen zurücksetzen</button>
+                                </div>
                             </div>
-                            <div class="flex-1 min-w-0">
-                                <p class="text-sm font-bold text-gray-900 truncate" id="infoSsid">Netzwerk</p>
-                                <p class="text-xs text-gray-500 truncate mt-1">
-                                    IP:
-                                    <span id="infoIp" class="font-mono">...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ============================== VIEW: GERÄT ============================== -->
+        <section id="viewConnect" class="view" aria-label="Geräte-Einstellungen" hidden>
+            <div id="notConnectedState" class="neu-card empty-state view-narrow">
+                <div class="card-head">
+                    <h2>Kein Gerät verbunden</h2>
+                </div>
+                <p class="card-desc">WLAN, Bild-Abruf und Geräte-Optionen werden direkt auf dem E-Paper gespeichert. Verbinde es dazu per Bluetooth:</p>
+                <ol class="step-list">
+                    <li class="step-item">
+                        <span class="step-num">1</span>
+                        <div>
+                            <strong>Reset-Taste drücken</strong>
+                            <span class="step-desc">Großer Knopf auf der Rückseite. Bluetooth ist danach 30 Sekunden aktiv.</span>
+                        </div>
+                    </li>
+                    <li class="step-item">
+                        <span class="step-num">2</span>
+                        <div>
+                            <strong>Verbinden und Gerät wählen</strong>
+                            <span class="step-desc">
+                                In der Liste erscheint dein Display als
+                                <code>epd7-…</code>
+                                oder
+                                <code>epd13-…</code>
+                                .
+                            </span>
+                        </div>
+                    </li>
+                </ol>
+                <div class="btn-row">
+                    <button type="button" class="btn-neu btn-neu-signal btn-hero" data-action="connect">Mit E-Paper verbinden</button>
+                </div>
+                <p class="field-hint">
+                    Probleme beim Verbinden? In der
+                    <a href="#hilfe">Hilfe</a>
+                    stehen die Details.
+                </p>
+            </div>
+
+            <div id="controls" class="grid-2" hidden>
+                <!-- WLAN -->
+                <div class="neu-card">
+                    <div class="card-head">
+                        <h2>WLAN</h2>
+                        <span id="syncBadgeWifi" class="badge badge-ok" hidden>✓ Vom Gerät geladen</span>
+                    </div>
+
+                    <div id="wifiConnectedInfo" class="stack" hidden>
+                        <div class="kv-list">
+                            <div class="kv-row">
+                                <span class="kv-key">Netzwerk</span>
+                                <span class="kv-val" id="infoSsid">Netzwerk</span>
+                            </div>
+                            <div class="kv-row">
+                                <span class="kv-key">Status</span>
+                                <span class="kv-val">✓ Verbunden</span>
+                            </div>
+                            <div class="kv-row">
+                                <span class="kv-key">IP-Adresse</span>
+                                <span class="kv-val" id="infoIp">…</span>
+                            </div>
+                            <div class="kv-row">
+                                <span class="kv-key">Signal</span>
+                                <span class="kv-val">
+                                    <span id="infoRssi">– dBm</span>
+                                    ·
+                                    <span id="infoQuality">–</span>
+                                </span>
+                            </div>
+                        </div>
+                        <div class="btn-row">
+                            <button type="button" id="btnEditWifi" class="btn-neu btn-sys">WLAN ändern</button>
+                        </div>
+                    </div>
+
+                    <form id="wifiInputMask" class="form" novalidate>
+                        <div class="field">
+                            <label class="form-label" for="wifiSsid">WLAN-Name (SSID)</label>
+                            <div class="input-group">
+                                <input type="text" id="wifiSsid" class="neu-input" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="32" placeholder="Name eingeben oder scannen" aria-describedby="wifiSsidError" />
+                                <button type="button" id="btnScanWifi" class="btn-neu btn-small">Scan</button>
+                            </div>
+                            <p class="field-error" id="wifiSsidError" role="alert" hidden></p>
+                        </div>
+
+                        <div id="wifiListBox" class="field" hidden>
+                            <span class="form-label" id="wifiListLabel">Gefundene Netzwerke</span>
+                            <div id="wifiList" class="wifi-list" role="group" aria-labelledby="wifiListLabel"></div>
+                        </div>
+
+                        <div class="field">
+                            <label class="form-label" for="wifiPass">Passwort</label>
+                            <div class="input-affix">
+                                <input type="password" id="wifiPass" class="neu-input" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="64" placeholder="WLAN-Passwort" aria-describedby="wifiPassError" />
+                                <button type="button" class="icon-btn" data-reveal="wifiPass" aria-label="Passwort anzeigen" aria-pressed="false">
+                                    <svg class="icon" aria-hidden="true"><use href="#i-eye" /></svg>
+                                </button>
+                            </div>
+                            <p class="field-error" id="wifiPassError" role="alert" hidden></p>
+                        </div>
+
+                        <div class="btn-row">
+                            <button type="submit" id="btnSaveWifi" class="btn-neu btn-neu-primary btn-sys">WLAN speichern</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div class="stack">
+                    <!-- Bild-Abruf -->
+                    <div class="neu-card">
+                        <div class="card-head">
+                            <h2>Bild-Abruf</h2>
+                            <span id="syncBadgeSettings" class="badge badge-ok" hidden>✓ Vom Gerät geladen</span>
+                        </div>
+                        <p class="card-desc">Das E-Paper lädt in festen Abständen selbstständig ein Bild von deinem Server.</p>
+
+                        <form id="settingsForm" class="form" novalidate>
+                            <div class="field">
+                                <label class="form-label" for="settingUrl">Download-URL</label>
+                                <input type="url" id="settingUrl" class="neu-input" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="http://mein-server.de/bild.bmp" aria-describedby="settingUrlError urlValidationStatus" />
+                                <p class="field-error" id="settingUrlError" role="alert" hidden></p>
+                                <p class="field-note" id="urlValidationStatus" hidden></p>
+                            </div>
+
+                            <div class="field">
+                                <label class="form-label" for="settingTimeout">Aktualisierungs-Intervall (Sekunden)</label>
+                                <input type="number" id="settingTimeout" class="neu-input" inputmode="numeric" min="60" max="2592000" step="1" placeholder="3600" aria-describedby="settingTimeoutError settingTimeoutHint" />
+                                <p class="field-hint" id="settingTimeoutHint">60 Sekunden bis 30 Tage.</p>
+                                <p class="field-error" id="settingTimeoutError" role="alert" hidden></p>
+                            </div>
+
+                            <div class="field">
+                                <label class="form-label" for="settingSettingsUrl">
+                                    Settings-JSON-URL
+                                    <span class="optional">optional</span>
+                                </label>
+                                <div class="input-group">
+                                    <input type="url" id="settingSettingsUrl" class="neu-input" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="http://mein-server.de/settings.json" aria-describedby="settingSettingsUrlError" />
+                                    <button type="button" id="btnPreviewJson" class="btn-neu btn-small">Prüfen</button>
+                                </div>
+                                <p class="field-error" id="settingSettingsUrlError" role="alert" hidden></p>
+                            </div>
+
+                            <div class="field">
+                                <label class="form-label" for="settingHttpAuthUser">
+                                    HTTP-Auth Benutzername
+                                    <span class="optional">optional</span>
+                                </label>
+                                <input type="text" id="settingHttpAuthUser" class="neu-input" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="z. B. apiuser" aria-describedby="settingHttpAuthUserError" />
+                                <p class="field-error" id="settingHttpAuthUserError" role="alert" hidden></p>
+                            </div>
+
+                            <div class="field">
+                                <label class="form-label" for="settingHttpAuthPassword">
+                                    HTTP-Auth Passwort
+                                    <span class="optional">optional</span>
+                                </label>
+                                <div class="input-affix">
+                                    <input type="password" id="settingHttpAuthPassword" class="neu-input" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Leer = gespeichertes behalten" aria-describedby="settingHttpAuthPasswordError settingHttpAuthPasswordHint" />
+                                    <button type="button" class="icon-btn" data-reveal="settingHttpAuthPassword" aria-label="Passwort anzeigen" aria-pressed="false">
+                                        <svg class="icon" aria-hidden="true"><use href="#i-eye" /></svg>
+                                    </button>
+                                </div>
+                                <p class="field-hint" id="settingHttpAuthPasswordHint">Das Gerät gibt das gespeicherte Passwort nicht zurück. Leer lassen, um es zu behalten.</p>
+                                <p class="field-error" id="settingHttpAuthPasswordError" role="alert" hidden></p>
+                            </div>
+
+                            <div class="save-zone" id="settingsSaveZone">
+                                <span class="dirty-note">Ungespeicherte Änderungen</span>
+                                <div class="btn-row">
+                                    <button type="submit" id="btnSaveSettings" class="btn-neu btn-neu-primary btn-sys">Einstellungen speichern</button>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+
+                    <!-- Experten-Bereich -->
+                    <div class="collapsible" data-collapsible>
+                        <button type="button" class="collapsible-head" aria-expanded="false" aria-controls="expertBody">
+                            <span>Experten-Bereich</span>
+                            <span class="collapsible-icon" aria-hidden="true">▲</span>
+                        </button>
+                        <div class="collapsible-body" id="expertBody">
+                            <div class="collapsible-inner">
+                                <div class="collapsible-content">
+                                    <p class="field-hint">Diese Optionen werden beim Umschalten sofort auf dem Gerät gespeichert.</p>
+                                    <label class="form-check-neu">
+                                        <input type="checkbox" id="settingMotionWakeup" />
+                                        <span class="check-text">
+                                            <span class="check-title">Motion Wakeup</span>
+                                            <span class="check-desc">Weckt die Firmware bei Bewegung auf (nur im URL-Modus).</span>
+                                        </span>
+                                    </label>
+                                    <label class="form-check-neu">
+                                        <input type="checkbox" id="settingAutoRotation" checked />
+                                        <span class="check-text">
+                                            <span class="check-title">Auto Rotation</span>
+                                            <span class="check-desc">Richtet das Bild automatisch nach dem Lagesensor aus.</span>
+                                        </span>
+                                    </label>
+                                    <label class="form-check-neu">
+                                        <input type="checkbox" id="settingChargerMode" />
+                                        <span class="check-text">
+                                            <span class="check-title">Charger Mode (nur NiMH)</span>
+                                            <span class="check-desc is-warn">⚠ Nur mit NiMH-Akkus nutzen! Lädt den Akku über USB-C.</span>
+                                        </span>
+                                    </label>
+
+                                    <hr class="divider" />
+
+                                    <div class="sub-head">
+                                        <h3>Gefahrenzone</h3>
+                                    </div>
+                                    <p class="field-hint">Löscht alle Einstellungen, WLAN-Zugangsdaten und gespeicherte Bilder auf dem Gerät.</p>
+                                    <div class="btn-row">
+                                        <button type="button" id="btnFactoryReset" class="btn-neu btn-neu-danger btn-sys">Gerät zurücksetzen</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ============================== VIEW: FIRMWARE ============================== -->
+        <section id="viewOta" class="view" aria-label="Firmware" hidden>
+            <div id="controlsOta" class="stack">
+                <div class="neu-card">
+                    <div class="card-head">
+                        <h2>Verbindungsweg</h2>
+                        <span id="activeOtaModeBadge" class="badge">Modus: Bluetooth</span>
+                    </div>
+                    <div class="seg" role="group" aria-label="Verbindungsweg wählen">
+                        <button type="button" id="btnOtaBle" class="seg-btn" aria-pressed="true">Bluetooth (BLE)</button>
+                        <button type="button" id="btnOtaSerial" class="seg-btn" aria-pressed="false">USB-Kabel (COM)</button>
+                    </div>
+                    <p id="bleModeNotice" class="callout callout-info">
+                        <span class="callout-caption">📶 Bluetooth-Update</span>
+                        Das E-Paper muss eingeschaltet und per Bluetooth verbunden sein (nach Drücken der Reset-Taste ca. 30 Sekunden aktiv).
+                    </p>
+                    <p id="serialModeNotice" class="callout callout-warn" hidden>
+                        <span class="callout-caption">🔌 Anleitung für USB</span>
+                        Entferne die Holzabdeckung vom Bilderrahmen vorsichtig. Verbinde das E-Paper per USB-Kabel mit dem PC. Halte den kleinen Knopf gedrückt, drücke kurz den Reset-Knopf (große Taste) und lass den kleinen Knopf los (Bootloader-Modus).
+                    </p>
+                    <p id="serialUnsupportedNotice" class="callout callout-err" role="alert" hidden>
+                        <span class="callout-caption">⚠️ Nicht unterstützt</span>
+                        Dieser Browser unterstützt keine serielle Verbindung (Web Serial API). Nutze Chrome, Edge oder Opera auf einem PC für USB-Flashing.
+                    </p>
+                </div>
+
+                <div class="grid-2">
+                    <div class="stack">
+                        <!-- Offline Firmware -->
+                        <div id="offlineFirmwareCard" class="neu-card">
+                            <div class="card-head">
+                                <h3>Offline Firmware</h3>
+                                <div class="badges">
+                                    <span id="expectedOfflineFwBadge" class="badge">v0.1.0</span>
+                                    <span class="badge">Lokal</span>
+                                </div>
+                            </div>
+                            <p class="card-desc">Open-Source-Firmware für maximale Unabhängigkeit. Alle Daten laufen lokal über Bluetooth oder WLAN.</p>
+                            <div class="btn-row">
+                                <button type="button" id="btnUpdateOfflineFw" class="btn-neu btn-neu-primary btn-sys">
+                                    Flashen
+                                    <span class="btn-chip otaModeLabel">BLE</span>
+                                </button>
+                            </div>
+                            <p class="field-hint">
+                                Dokumentation &amp; Quellcode:
+                                <a href="https://github.com/paperlesspaper/paperlesspaper-firmware-offline" target="_blank" rel="noopener noreferrer">Offline-Firmware auf GitHub ↗</a>
+                            </p>
+                        </div>
+
+                        <!-- Eigene Firmware -->
+                        <div class="neu-card">
+                            <div class="card-head">
+                                <h3>Eigene Firmware</h3>
+                                <span class="badge">.bin</span>
+                            </div>
+                            <p class="card-desc">
+                                Flasht ein selbst gebautes App-Image (
+                                <code>firmware.bin</code>
+                                ) für den ESP32-C6.
+                            </p>
+                            <div class="btn-row">
+                                <button type="button" id="btnSelectFw" class="btn-neu btn-sys">
+                                    Datei wählen
+                                    <span class="btn-chip otaModeLabel">BLE</span>
+                                </button>
+                            </div>
+                            <input type="file" id="fwInput" accept=".bin" class="visually-hidden" tabindex="-1" aria-hidden="true" />
+                            <input type="file" id="spiffsInput" accept=".bin" class="visually-hidden" tabindex="-1" aria-hidden="true" />
+                        </div>
+                    </div>
+
+                    <div class="stack">
+                        <!-- Original Cloud Firmware -->
+                        <div class="neu-card">
+                            <div class="card-head">
+                                <h3>Original Cloud Firmware</h3>
+                                <span class="badge">Cloud</span>
+                            </div>
+                            <p class="card-desc">Offizielle Firmware zur Verbindung mit der Paperlesspaper Cloud und Bildanzeige über die App.</p>
+                            <div class="btn-row">
+                                <button type="button" id="btnFetchOriginalFw" class="btn-neu btn-neu-primary btn-sys">
+                                    Flashen
+                                    <span class="btn-chip otaModeLabel">BLE</span>
+                                </button>
+                            </div>
+                            <p class="field-hint">
+                                Dokumentation &amp; Quellcode:
+                                <a href="https://github.com/paperlesspaper/paperlesspaper-firmware" target="_blank" rel="noopener noreferrer">Cloud-Firmware auf GitHub ↗</a>
+                            </p>
+
+                            <hr class="divider" />
+
+                            <div class="sub-head">
+                                <h4>Zertifikate &amp; SPIFFS-Partition</h4>
+                                <span class="badge">0x3B0000 · 256 KB</span>
+                            </div>
+                            <p class="card-desc">Die Cloud-Firmware benötigt gerätespezifische AWS-IoT-Zertifikate auf der SPIFFS-Partition. Sichere sie, bevor du die Firmware wechselst.</p>
+
+                            <div id="spiffsBleNotice" class="callout callout-warn callout-action">
+                                <span>Backup und Wiederherstellung der Zertifikate funktionieren nur über das USB-Kabel.</span>
+                                <button type="button" id="btnSwitchToUsb" class="btn-neu btn-util">Zu USB wechseln</button>
+                            </div>
+
+                            <div id="spiffsUsbTools" class="btn-row" hidden>
+                                <button type="button" id="btnBackupSpiffs" class="btn-neu btn-sys">Zertifikate sichern</button>
+                                <button type="button" id="btnSelectSpiffs" class="btn-neu btn-sys">Zertifikate wiederherstellen</button>
+                            </div>
+                        </div>
+
+                        <!-- Serial monitor: diagnostic zone (dashed) -->
+                        <div id="serialMonitorContainer" class="neu-card card-aux" hidden>
+                            <div class="card-head">
+                                <h3>Serieller Debug-Monitor</h3>
+                                <span class="badge">115200 Baud</span>
+                            </div>
+                            <div class="btn-row">
+                                <button type="button" id="btnToggleSerialMonitor" class="btn-neu btn-sys btn-grow">Monitor verbinden</button>
+                                <button type="button" id="btnClearSerialLog" class="btn-neu btn-sys">Log leeren</button>
+                            </div>
+                            <div id="serialLogBox" hidden>
+                                <pre id="serialLogOutput" class="terminal terminal-serial" tabindex="0" aria-label="Serielle Ausgabe"></pre>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ============================== VIEW: HILFE ============================== -->
+        <section id="viewHelp" class="view" aria-labelledby="helpTitle" hidden>
+            <div class="stack view-narrow">
+                <div class="neu-card">
+                    <div class="card-head">
+                        <h2 id="helpTitle">Hilfe &amp; FAQ</h2>
+                    </div>
+                    <p class="card-desc">Kurzanleitungen zu Verbindung, Bild-Editor, automatischem Download und Firmware.</p>
+                </div>
+
+                <div class="collapsible open" data-collapsible>
+                    <button type="button" class="collapsible-head" aria-expanded="true" aria-controls="helpConnect">
+                        <span>🔌 Verbinden</span>
+                        <span class="collapsible-icon" aria-hidden="true">▲</span>
+                    </button>
+                    <div class="collapsible-body" id="helpConnect">
+                        <div class="collapsible-inner">
+                            <div class="collapsible-content prose">
+                                <p>Um Einstellungen zu ändern oder Bilder zu übertragen, muss Bluetooth am E-Paper aktiv sein. Mit der Cloud-Firmware musst du das Gerät zurücksetzen und dann wieder wecken.</p>
+                                <ol class="step-list">
+                                    <li class="step-item">
+                                        <span class="step-num">1</span>
+                                        <div>
+                                            <strong>Reset-Taste (großer Knopf) auf der Rückseite einmal drücken</strong>
+                                            <span class="step-desc">Mit der Original Cloud Firmware: warten, bis der WLAN-Verbindungsbildschirm geladen ist.</span>
+                                        </div>
+                                    </li>
+                                    <li class="step-item">
+                                        <span class="step-num">2</span>
+                                        <div>
+                                            <strong>Das Gerät erwacht mit Bluetooth</strong>
+                                            <span class="step-desc">Es bleibt 30 Sekunden lang sichtbar.</span>
+                                        </div>
+                                    </li>
+                                    <li class="step-item">
+                                        <span class="step-num">3</span>
+                                        <div>
+                                            <strong>Oben auf „Verbinden“ tippen und das Display auswählen</strong>
+                                            <span class="step-desc">
+                                                Zum Beispiel
+                                                <code>epd7-…</code>
+                                                oder
+                                                <code>epd13-…</code>
+                                                .
+                                            </span>
+                                        </div>
+                                    </li>
+                                </ol>
+                                <p class="callout">
+                                    <span class="callout-caption">Hinweis (Offline Firmware)</span>
+                                    Wird innerhalb der 30 Sekunden keine Verbindung aufgebaut, geht das E-Paper wieder in den Deep Sleep oder wechselt in den normalen Betrieb.
+                                </p>
+                                <p class="callout callout-info">
+                                    <span class="callout-caption">💡 Schnell-Aktualisierung</span>
+                                    Drückst du die Reset-Taste zweimal im Abstand von etwa einer Sekunde, wird der Bluetooth-Modus übersprungen und sofort ein Bild-Update vom Server erzwungen (die URL muss konfiguriert sein).
+                                </p>
+                                <p class="callout">
+                                    <span class="callout-caption">Unterstützte Browser</span>
+                                    Bluetooth benötigt Chrome, Edge oder Opera (Android, Windows, macOS, Linux). USB-Flashing benötigt einen dieser Browser auf einem PC. Safari und Firefox unterstützen beides nicht.
                                 </p>
                             </div>
-                            <div class="text-right">
-                                <p class="text-sm font-semibold text-gray-900" id="infoRssi">- dBm</p>
-                                <p class="text-xs text-green-600 mt-1" id="infoQuality">Verbunden</p>
-                            </div>
                         </div>
-                        <button id="btnEditWifi" class="w-full bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-bold py-2 rounded-lg transition-colors shadow-sm">WLAN ändern</button>
-                    </div>
-
-                    <div id="wifiInputMask" class="space-y-3">
-                        <div class="flex gap-2">
-                            <input type="text" id="wifiSsid" list="wifiList" autocomplete="off" placeholder="WLAN Name (SSID) wählen oder tippen..." class="flex-1 w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none transition" />
-                            <button id="btnScanWifi" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-lg font-semibold transition-colors border border-gray-300">Scan</button>
-                        </div>
-                        <datalist id="wifiList"></datalist>
-                        <div class="relative">
-                            <input type="password" id="wifiPass" placeholder="Passwort" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none transition pr-10" />
-                            <button type="button" id="btnTogglePass" class="absolute inset-y-0 right-0 flex items-center px-3 text-gray-500 hover:text-gray-700">
-                                <svg id="eyeIconOpen" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 5 8.268 7.943 9.542 12-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                                </svg>
-                                <svg id="eyeIconClosed" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
-                                </svg>
-                            </button>
-                        </div>
-                        <button id="btnSaveWifi" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 rounded-lg transition-colors shadow">WLAN Speichern</button>
                     </div>
                 </div>
 
-                <div class="bg-purple-50/50 p-5 rounded-xl border border-purple-100">
-                    <h2 class="text-xl font-bold mb-4 text-gray-700 flex items-center justify-between">
-                        Geräte-Einstellungen
-                        <span id="syncBadgeSettings" class="hidden text-xs font-semibold bg-green-100 text-green-700 px-2 py-1 rounded-full">✓ Vom Gerät geladen</span>
-                    </h2>
-                    <div class="space-y-3">
-                        <label class="block text-sm text-gray-600">Download URL (Bild vom Server laden)</label>
-                        <input type="text" id="settingUrl" placeholder="http://mein-server.de/bild.bmp" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none transition mb-2" />
-                        <p id="urlValidationStatus" class="text-sm font-medium hidden mb-4 transition-opacity"></p>
-
-                        <label class="block text-sm text-gray-600">Settings JSON URL (optional)</label>
-                        <div class="flex space-x-2 mb-2">
-                            <input type="text" id="settingSettingsUrl" placeholder="http://mein-server.de/settings.json" class="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none transition" />
-                            <button id="btnPreviewJson" class="bg-indigo-100 hover:bg-indigo-200 text-indigo-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors">Prüfen</button>
-                        </div>
-
-                        <label class="block text-sm text-gray-600">HTTP Auth Benutzername (optional)</label>
-                        <input type="text" id="settingHttpAuthUser" placeholder="z.B. apiuser" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none transition mb-2" />
-
-                        <label class="block text-sm text-gray-600">HTTP Auth Passwort (optional)</label>
-                        <div class="relative mb-2">
-                            <input type="password" id="settingHttpAuthPassword" placeholder="Leer lassen = gespeichertes Passwort behalten" autocomplete="off" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none transition pr-10" />
-                            <button type="button" id="btnToggleHttpAuthPass" class="absolute inset-y-0 right-0 flex items-center px-3 text-gray-500 hover:text-gray-700">
-                                <svg id="eyeHttpAuthIconOpen" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 5 8.268 7.943 9.542 12-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                                </svg>
-                                <svg id="eyeHttpAuthIconClosed" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
-                                </svg>
-                            </button>
-                        </div>
-
-                        <label class="block text-sm text-gray-600">Aktualisierungsintervall (Sekunden)</label>
-                        <input type="number" id="settingTimeout" placeholder="z.B. 3600" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none transition mb-2" />
-
-                        <button id="btnSaveSettings" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 rounded-lg transition-colors">Einstellungen Speichern</button>
-                        <br />
-                        <br />
-                        <details class="mt-6 bg-gray-50 border border-gray-200 rounded-lg">
-                            <summary class="cursor-pointer text-sm font-semibold text-gray-700 bg-gray-100 px-4 py-3 rounded-lg hover:bg-gray-200 transition-colors list-none flex justify-between items-center">
-                                <span>Experten-Bereich</span>
-                                <svg class="w-5 h-5 text-gray-500 transform transition-transform duration-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                                </svg>
-                            </summary>
-                            <div class="p-4 space-y-4">
-                                <div class="flex items-center justify-between">
-                                    <div>
-                                        <span class="block text-sm font-medium text-gray-700">Motion Wakeup</span>
-                                        <span class="block text-xs text-gray-500">Weckt die Firmware bei Bewegung auf (nur im URL Modus).</span>
-                                    </div>
-                                    <label class="relative inline-flex items-center cursor-pointer">
-                                        <input type="checkbox" id="settingMotionWakeup" class="sr-only peer" />
-                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
-                                    </label>
-                                </div>
-                                <div class="flex items-center justify-between">
-                                    <div>
-                                        <span class="block text-sm font-medium text-gray-700">Auto Rotation</span>
-                                        <span class="block text-xs text-gray-500">Automatische Bildschirmausrichtung basierend auf dem Accelerometer.</span>
-                                    </div>
-                                    <label class="relative inline-flex items-center cursor-pointer">
-                                        <input type="checkbox" id="settingAutoRotation" class="sr-only peer" checked />
-                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
-                                    </label>
-                                </div>
-                                <div class="flex items-center justify-between">
-                                    <div>
-                                        <span class="block text-sm font-medium text-gray-700">Charger Mode (Nur NiMH)</span>
-                                        <span class="block text-xs text-orange-500">WARNUNG: Nur mit NiMH Akkus nutzen! Lädt den Akku via USB-C.</span>
-                                    </div>
-                                    <label class="relative inline-flex items-center cursor-pointer">
-                                        <input type="checkbox" id="settingChargerMode" class="sr-only peer" />
-                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
-                                    </label>
-                                </div>
-                                <div class="pt-2 border-t border-gray-200 mt-2">
-                                    <h2 class="text-sm font-medium text-red-600 mb-3">Gefahrenzone</h2>
-                                    <button id="btnFactoryReset" class="w-full bg-red-500 hover:bg-red-600 text-white font-bold py-2 rounded-lg transition-colors">Gerät zurücksetzen (Factory Reset)</button>
-                                </div>
-                            </div>
-                        </details>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div id="viewOta" class="hidden space-y-6">
-            <div id="controlsOta" class="space-y-6">
-                <!-- Mode Selector & Notices -->
-                <div class="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-4">
-                    <div class="flex items-center justify-between">
-                        <h2 class="text-xl font-bold text-gray-700">Firmware & Update</h2>
-                        <span id="activeOtaModeBadge" class="text-xs font-semibold px-2.5 py-1 rounded-full bg-blue-100 text-blue-700">Modus: Bluetooth (BLE)</span>
-                    </div>
-
-                    <div>
-                        <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Verbindungsweg wählen</label>
-                        <div class="flex space-x-2 bg-gray-100 p-1.5 rounded-xl text-sm">
-                            <button type="button" id="btnOtaBle" class="flex-1 py-2 rounded-lg font-semibold bg-white text-gray-800 shadow-sm focus:outline-none transition-all flex items-center justify-center gap-1.5">
-                                <span>📶</span> Bluetooth (BLE)
-                            </button>
-                            <button type="button" id="btnOtaSerial" class="flex-1 py-2 rounded-lg font-semibold text-gray-500 hover:text-gray-800 focus:outline-none transition-all flex items-center justify-center gap-1.5">
-                                <span>🔌</span> USB-Kabel (COM-Port)
-                            </button>
-                        </div>
-                    </div>
-
-                    <div id="bleModeNotice" class="p-3 bg-blue-50 border border-blue-200 text-blue-800 rounded-lg text-xs leading-relaxed">
-                        <strong>📶 Bluetooth OTA:</strong> Das E-Paper muss eingeschaltet und per Bluetooth verbunden sein (nach Drücken der Reset-Taste ca. 30 Sekunden aktiv).
-                    </div>
-                    <div id="serialModeNotice" class="hidden p-3 bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-lg text-xs leading-relaxed">
-                        <strong>🔌 Anleitung für USB-COM:</strong> Entferne die Holzabdeckung vom Bilderrahmen vorsichtig. Verbinde das E-Paper per USB-Kabel mit dem PC. Halte den kleinen Knopf gedrückt, drücke kurz den Reset-Knopf (große Taste) und lass den kleinen Knopf los (Bootloader-Modus).
-                    </div>
-                    <div id="serialUnsupportedNotice" class="hidden p-3 bg-red-50 border border-red-200 text-red-800 rounded-lg text-xs leading-relaxed">
-                        ⚠️ <strong>Nicht unterstützt:</strong> Dein Webbrowser unterstützt keine serielle Verbindung (Web Serial API). Nutze Chrome, Edge oder Opera für USB-Flashing.
-                    </div>
-
-                    <!-- Global Progress Bar for any flashing / backup activity -->
-                    <div id="fwProgressContainer" class="hidden w-full bg-gray-200 rounded-full h-2.5 mt-2">
-                        <div id="fwProgressBar" class="bg-blue-600 h-2.5 rounded-full transition-all duration-200" style="width: 0%"></div>
-                    </div>
-                </div>
-
-                <!-- SECTION 1: Original Cloud Firmware -->
-                <div class="bg-blue-50/50 p-5 rounded-xl border border-blue-200 space-y-4 shadow-sm">
-                    <div class="flex items-start justify-between">
-                        <div>
-                            <h3 class="text-lg font-bold text-blue-900 flex items-center gap-2">
-                                <span>☁️</span> Original Cloud Firmware
-                            </h3>
-                            <p class="text-xs text-blue-700/80 mt-1">Offizielle Firmware zur Verbindung mit der Paperlesspaper Cloud und Bildanzeige über die App.</p>
-                        </div>
-                        <span class="text-xs font-semibold px-2 py-0.5 rounded bg-blue-100 text-blue-800 border border-blue-200">Cloud</span>
-                    </div>
-
-                    <button id="btnFetchOriginalFw" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-4 rounded-lg transition-colors shadow flex items-center justify-center gap-2">
-                        <span>Flash</span>
-                        <span class="otaModeLabel text-xs bg-blue-800/40 px-2 py-0.5 rounded font-normal">(BLE)</span>
+                <div class="collapsible" data-collapsible>
+                    <button type="button" class="collapsible-head" aria-expanded="false" aria-controls="helpEditor">
+                        <span>🎨 Bild-Editor &amp; Upload</span>
+                        <span class="collapsible-icon" aria-hidden="true">▲</span>
                     </button>
-
-                    <div class="text-[11px] text-gray-500 pt-1 flex items-center justify-between">
-                        <span>Dokumentation & Quellcode auf GitHub:</span>
-                        <a href="https://github.com/paperlesspaper/paperlesspaper-firmware" target="_blank" class="font-bold text-blue-600 hover:underline">Cloud-Firmware Repository ↗</a>
-                    </div>
-
-                    <!-- SPIFFS & Certificate Management Subsection -->
-                    <div class="mt-4 pt-4 border-t border-blue-200/80 space-y-3">
-                        <div class="flex items-center justify-between">
-                            <h4 class="text-sm font-bold text-gray-800 flex items-center gap-1.5">
-                                <span>🔐</span> Zertifikate & SPIFFS Partition
-                            </h4>
-                            <span class="text-[11px] font-semibold text-gray-500 bg-white/80 px-2 py-0.5 rounded border border-gray-200 font-mono">0x3B0000 (256 KB)</span>
-                        </div>
-                        <p class="text-xs text-gray-600 leading-relaxed">
-                            Die Cloud-Firmware benötigt gerätespezifische AWS IoT Zertifikate auf der SPIFFS-Partition. Sichere diese als Backup, bevor du die Firmware wechselst, oder übertrage neue Zertifikate.
-                        </p>
-
-                        <!-- When in BLE mode, show quick hint -->
-                        <div id="spiffsBleNotice" class="p-3 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg text-xs flex items-center justify-between gap-2">
-                            <span>ℹ️ SPIFFS Zertifikat-Backup & Flashing ist eine Hardware-Funktion und erfordert eine Verbindung per USB-Kabel.</span>
-                            <button type="button" id="btnSwitchToUsb" class="text-xs font-bold text-amber-900 underline hover:text-amber-700 whitespace-nowrap">Zu USB wechseln</button>
-                        </div>
-
-                        <!-- USB Certificate actions (shown in USB mode) -->
-                        <div id="spiffsUsbTools" class="hidden space-y-2">
-                            <button id="btnBackupSpiffs" type="button" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 px-4 rounded-lg transition-colors shadow flex items-center justify-center gap-2 text-sm">
-                                <span>📥</span> Download Certificates (Backup)
-                            </button>
-                            <button id="btnSelectSpiffs" type="button" class="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold py-2.5 px-4 rounded-lg transition-colors shadow flex items-center justify-center gap-2 text-sm">
-                                <span>📤</span> Upload Certificates (Restore)
-                            </button>
+                    <div class="collapsible-body" id="helpEditor">
+                        <div class="collapsible-inner">
+                            <div class="collapsible-content prose">
+                                <p>
+                                    Im Bereich
+                                    <strong>Bild</strong>
+                                    wählst du ein Bild von deinem PC oder Smartphone aus:
+                                </p>
+                                <ul>
+                                    <li>
+                                        <strong>Vorschau:</strong>
+                                        Bilder werden automatisch in die 6 Farben des E-Paper-Displays umgerechnet (Dithering). Algorithmus, Palette und Farben lassen sich unter „Bild-Einstellungen“ anpassen.
+                                    </li>
+                                    <li>
+                                        <strong>Auto-Optimieren:</strong>
+                                        Findet selbstständig passende Kontrast- und Dithering-Einstellungen für dein Bild.
+                                    </li>
+                                    <li>
+                                        <strong>An Gerät senden:</strong>
+                                        Überträgt das aufbereitete Bild per Bluetooth direkt an das Gerät. Das Gerät muss verbunden sein.
+                                    </li>
+                                    <li>
+                                        <strong>BMP herunterladen:</strong>
+                                        Speichert die fertig geditherte
+                                        <code>.bmp</code>
+                                        -Datei für den Server-Betrieb.
+                                    </li>
+                                </ul>
+                            </div>
                         </div>
                     </div>
                 </div>
 
-                <!-- SECTION 2: Offline Firmware -->
-                <div id="offlineFirmwareCard" class="bg-purple-50/50 p-5 rounded-xl border border-purple-200 space-y-4 shadow-sm">
-                    <div class="flex items-start justify-between">
-                        <div>
-                            <h3 class="text-lg font-bold text-purple-900 flex items-center gap-2">
-                                <span>🏠</span> Offline Firmware
-                            </h3>
-                            <p class="text-xs text-purple-700/80 mt-1">Open-Source-Firmware für maximale Unabhängigkeit. Alle Datentransfers laufen Lokal via BLE oder WiFi.</p>
-                        </div>
-                        <div class="flex items-center gap-1.5">
-                            <span id="expectedOfflineFwBadge" class="text-xs font-mono font-semibold px-2 py-0.5 rounded bg-white text-purple-700 border border-purple-200">v0.1.0</span>
-                            <span class="text-xs font-semibold px-2 py-0.5 rounded bg-purple-100 text-purple-800 border border-purple-200">Local</span>
-                        </div>
-                    </div>
-
-                    <button id="btnUpdateOfflineFw" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-2.5 px-4 rounded-lg transition-colors shadow flex items-center justify-center gap-2">
-                        <span>Flash</span>
-                        <span class="otaModeLabel text-xs bg-purple-800/40 px-2 py-0.5 rounded font-normal">(BLE)</span>
+                <div class="collapsible" data-collapsible>
+                    <button type="button" class="collapsible-head" aria-expanded="false" aria-controls="helpUrl">
+                        <span>⚙️ WLAN &amp; automatischer Download</span>
+                        <span class="collapsible-icon" aria-hidden="true">▲</span>
                     </button>
-
-                    <div class="text-[11px] text-gray-500 pt-1 flex items-center justify-between">
-                        <span>Dokumentation & Quellcode auf GitHub:</span>
-                        <a href="https://github.com/paperlesspaper/paperlesspaper-firmware-offline" target="_blank" class="font-bold text-purple-600 hover:underline">Offline-Firmware Repository ↗</a>
+                    <div class="collapsible-body" id="helpUrl">
+                        <div class="collapsible-inner">
+                            <div class="collapsible-content prose">
+                                <p>
+                                    Im Bereich
+                                    <strong>Gerät</strong>
+                                    richtest du ein, dass das E-Paper selbstständig Bilder von einem lokalen oder entfernten Webserver lädt.
+                                </p>
+                                <ul>
+                                    <li>
+                                        <strong>WLAN:</strong>
+                                        Trage dein WLAN ein. Das Gerät sucht Netze und meldet den Verbindungsstatus.
+                                    </li>
+                                    <li>
+                                        <strong>Download-URL:</strong>
+                                        HTTP-Link zu einem Bild (z. B.
+                                        <code>http://nas.local/info.jpg</code>
+                                        ). JPEGs und 24-Bit-BMPs werden direkt auf dem ESP32 gedithert. Wir empfehlen aber fertig geditherte BMPs aus dem Bild-Editor.
+                                    </li>
+                                    <li>
+                                        <strong>Settings-JSON-URL:</strong>
+                                        Verwalte Intervall, Lade-Modus und weitere Optionen über eine JSON-Datei auf deinem Server – ohne das Display erneut per Bluetooth zu verbinden.
+                                    </li>
+                                </ul>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
-                <!-- SECTION 3: Eigene Firmware & Tools -->
-                <div class="bg-gray-50 p-5 rounded-xl border border-gray-200 space-y-4 shadow-sm">
-                    <h3 class="text-base font-bold text-gray-700 flex items-center gap-2">
-                        <span>🛠️</span> Eigene Firmware (Custom .bin File flashen)
-                    </h3>
-
-                    <div>
-                        <button id="btnSelectFw" class="w-full bg-slate-600 hover:bg-slate-700 text-white font-bold py-2.5 px-4 rounded-lg transition-colors shadow flex items-center justify-center gap-2 text-sm">
-                            <span>Upload</span>
-                            <span class="otaModeLabel text-xs bg-slate-800/40 px-2 py-0.5 rounded font-normal">(BLE)</span>
-                        </button>
-                        <input type="file" id="fwInput" accept=".bin" class="hidden" />
-                        <input type="file" id="spiffsInput" accept=".bin" class="hidden" />
-                    </div>
-
-                    <div id="serialMonitorContainer" class="hidden pt-3 border-t border-gray-200">
-                        <h4 class="text-sm font-bold text-gray-700 mb-2 flex items-center justify-between">
-                            <span>Serieller Debug Monitor (USB)</span>
-                            <button type="button" id="btnClearSerialLog" class="text-xs text-gray-500 hover:text-gray-700 bg-white hover:bg-gray-100 border border-gray-200 px-2 py-1 rounded transition">🗑️ Log leeren</button>
-                        </h4>
-                        <button type="button" id="btnToggleSerialMonitor" class="w-full bg-slate-700 hover:bg-slate-800 text-white font-bold py-2 rounded-lg transition-colors text-sm mb-3">Seriellen Debug Monitor verbinden</button>
-                        <div id="serialLogBox" class="hidden">
-                            <pre id="serialLogOutput" class="bg-gray-900 text-green-400 p-3 rounded-lg text-xs font-mono h-48 overflow-y-auto whitespace-pre-wrap break-all select-text"></pre>
+                <div class="collapsible" data-collapsible>
+                    <button type="button" class="collapsible-head" aria-expanded="false" aria-controls="helpFirmware">
+                        <span>💾 Firmware-Versionen</span>
+                        <span class="collapsible-icon" aria-hidden="true">▲</span>
+                    </button>
+                    <div class="collapsible-body" id="helpFirmware">
+                        <div class="collapsible-inner">
+                            <div class="collapsible-content prose">
+                                <p>
+                                    Im Bereich
+                                    <strong>Firmware</strong>
+                                    stehen zwei Firmwares zum Flashen bereit:
+                                </p>
+                                <p class="callout">
+                                    <span class="callout-caption">Original Cloud Firmware (Auslieferung)</span>
+                                    Verbindet sich mit der Cloud und bezieht Bilder über unsere App (
+                                    <a href="https://paperlesspaper.de" target="_blank" rel="noopener noreferrer">paperlesspaper.de</a>
+                                    ). Quellcode im
+                                    <a href="https://github.com/paperlesspaper/paperlesspaper-firmware" target="_blank" rel="noopener noreferrer">Cloud-Firmware-Repository</a>
+                                    .
+                                </p>
+                                <p class="callout">
+                                    <span class="callout-caption">Offline Firmware (optional)</span>
+                                    Für maximale Unabhängigkeit und Smart-Home-Integration: lokaler Bild-Download über WLAN, JSON-Einstellungen und Bluetooth-Direktübertragung. Quellcode und Anleitung im
+                                    <a href="https://github.com/paperlesspaper/paperlesspaper-firmware-offline" target="_blank" rel="noopener noreferrer">Offline-Firmware-Repository</a>
+                                    .
+                                </p>
+                            </div>
                         </div>
                     </div>
                 </div>
-            </div>
-        </div>
 
-        <div id="viewEditor" class="hidden space-y-6">
-            <div id="sharedImageContainer" class="bg-indigo-50/50 p-5 rounded-xl border border-indigo-100">
-                <h2 id="imageSecTitle" class="text-xl font-bold mb-1 text-gray-700">Download und Upload Picture</h2>
-                <p id="imageSecDesc" class="text-xs text-gray-500 mb-4">Lade ein Bild. Es wird automatisch für das E-Paper aufbereitet.</p>
-
-                <input type="file" id="fileInput" accept="image/*" class="w-full mb-4 text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:font-semibold file:bg-indigo-100 file:text-indigo-700 hover:file:bg-indigo-200 cursor-pointer" />
-
-                    <details id="imageSettingsDetails" class="my-4 bg-white shadow-sm border border-gray-200 rounded-lg">
-                        <summary class="cursor-pointer text-sm font-semibold text-gray-700 bg-gray-50 px-4 py-3 rounded-lg hover:bg-gray-100 transition-colors list-none flex justify-between items-center">
-                            <span>Erweiterte Bild-Einstellungen</span>
-                            <svg class="w-5 h-5 text-gray-500 transform transition-transform duration-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                            </svg>
-                        </summary>
-                        <div id="expertControls" class="space-y-3 p-4 border-t border-gray-200">
-                            <div class="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label class="block text-xs font-semibold text-gray-600 mb-1">Dithering Algorithmus</label>
-                                    <select id="errorDiffusionMatrix" class="w-full text-sm border border-gray-300 rounded p-2">
-                                        <option value="floydSteinberg" selected>Floyd-Steinberg</option>
-                                        <option value="atkinson">Atkinson</option>
-                                        <option value="jarvisJudiceNinke">Jarvis-Judice-Ninke</option>
-                                        <option value="sierra2">Sierra 2</option>
-                                    </select>
-                                </div>
-                                <div>
-                                        <label class="block text-xs font-semibold text-gray-600 mb-1 flex items-center justify-between">
-                                            <span>Display</span>
-                                            <span id="displayAutoBadge" class="hidden text-[10px] font-semibold text-green-700 bg-green-100 px-1.5 py-0.5 rounded">Vom Gerät</span>
-                                        </label>
-                                        <select id="displaySizeSelect" class="w-full text-sm border border-gray-300 rounded p-2 disabled:bg-gray-100 disabled:text-gray-600 disabled:cursor-not-allowed">
-                                            <option value="7" selected>7.3" (800x480)</option>
-                                            <option value="13">13.3" (1200x1600)</option>
-                                        </select>
-                                </div>
-                                <div class="col-span-2">
-                                    <label class="block text-xs font-semibold text-gray-600 mb-1">Palette</label>
-                                    <select id="paletteSelect" class="w-full text-sm border border-gray-300 rounded p-2">
-                                        <option value="spectra6Original">Spectra 6 Originalfarben (Knallig)</option>
-                                        <option value="spectra6Custom" selected>Spectra 6 Custom</option>
-                                        <option value="new">Spectra 6 Profil (new.json)</option>
-                                    </select>
-                                </div>
-                                <div id="paletteEditor" class="col-span-2 flex items-center justify-between bg-gray-50 p-2 rounded">
-                                    <!-- Palette colors will be injected here -->
-                                </div>
-                                <div class="col-span-2 flex justify-between items-center bg-gray-50 p-2 rounded">
-                                    <label class="flex items-center text-sm text-gray-600 font-medium">
-                                        <input type="checkbox" id="serpentine" checked class="mr-2 h-4 w-4 text-indigo-600 rounded" />
-                                        Serpentine Dithering
-                                    </label>
-                                </div>
+                <div class="collapsible" data-collapsible>
+                    <button type="button" class="collapsible-head" aria-expanded="false" aria-controls="helpCerts">
+                        <span>🔐 Zertifikate &amp; SPIFFS</span>
+                        <span class="collapsible-icon" aria-hidden="true">▲</span>
+                    </button>
+                    <div class="collapsible-body" id="helpCerts">
+                        <div class="collapsible-inner">
+                            <div class="collapsible-content prose">
+                                <p>
+                                    Für die verschlüsselte Verbindung zur Cloud (Original Cloud Firmware) benötigt das E-Paper gerätespezifische AWS-IoT-Zertifikate auf dem SPIFFS-Speicher (Adresse
+                                    <code>0x3B0000</code>
+                                    ).
+                                </p>
+                                <p class="callout callout-warn">
+                                    <span class="callout-caption">Wichtig</span>
+                                    Die gerätespezifischen Zertifikate sind nicht im Repository enthalten. Sie sind ausschließlich direkt über unseren Support erhältlich.
+                                </p>
+                                <p>
+                                    <strong>Backup anlegen:</strong>
+                                    Bevor du auf eine andere Firmware wechselst, solltest du deine Zertifikate sichern. Wähle im Bereich
+                                    <strong>Firmware</strong>
+                                    den Verbindungsweg
+                                    <strong>USB-Kabel (COM)</strong>
+                                    und tippe auf
+                                    <strong>„Zertifikate sichern“</strong>
+                                    . Die Partition wird ausgelesen und als
+                                    <code>.bin</code>
+                                    -Datei gespeichert.
+                                </p>
+                                <p>
+                                    <strong>Zertifikat wiederherstellen:</strong>
+                                    Liegt dein Zertifikat als
+                                    <code>.bin</code>
+                                    -Datei vom Support oder aus einem Backup vor, überträgst du es mit
+                                    <strong>„Zertifikate wiederherstellen“</strong>
+                                    per USB-Kabel direkt an Adresse 0x3B0000.
+                                </p>
                             </div>
-                            <hr />
-                            <div class="space-y-3 pt-1">
-                                <div class="flex items-center">
-                                    <label class="w-24 text-xs font-semibold text-gray-600">Helligkeit</label>
-                                    <input type="range" id="processingBrightness" min="-100" max="100" value="0" class="flex-1 accent-indigo-600" />
-                                </div>
-                                <div class="flex items-center">
-                                    <label class="w-24 text-xs font-semibold text-gray-600">Kontrast</label>
-                                    <input type="range" id="processingContrast" min="-100" max="100" value="0" class="flex-1 accent-indigo-600" />
-                                </div>
-                                <div class="flex items-center">
-                                    <label class="w-24 text-xs font-semibold text-gray-600">Sättigung</label>
-                                    <input type="range" id="processingSaturation" min="-100" max="100" value="0" class="flex-1 accent-indigo-600" />
-                                </div>
-                            </div>
-                            <div class="pt-2">
-                                <button id="btnAutoDither" class="w-full bg-indigo-100 hover:bg-indigo-200 text-indigo-700 font-semibold py-2 rounded transition">Auto-Optimieren</button>
-                            </div>
-                        </div>
-                    </details>
-
-                    <div class="flex space-x-2 mb-4">
-                        <button id="btnRotate" class="w-full bg-yellow-100 hover:bg-yellow-200 text-yellow-700 font-semibold py-2 rounded transition" title="Bild um 90° drehen">↻ Bild drehen</button>
-                    </div>
-
-                    <div class="flex justify-center mb-4" id="previewContainer" style="cursor: pointer">
-                        <div class="relative inline-block">
-                            <canvas id="previewCanvas" class="border border-gray-300 shadow-sm rounded max-w-full bg-white block"></canvas>
-                            <canvas id="previewHoverCanvas" class="border border-gray-300 shadow-sm rounded max-w-full bg-white pointer-events-none opacity-0 transition-opacity duration-200 block" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10"></canvas>
-                            <div id="previewHoverLabel" class="absolute top-2 right-2 bg-black/60 text-white text-xs px-2 py-1 rounded pointer-events-none opacity-0 transition-opacity duration-200" style="z-index: 11">⚙️ Raw Dithering</div>
                         </div>
                     </div>
-
-                    <button id="btnUploadImage" disabled class="w-full bg-gray-500 hover:bg-gray-600 disabled:bg-gray-400 disabled:cursor-not-allowed text-white font-bold py-3 rounded-lg shadow transition-colors mb-2">SENDEN</button>
-
-                    <button id="btnDownloadBin" disabled class="w-full bg-indigo-500 hover:bg-indigo-600 disabled:bg-gray-400 disabled:cursor-not-allowed text-white font-bold py-3 rounded-lg shadow transition-colors block">Download</button>
-
-                    <div id="progressContainer" class="hidden w-full bg-gray-200 rounded-full h-2.5 mt-4">
-                        <div id="progressBar" class="bg-green-600 h-2.5 rounded-full" style="width: 0%"></div>
-                    </div>
-            </div>
-        </div>
-
-        <div id="viewHelp" class="hidden space-y-6">
-            <div class="bg-indigo-50/50 p-5 rounded-xl border border-indigo-100 space-y-5">
-                <h2 class="text-xl font-bold text-gray-700 flex items-center">
-                    <span class="mr-2">ℹ️</span> Hilfe & FAQ
-                </h2>
-
-                <div class="space-y-3">
-                    <details class="bg-white border border-gray-200 rounded-lg" open>
-                        <summary class="cursor-pointer font-bold text-gray-700 bg-gray-50 px-4 py-3 rounded-t-lg hover:bg-gray-100 transition-colors flex justify-between items-center select-none">
-                            <span>🔌 Verbinden</span>
-                            <svg class="w-4 h-4 text-gray-500 transform transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                            </svg>
-                        </summary>
-                        <div class="p-4 text-sm text-gray-600 space-y-2 border-t border-gray-200">
-                            <p>Um Einstellungen zu ändern oder Bilder zu übertragen, aktiviere Bluetooth auf dem E-Paper. Wenn du die Cloud Firmware hast, musst du das Gerät zurücksetzen und dann wieder wecken.</p>
-                            <ol class="list-decimal list-inside space-y-1.5 pl-1">
-                                <li>Drücke die <strong>Reset-Taste (großer Knopf)</strong> auf der Rückseite des Geräts einmal.
-                                    <span class="block text-xs text-gray-500 mt-1 ml-5">
-                                        <strong>💡 Tipp:</strong> Wenn du noch die Original Cloud Firmware hast, warte bis der Wifi Verbindungsscreen geladen hat.
-                                    </span>
-                                </li>
-                                <li>Das Gerät erwacht mit Bluetooth; Es bleibt für <strong>30 Sekunden</strong> aktiv.</li>
-                                <li>Klicke in dieser Zeit oben auf <strong>"Mit E-Paper verbinden"</strong> und wähle dein Display aus (z.B. <code class="bg-gray-100 text-purple-700 px-1 py-0.5 rounded font-mono">epd7-...</code> oder <code class="bg-gray-100 text-purple-700 px-1 py-0.5 rounded font-mono">epd13-...</code>).</li>
-                            </ol>
-                            <p class="text-xs text-gray-400 italic">Hinweis (Offline Firmware): Wird innerhalb der 30 Sekunden keine Verbindung aufgebaut, geht das E-Paper wieder in den Deep Sleep (Stromsparmodus) oder wechselt in den normalen Betrieb.</p>
-                            <div class="mt-3 pt-3 border-t border-gray-100 text-xs text-gray-500">
-                                <strong>💡 Tipp (Schnell-Aktualisierung):</strong> Drückst du die Reset-Taste <strong>zweimal</strong> im Abstand von etwa einer Sekunde hintereinander, wird der Bluetooth-Modus übersprungen und sofort ein Web Bild-Update erzwungen (URL muss konfiguriert sein).
-                            </div>
-                        </div>
-                    </details>
-
-                    <details class="bg-white border border-gray-200 rounded-lg">
-                        <summary class="cursor-pointer font-bold text-gray-700 bg-gray-50 px-4 py-3 rounded-t-lg hover:bg-gray-100 transition-colors flex justify-between items-center select-none">
-                            <span>🎨 Der Bild-Editor & Bild-Upload</span>
-                            <svg class="w-4 h-4 text-gray-500 transform transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                            </svg>
-                        </summary>
-                        <div class="p-4 text-sm text-gray-600 space-y-2 border-t border-gray-200">
-                            <p>Im <strong>Bild-Editor</strong> kannst du ein Bild von deinem PC/Smartphone auswählen:</p>
-                            <ul class="list-disc list-inside space-y-1.5 pl-1">
-                                <li><strong>Dithering-Vorschau:</strong> Bilder werden automatisch in das 6-Farb-Spektrum des E-Paper Displays umgerechnet. Du kannst Dithering-Algorithmen (Floyd-Steinberg, Atkinson, etc.) und Farbprofile anpassen.</li>
-                                <li><strong>Auto-Optimieren:</strong> Findet selbstständig die besten Kontrast- und Dithering-Einstellungen für dein Bild.</li>
-                                <li><strong>Hochladen:</strong> Überträgt das optimierte Bild via Bluetooth direkt an das Gerät. Das Gerät muss Verbunden sein!</li>
-                                <li><strong>Download:</strong> Lädt die fertig geditherte <code class="bg-gray-100 text-purple-700 px-1 py-0.5 rounded font-mono">.bmp</code>-Datei für den Serverbetrieb herunter.</li>
-                            </ul>
-                        </div>
-                    </details>
-
-                    <details class="bg-white border border-gray-200 rounded-lg">
-                        <summary class="cursor-pointer font-bold text-gray-700 bg-gray-50 px-4 py-3 rounded-t-lg hover:bg-gray-100 transition-colors flex justify-between items-center select-none">
-                            <span>⚙️ WLAN & automatischer Download (URL Mode)</span>
-                            <svg class="w-4 h-4 text-gray-500 transform transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                            </svg>
-                        </summary>
-                        <div class="p-4 text-sm text-gray-600 space-y-2 border-t border-gray-200">
-                            <p>Konfiguriere das Gerät so, dass es selbstständig Bilder von einem lokalen oder entfernten Webserver lädt.</p>
-                            <ul class="list-disc list-inside space-y-1.5 pl-1">
-                                <li><strong>WLAN Zugangsdaten:</strong> Trage dein lokales WLAN ein. Das Gerät scannt Netze und meldet den Verbindungsstatus.</li>
-                                <li><strong>Download URL:</strong> HTTP-Link zu einem Bild (z.B. <code class="bg-gray-100 text-purple-700 px-1 py-0.5 rounded font-mono">http://nas.local/info.jpg</code>). <strong>JPEGs und 24-bit BMPs werden direkt auf dem ESP32 dithered! Wir empfehlen aber fertig geditherte 8-bit BMP</strong></li>
-                                <li><strong>Settings JSON URL:</strong> Du kannst die Konfiguration (Sleep-Intervall, Lade-Modus) per JSON-Datei auf deinem Server dynamisch verwalten. Dadurch hast du die Möglichkeit Einstellungen des Displays zu beeinflussen, ohne es erneut per Bluetooth zu verbinden.</li>
-                            </ul>
-                        </div>
-                    </details>
-
-                    <details class="bg-white border border-gray-200 rounded-lg">
-                        <summary class="cursor-pointer font-bold text-gray-700 bg-gray-50 px-4 py-3 rounded-t-lg hover:bg-gray-100 transition-colors flex justify-between items-center select-none">
-                            <span>💾 Die verschiedenen Firmware-Versionen</span>
-                            <svg class="w-4 h-4 text-gray-500 transform transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                            </svg>
-                        </summary>
-                        <div class="p-4 text-sm text-gray-600 space-y-2 border-t border-gray-200">
-                            <p>Es stehen zwei Haupt-Firmwares zur Verfügung, die du im Reiter <strong>Firmware Update</strong> flashen kannst:</p>
-                            <div class="space-y-3 mt-2">
-                                <div class="bg-blue-50 p-3 rounded border border-blue-100">
-                                    <strong class="text-blue-700 block text-xs">Original Cloud Firmware (Auslieferung)</strong>
-                                    <span class="text-xs text-gray-600">Verbindet sich mit der Cloud und bezieht Bilder durch unsere App <a href="https://paperlesspaper.de" target="_blank" class="text-blue-600 hover:underline">Paperlesspaper Website</a>. Quellcode im <a href="https://github.com/paperlesspaper/paperlesspaper-firmware" target="_blank" class="text-blue-600 hover:underline font-bold">Cloud-Firmware Repository</a>.</span>
-                                </div>
-                                <div class="bg-purple-50 p-3 rounded border border-purple-100">
-                                    <strong class="text-purple-700 block text-xs">Offline Firmware (Optional)</strong>
-                                    <span class="text-xs text-gray-600">Für maximale Unabhängigkeit und Smart-Home-Integration. Unterstützt lokalen Bild-Download über WLAN, JSON-Einstellungen und Bluetooth-Direktübertragung. Quellcode und Anleitung findest du im <a href="https://github.com/paperlesspaper/paperlesspaper-firmware-offline" target="_blank" class="text-purple-600 hover:underline font-bold">Offline-Firmware Repository</a>.</span>
-                                </div>
-                            </div>
-                        </div>
-                    </details>
-
-                    <details class="bg-white border border-gray-200 rounded-lg">
-                        <summary class="cursor-pointer font-bold text-gray-700 bg-gray-50 px-4 py-3 rounded-t-lg hover:bg-gray-100 transition-colors flex justify-between items-center select-none">
-                            <span>🔐 Zertifikate & SPIFFS (Cloud-Zugriff)</span>
-                            <svg class="w-4 h-4 text-gray-500 transform transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                            </svg>
-                        </summary>
-                        <div class="p-4 text-sm text-gray-600 space-y-2 border-t border-gray-200">
-                            <p>Für die verschlüsselte Verbindung zur Cloud (Original Cloud Firmware) benötigt das E-Paper gerätespezifische AWS IoT Zertifikate auf dem SPIFFS-Speicher (Adresse <code class="bg-gray-100 text-purple-700 px-1 py-0.5 rounded font-mono">0x3B0000</code>).</p>
-                            <div class="p-3 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg text-xs font-medium">
-                                ℹ️ <strong>Wichtiger Hinweis:</strong> Die gerätespezifischen Zertifikate sind nicht öffentlich im Repository enthalten. Sie sind <strong>ausschließlich direkt über unseren Support</strong> erhältlich.
-                            </div>
-                            <p class="text-xs text-gray-500">
-                                <strong>📥 Backup anlegen:</strong> Bevor du auf eine alternative Firmware wechselst, solltest du deine Zertifikate sichern. Wechsle im Reiter <strong>Firmware Update</strong> auf <strong>USB-Kabel (COM-Port)</strong> und klicke auf <strong>"Zertifikate von SPIFFS herunterladen (Backup .bin)"</strong>. Dadurch wird die Partition ausgelesen und als Backup-Datei gespeichert.
-                            </p>
-                            <p class="text-xs text-gray-500">
-                                <strong>📤 Zertifikat wiederherstellen / übertragen:</strong> Wenn du dein Zertifikat als <code class="bg-gray-100 text-purple-700 px-1 py-0.5 rounded font-mono">.bin</code>-Datei vom Support oder aus einem vorherigen Backup vorliegen hast, kannst du es über den Button <strong>"Zertifikat Datei auf SPIFFS übertragen (.bin)"</strong> per USB-Kabel direkt an Adresse 0x3B0000 flashen.
-                            </p>
-                        </div>
-                    </details>
                 </div>
-            </div>
 
-            <div class="pt-2 text-xs text-gray-500 border-t border-indigo-100">
-                Weitere technische Details zur offline Firmware findest du in der lokalen <a href="https://github.com/paperlesspaper/paperlesspaper-firmware-offline" target="_blank" class="text-indigo-600 hover:underline font-bold">README.md</a>.
+                <p class="field-hint">
+                    Weitere technische Details zur Offline-Firmware stehen in der
+                    <a href="https://github.com/paperlesspaper/paperlesspaper-firmware-offline" target="_blank" rel="noopener noreferrer">README auf GitHub ↗</a>
+                    .
+                </p>
             </div>
+        </section>
+    </main>
+
+    <!-- Status dock: one persistent status line, progress and a collapsible log -->
+    <div class="status-dock" id="statusDock">
+        <div class="dock-progress" id="dockProgress" hidden>
+            <div class="dock-progress-fill" id="dockProgressFill"></div>
         </div>
-    </div>
-
-    <!-- JSON Preview Modal -->
-    <div id="jsonPreviewModal" class="hidden fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-        <div class="bg-white rounded-xl shadow-xl w-full max-w-lg overflow-hidden transform transition-all">
-            <div class="p-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
-                <h3 class="text-lg font-bold text-gray-700">JSON Settings Vorschau</h3>
-                <button id="btnCloseJsonPreview" class="text-gray-400 hover:text-gray-600">
-                    <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
+        <div class="dock-inner">
+            <div class="dock-head">
+                <span class="status-led state-0" id="statusLed" aria-hidden="true"></span>
+                <p class="dock-text" id="status" role="status" aria-live="polite">Warte auf Verbindung…</p>
+                <span class="dock-percent" id="dockPercent" hidden>0%</span>
+                <button type="button" class="dock-log-btn" id="dockLogToggle" aria-expanded="false" aria-controls="dockLog">
+                    Log
+                    <span class="collapsible-icon" aria-hidden="true">▲</span>
                 </button>
             </div>
-            <div class="p-4 max-h-[60vh] overflow-y-auto">
-                <pre id="jsonPreviewContent" class="text-sm bg-gray-900 text-green-400 p-4 rounded-lg overflow-x-auto"></pre>
-            </div>
-            <div class="p-4 border-t border-gray-200 bg-gray-50 flex justify-end space-x-3">
-                <button id="btnCancelJson" class="px-4 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Abbrechen</button>
-                <button id="btnApplyJson" class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 shadow">Übernehmen & Speichern</button>
+            <div class="dock-log" id="dockLog" hidden>
+                <pre class="terminal" id="statusLogOutput" tabindex="0" aria-label="Verlauf der Statusmeldungen"></pre>
             </div>
         </div>
     </div>
-    </div>
 
-    <!-- Status Bar -->
-    <div id="status" class="fixed bottom-0 left-0 right-0 bg-white shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] py-3 px-4 text-center font-medium text-sm transition-colors text-gray-500 z-50">
-        Warte auf Verbindung...
-    </div>
+    <!-- ============================== DIALOGS ============================== -->
 
-    <!-- OTA Offline Dialog -->
-    <dialog id="otaOfflineDialog" class="p-6 rounded-lg shadow-xl bg-white w-full max-w-md backdrop:bg-gray-900/50">
-        <h2 class="text-xl font-bold mb-4 text-gray-800">Offline Firmware aktualisieren</h2>
-        <p class="text-sm text-gray-600 mb-4">Wähle dein Gerät aus, um die neuste lokal verfügbare Offline-Firmware zu flashen.</p>
-
-        <label class="block text-sm text-gray-600 mb-1">Gerät (Displaygröße)</label>
-            <select id="offlineOtaDeviceSelect" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none transition mb-6 disabled:bg-gray-100 disabled:text-gray-600 disabled:cursor-not-allowed">
-                <option value="epd7">7.3 Zoll (paper 7)</option>
-                <option value="epd13">13.3 Zoll (paper L)</option>
-            </select>
-
-            <div class="flex space-x-3">
-                <button id="btnCancelOfflineOta" class="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold py-2 rounded-lg transition-colors">Abbrechen</button>
-                <button id="btnConfirmOfflineOta" class="flex-1 bg-purple-500 hover:bg-purple-600 text-white font-bold py-2 rounded-lg transition-colors">Flashen</button>
+    <!-- Generic alert / confirmation -->
+    <dialog id="messageDialog" class="modal" aria-labelledby="messageTitle">
+        <form method="dialog" class="modal-body">
+            <h3 id="messageTitle">Hinweis</h3>
+            <p class="modal-text" id="messageText"></p>
+            <div class="message-box" id="messageDetail" hidden></div>
+            <div class="modal-actions">
+                <button type="submit" value="cancel" id="messageCancel" class="btn-neu">Abbrechen</button>
+                <button type="submit" value="ok" id="messageOk" class="btn-neu btn-neu-primary btn-grow">OK</button>
             </div>
+        </form>
     </dialog>
 
-    <!-- OTA Confirmation Dialog -->
-    <dialog id="otaDialog" class="p-6 rounded-xl shadow-2xl backdrop:bg-black/50 backdrop:backdrop-blur-sm border-0 w-11/12 max-w-md">
-        <h3 class="text-xl font-bold mb-4 text-gray-800">Original Firmware (Cloud)</h3>
-        <p class="text-sm text-gray-600 mb-4">Wähle die passende Firmware für dein Gerät. Gefundene Version: <span id="otaVersion" class="font-bold">wird geladen...</span></p>
+    <!-- JSON settings preview -->
+    <dialog id="jsonPreviewModal" class="modal modal-wide" aria-labelledby="jsonPreviewTitle">
+        <div class="modal-body">
+            <h3 id="jsonPreviewTitle">JSON-Settings Vorschau</h3>
+            <p class="modal-text">Diese Werte wurden von der Settings-URL geladen. „Übernehmen“ trägt sie ein und speichert sie auf dem Gerät.</p>
+            <div class="message-box">
+                <pre id="jsonPreviewContent" class="terminal" tabindex="0"></pre>
+            </div>
+            <div class="modal-actions">
+                <button type="button" id="btnCancelJson" class="btn-neu">Abbrechen</button>
+                <button type="button" id="btnApplyJson" class="btn-neu btn-neu-signal btn-grow">Übernehmen &amp; speichern</button>
+            </div>
+        </div>
+    </dialog>
 
-        <div class="mb-4">
-            <label class="block text-sm font-medium text-gray-700 mb-1">Gerätetyp</label>
-                <select id="otaDeviceSelect" class="w-full border-gray-300 rounded-lg shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border disabled:bg-gray-100 disabled:text-gray-600 disabled:cursor-not-allowed">
+    <!-- Offline firmware -->
+    <dialog id="otaOfflineDialog" class="modal" aria-labelledby="otaOfflineTitle">
+        <div class="modal-body">
+            <h3 id="otaOfflineTitle">Offline Firmware flashen</h3>
+            <p class="modal-text">Wähle dein Gerät aus, um die neueste Offline-Firmware zu flashen.</p>
+            <div class="field">
+                <label class="form-label" for="offlineOtaDeviceSelect">Gerät (Displaygröße)</label>
+                <select id="offlineOtaDeviceSelect" class="neu-select">
+                    <option value="epd7">7.3 Zoll (paper 7)</option>
+                    <option value="epd13">13.3 Zoll (paper L)</option>
+                </select>
+            </div>
+            <div class="modal-actions">
+                <button type="button" id="btnCancelOfflineOta" class="btn-neu">Abbrechen</button>
+                <button type="button" id="btnConfirmOfflineOta" class="btn-neu btn-neu-signal btn-grow">Flashen starten</button>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- Original cloud firmware -->
+    <dialog id="otaDialog" class="modal" aria-labelledby="otaTitle">
+        <div class="modal-body">
+            <h3 id="otaTitle">Original Cloud Firmware</h3>
+            <p class="modal-text">Wähle die passende Firmware für dein Gerät.</p>
+            <div class="field">
+                <label class="form-label" for="otaDeviceSelect">Gerätetyp</label>
+                <select id="otaDeviceSelect" class="neu-select">
                     <option value="epd7">7.3" Paper 7 (epd7)</option>
                     <option value="epd13">13.3" Paper L (epd13)</option>
                 </select>
-        </div>
-
-        <div class="flex justify-end gap-3 mt-6">
-            <button id="btnCancelOta" class="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">Abbrechen</button>
-            <button id="btnConfirmOta" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition-colors disabled:opacity-50" disabled>Update starten</button>
-        </div>
-    </dialog>
-
-    <!-- USB Flash Confirmation Dialog -->
-    <dialog id="usbFlashDialog" class="p-6 rounded-xl shadow-2xl backdrop:bg-black/50 backdrop:backdrop-blur-sm border-0 w-11/12 max-w-md">
-        <h3 class="text-xl font-bold mb-2 text-gray-800" id="usbFlashTitle">USB Flashing vorbereitet</h3>
-        <p class="text-sm text-gray-600 mb-4" id="usbFlashDescription">Datei bereit zum Flashen über USB.</p>
-
-        <div class="bg-gray-50 p-3 rounded-lg border border-gray-200 mb-4 text-xs space-y-1 font-mono">
-            <div><strong>Datei:</strong> <span id="usbFlashFileName">-</span></div>
-            <div><strong>Größe:</strong> <span id="usbFlashFileSize">-</span></div>
-            <div><strong>Ziel-Adresse:</strong> <span id="usbFlashTargetAddress">-</span></div>
-        </div>
-
-        <div class="p-3 bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-lg text-xs mb-4">
-            <strong>🔌 Bitte beachten:</strong> Verbinde das E-Paper per USB-Kabel. Halte den Boot-Knopf gedrückt, drücke kurz Reset und lass den Boot-Knopf los.
-        </div>
-
-        <div class="flex justify-end gap-3 mt-6">
-            <button id="btnCancelUsbFlash" class="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">Abbrechen</button>
-            <button id="btnConfirmUsbFlash" class="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white font-bold rounded-lg transition-colors">COM-Port wählen & Flashen</button>
+            </div>
+            <div class="kv-list">
+                <div class="kv-row">
+                    <span class="kv-key">Gefundene Version</span>
+                    <span class="kv-val" id="otaVersion">wird geladen…</span>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button type="button" id="btnCancelOta" class="btn-neu">Abbrechen</button>
+                <button type="button" id="btnConfirmOta" class="btn-neu btn-neu-signal btn-grow" disabled>Update starten</button>
+            </div>
         </div>
     </dialog>
 
-    <!-- USB SPIFFS Backup Confirmation Dialog -->
-    <dialog id="usbBackupDialog" class="p-6 rounded-xl shadow-2xl backdrop:bg-black/50 backdrop:backdrop-blur-sm border-0 w-11/12 max-w-md">
-        <h3 class="text-xl font-bold mb-2 text-gray-800">SPIFFS Zertifikat-Backup</h3>
-        <p class="text-sm text-gray-600 mb-4">Liest die gerätespezifischen Zertifikate aus der SPIFFS-Partition deines Displays aus und speichert sie als Backup-Datei (.bin) auf deinem PC.</p>
-
-        <div class="bg-gray-50 p-3 rounded-lg border border-gray-200 mb-4 text-xs space-y-1 font-mono">
-            <div><strong>Partition:</strong> SPIFFS</div>
-            <div><strong>Flash-Adresse:</strong> 0x3B0000</div>
-            <div><strong>Partitionsgröße:</strong> 256 KB (0x40000)</div>
-            <div><strong>Zweck:</strong> AWS IoT Cloud-Authentifizierung</div>
-        </div>
-
-        <div class="p-3 bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-lg text-xs mb-4">
-            <strong>🔌 Bitte beachten:</strong> Verbinde das E-Paper per USB-Kabel. Halte den Boot-Knopf gedrückt, drücke kurz Reset und lass den Boot-Knopf los (Bootloader-Modus).
-        </div>
-
-        <div class="flex justify-end gap-3 mt-6">
-            <button id="btnCancelUsbBackup" class="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">Abbrechen</button>
-            <button id="btnConfirmUsbBackup" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg transition-colors">COM-Port wählen & Backup herunterladen</button>
+    <!-- USB flash confirmation -->
+    <dialog id="usbFlashDialog" class="modal" aria-labelledby="usbFlashTitle">
+        <div class="modal-body">
+            <h3 id="usbFlashTitle">USB-Flashing vorbereitet</h3>
+            <p class="modal-text" id="usbFlashDescription">Datei bereit zum Flashen über USB.</p>
+            <div class="kv-list">
+                <div class="kv-row">
+                    <span class="kv-key">Datei</span>
+                    <span class="kv-val" id="usbFlashFileName">-</span>
+                </div>
+                <div class="kv-row">
+                    <span class="kv-key">Größe</span>
+                    <span class="kv-val" id="usbFlashFileSize">-</span>
+                </div>
+                <div class="kv-row">
+                    <span class="kv-key">Ziel-Adresse</span>
+                    <span class="kv-val" id="usbFlashTargetAddress">-</span>
+                </div>
+            </div>
+            <p class="callout callout-warn">
+                <span class="callout-caption">🔌 Bitte beachten</span>
+                Verbinde das E-Paper per USB-Kabel. Halte den Boot-Knopf gedrückt, drücke kurz Reset und lass den Boot-Knopf los.
+            </p>
+            <div class="modal-actions">
+                <button type="button" id="btnCancelUsbFlash" class="btn-neu">Abbrechen</button>
+                <button type="button" id="btnConfirmUsbFlash" class="btn-neu btn-neu-signal btn-grow">COM-Port wählen &amp; flashen</button>
+            </div>
         </div>
     </dialog>
 
-    <script type="module" src="app.js"></script>
-    <script>
-        const tabConnect = document.getElementById('tabConnect');
-        const tabOta = document.getElementById('tabOta');
-        const tabEditor = document.getElementById('tabEditor');
-        const tabHelp = document.getElementById('tabHelp');
-        const viewConnect = document.getElementById('viewConnect');
-        const viewOta = document.getElementById('viewOta');
-        const viewEditor = document.getElementById('viewEditor');
-        const viewHelp = document.getElementById('viewHelp');
-        const sharedImageContainer = document.getElementById('sharedImageContainer');
-        const bleUploadContainerSlot = document.getElementById('bleUploadContainerSlot');
-        const editorContainerSlot = document.getElementById('editorContainerSlot');
+    <!-- USB SPIFFS backup confirmation -->
+    <dialog id="usbBackupDialog" class="modal" aria-labelledby="usbBackupTitle">
+        <div class="modal-body">
+            <h3 id="usbBackupTitle">Zertifikat-Backup (SPIFFS)</h3>
+            <p class="modal-text">Liest die gerätespezifischen Zertifikate aus der SPIFFS-Partition deines Displays aus und speichert sie als Backup-Datei (.bin) auf deinem PC.</p>
+            <div class="kv-list">
+                <div class="kv-row">
+                    <span class="kv-key">Partition</span>
+                    <span class="kv-val">SPIFFS</span>
+                </div>
+                <div class="kv-row">
+                    <span class="kv-key">Flash-Adresse</span>
+                    <span class="kv-val">0x3B0000</span>
+                </div>
+                <div class="kv-row">
+                    <span class="kv-key">Größe</span>
+                    <span class="kv-val">256 KB (0x40000)</span>
+                </div>
+                <div class="kv-row">
+                    <span class="kv-key">Zweck</span>
+                    <span class="kv-val">AWS-IoT-Authentifizierung</span>
+                </div>
+            </div>
+            <p class="callout callout-warn">
+                <span class="callout-caption">🔌 Bitte beachten</span>
+                Verbinde das E-Paper per USB-Kabel. Halte den Boot-Knopf gedrückt, drücke kurz Reset und lass den Boot-Knopf los (Bootloader-Modus).
+            </p>
+            <div class="modal-actions">
+                <button type="button" id="btnCancelUsbBackup" class="btn-neu">Abbrechen</button>
+                <button type="button" id="btnConfirmUsbBackup" class="btn-neu btn-neu-signal btn-grow">COM-Port wählen &amp; sichern</button>
+            </div>
+        </div>
+    </dialog>
 
-        const expertControls = document.getElementById('expertControls');
-        const btnUploadImage = document.getElementById('btnUploadImage');
-        const btnDownloadBin = document.getElementById('btnDownloadBin');
-        const imageSecTitle = document.getElementById('imageSecTitle');
-        const imageSecDesc = document.getElementById('imageSecDesc');
+    <!-- Blocking transfer screen (upload / flashing / backup) -->
+    <dialog id="transferDialog" class="transfer" aria-labelledby="transferTitle" aria-describedby="transferText">
+        <div class="transfer-box">
+            <div class="spinner" id="transferSpinner" aria-hidden="true"></div>
+            <span class="status-led led-xl state-3" id="transferResultLed" aria-hidden="true" hidden></span>
+            <h2 class="transfer-title" id="transferTitle">Übertragung läuft</h2>
+            <p class="transfer-sub" id="transferText">Bitte warten…</p>
+            <div class="hero-progress" id="transferProgress">
+                <div class="hero-progress-track">
+                    <div class="hero-progress-fill indeterminate" id="transferFill"></div>
+                </div>
+                <span class="hero-progress-pct" id="transferPct">…</span>
+            </div>
+            <p class="callout callout-warn transfer-warn" id="transferWarn">Seite nicht schließen · Gerät nicht trennen</p>
+            <div class="transfer-actions">
+                <button type="button" id="btnTransferAbort" class="btn-neu btn-neu-danger-text" hidden>Abbrechen</button>
+                <button type="button" id="btnTransferOk" class="btn-neu btn-neu-primary" hidden>OK</button>
+            </div>
+        </div>
+    </dialog>
 
-        function activateConnectTab() {
-            tabConnect.classList.replace('text-gray-400', 'text-blue-600');
-            tabConnect.classList.replace('border-transparent', 'border-blue-600');
-            tabOta.classList.replace('text-blue-600', 'text-gray-400');
-            tabOta.classList.replace('border-blue-600', 'border-transparent');
-            tabEditor.classList.replace('text-blue-600', 'text-gray-400');
-            tabEditor.classList.replace('border-blue-600', 'border-transparent');
-            tabHelp.classList.replace('text-blue-600', 'text-gray-400');
-            tabHelp.classList.replace('border-blue-600', 'border-transparent');
-
-            viewConnect.classList.remove('hidden');
-            viewOta.classList.add('hidden');
-            viewEditor.classList.add('hidden');
-            viewHelp.classList.add('hidden');
-        }
-
-        function activateOtaTab() {
-            tabOta.classList.replace('text-gray-400', 'text-blue-600');
-            tabOta.classList.replace('border-transparent', 'border-blue-600');
-            tabConnect.classList.replace('text-blue-600', 'text-gray-400');
-            tabConnect.classList.replace('border-blue-600', 'border-transparent');
-            tabEditor.classList.replace('text-blue-600', 'text-gray-400');
-            tabEditor.classList.replace('border-blue-600', 'border-transparent');
-            tabHelp.classList.replace('text-blue-600', 'text-gray-400');
-            tabHelp.classList.replace('border-blue-600', 'border-transparent');
-
-            viewOta.classList.remove('hidden');
-            viewConnect.classList.add('hidden');
-            viewEditor.classList.add('hidden');
-            viewHelp.classList.add('hidden');
-        }
-
-        function activateEditorTab() {
-            tabEditor.classList.replace('text-gray-400', 'text-blue-600');
-            tabEditor.classList.replace('border-transparent', 'border-blue-600');
-            tabConnect.classList.replace('text-blue-600', 'text-gray-400');
-            tabConnect.classList.replace('border-blue-600', 'border-transparent');
-            tabOta.classList.replace('text-blue-600', 'text-gray-400');
-            tabOta.classList.replace('border-blue-600', 'border-transparent');
-            tabHelp.classList.replace('text-blue-600', 'text-gray-400');
-            tabHelp.classList.replace('border-blue-600', 'border-transparent');
-
-            viewEditor.classList.remove('hidden');
-            viewConnect.classList.add('hidden');
-            viewOta.classList.add('hidden');
-            viewHelp.classList.add('hidden');
-        }
-
-        function activateHelpTab() {
-            tabHelp.classList.replace('text-gray-400', 'text-blue-600');
-            tabHelp.classList.replace('border-transparent', 'border-blue-600');
-            tabConnect.classList.replace('text-blue-600', 'text-gray-400');
-            tabConnect.classList.replace('border-blue-600', 'border-transparent');
-            tabOta.classList.replace('text-blue-600', 'text-gray-400');
-            tabOta.classList.replace('border-blue-600', 'border-transparent');
-            tabEditor.classList.replace('text-blue-600', 'text-gray-400');
-            tabEditor.classList.replace('border-blue-600', 'border-transparent');
-
-            viewHelp.classList.remove('hidden');
-            viewConnect.classList.add('hidden');
-            viewOta.classList.add('hidden');
-            viewEditor.classList.add('hidden');
-        }
-
-        tabConnect.addEventListener('click', activateConnectTab);
-        tabOta.addEventListener('click', activateOtaTab);
-        tabEditor.addEventListener('click', activateEditorTab);
-        tabHelp.addEventListener('click', activateHelpTab);
-
-        activateConnectTab();
-    </script>
+    <script type="module" src="./app.js"></script>
 </body>
 
 </html>
