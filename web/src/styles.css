@@ -965,6 +965,9 @@ summary:focus-visible {
   font-size: 12px;
   font-weight: 600;
 }
+.field-note[data-tone="err"] {
+  color: #c62828;
+}
 
 /* Unsaved changes: the save area turns amber */
 .save-zone {

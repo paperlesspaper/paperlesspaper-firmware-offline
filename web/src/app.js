@@ -1,6 +1,7 @@
 import { GeneratePicture } from "./GeneratePicture.js";
 import { DeviceBleInterface, validateEsp32FirmwareBinary } from "./DeviceBleInterface.js";
 import { ESPLoader, Transport } from "esptool-js";
+import { checkImageForDevice, imageHeaderComplete } from "./imageCheck.js";
 import { $, setStatus, onStatus, currentStatus, setProgress, onProgress, setLed, initNavigation, navigate, getCurrentView, initDialogs, openDialog, closeDialog, showMessage, initCollapsibles, setCollapsible, nextFrame, byteLength, setFieldError, formatDuration, downloadBlob } from "./ui.js";
 
 const EXPECTED_FW_VERSION = typeof __EXPECTED_FW_VERSION__ !== "undefined" ? __EXPECTED_FW_VERSION__ : "0.1.0";
@@ -136,6 +137,7 @@ const settingTimeout = $("settingTimeout");
 const settingTimeoutHint = $("settingTimeoutHint");
 const settingUrl = $("settingUrl");
 const urlValidationStatus = $("urlValidationStatus");
+const btnCheckImageUrl = $("btnCheckImageUrl");
 const settingSettingsUrl = $("settingSettingsUrl");
 const settingHttpAuthUser = $("settingHttpAuthUser");
 const settingHttpAuthPassword = $("settingHttpAuthPassword");
@@ -284,6 +286,7 @@ function syncUi() {
   btnScanWifi.textContent = state.wifiScanning ? "Suche…" : "Scan";
   btnFactoryReset.disabled = busy;
   btnPreviewJson.disabled = busy;
+  btnCheckImageUrl.disabled = busy;
 
   // Firmware
   const usbBlocked = state.otaMethod === "serial" && !serialAvailable;
@@ -765,6 +768,9 @@ bleInterface.onSettingsLoaded = (settings) => {
   });
 });
 settingTimeout.addEventListener("input", updateTimeoutHint);
+settingUrl.addEventListener("input", () => {
+  urlValidationStatus.hidden = true; // the result belongs to the previous URL
+});
 
 function validateUrlField(input) {
   const value = input.value.trim();
@@ -815,37 +821,123 @@ function validateSettingsForm() {
   return results.every(Boolean);
 }
 
+// --- Check of the picture behind the download URL ---
+
+const IMAGE_HEAD_LIMIT = 1024 * 1024; // the headers of a JPEG with a large EXIF block still fit
+
+/** Loads the beginning of the file behind a URL: just enough to judge its format. */
+async function fetchImageHead(url, allowProxy) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const options = { cache: "no-store", signal: controller.signal };
+    const res = allowProxy ? await fetchWithProxy(url, options) : await fetch(url, options);
+    if (!res.ok) {
+      const error = new Error("HTTP " + res.status);
+      error.httpStatus = res.status;
+      throw error;
+    }
+    if (!res.body) return new Uint8Array(await res.arrayBuffer());
+
+    const reader = res.body.getReader();
+    let head = new Uint8Array(0);
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const joined = new Uint8Array(head.length + value.length);
+      joined.set(head);
+      joined.set(value, head.length);
+      head = joined;
+      if (imageHeaderComplete(head) || head.length >= IMAGE_HEAD_LIMIT) {
+        reader.cancel().catch(() => {}); // the rest of the picture is not needed
+        break;
+      }
+    }
+    return head;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Fallback when the browser may not read the file itself (CORS): can it at least show it? */
+function canLoadAsImage(url) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    const timeout = setTimeout(() => resolve(false), 5000);
+    img.onload = () => {
+      clearTimeout(timeout);
+      resolve(true);
+    };
+    img.onerror = () => {
+      clearTimeout(timeout);
+      resolve(false);
+    };
+    img.src = url;
+  });
+}
+
+let imageCheckRun = 0;
+
 /**
- * Informational only: the device fetches the URL itself, the browser merely tries the same.
- * Runs after saving and never blocks it.
+ * Tells whether the device can show the picture behind the download URL (see imageCheck.js).
+ * Informational only: the device fetches the URL itself, saving never depends on the result.
+ * allowProxy: also try the public CORS proxies. Only on request ("Prüfen"), because the URL is
+ * sent to them.
  */
-function probeImageUrl(url) {
-  urlValidationStatus.hidden = true;
-  if (!url) return;
-  if (location.protocol === "https:" && /^http:\/\//i.test(url)) {
-    // Mixed content: the browser may not load http:// from this page, so the check would always fail.
+async function checkImageUrl(url, { allowProxy }) {
+  const run = ++imageCheckRun;
+  const show = (level, text) => {
+    if (run !== imageCheckRun || settingUrl.value.trim() !== url) return; // a newer check or another URL
+    urlValidationStatus.dataset.tone = level;
+    urlValidationStatus.textContent = ({ ok: "✓ ", warn: "⚠ ", err: "✗ " }[level] || "") + text;
+    urlValidationStatus.hidden = false;
+  };
+
+  if (!url) {
+    urlValidationStatus.hidden = true;
     return;
   }
-  urlValidationStatus.hidden = false;
-  urlValidationStatus.textContent = "… Prüfe, ob die URL vom Browser aus erreichbar ist";
-  const img = new Image();
-  let settled = false;
-  const finish = (reachable) => {
-    if (settled || settingUrl.value !== url) return;
-    settled = true;
-    urlValidationStatus.textContent = reachable ? "✓ Die URL ist erreichbar und liefert ein Bild." : "⚠ Die URL konnte vom Browser nicht als Bild geladen werden (evtl. nur im lokalen Netz erreichbar). Sie wurde trotzdem gespeichert.";
-  };
-  const timeout = setTimeout(() => finish(false), 5000);
-  img.onload = () => {
-    clearTimeout(timeout);
-    finish(true);
-  };
-  img.onerror = () => {
-    clearTimeout(timeout);
-    finish(false);
-  };
-  img.src = url;
+  show("info", "… Prüfe das Bild hinter der URL");
+
+  try {
+    const head = await fetchImageHead(url, allowProxy);
+    const result = checkImageForDevice(head, { width: EPD_WIDTH, height: EPD_HEIGHT });
+    show(result.level, result.text);
+  } catch (e) {
+    if (e.httpStatus === 401) {
+      show("warn", "Der Server verlangt eine Anmeldung (HTTP 401). Der Browser kann das Bild deshalb nicht prüfen.");
+    } else if (e.httpStatus) {
+      show("warn", `Der Server antwortet mit HTTP ${e.httpStatus}. Bitte die URL prüfen.`);
+    } else {
+      // Not readable from this page: local address, http:// on an https:// page, or no CORS permission.
+      const mixedContent = location.protocol === "https:" && /^http:\/\//i.test(url);
+      const reachable = !mixedContent && (await canLoadAsImage(url));
+      const proxyHint = !allowProxy && !isPrivateUrl(url) ? " „Prüfen“ versucht es über einen öffentlichen Proxy." : "";
+      show("warn", (reachable ? "Die URL ist erreichbar, der Browser darf das Bild aber nicht lesen. Das Format wurde nicht geprüft." : "Der Browser kann die URL nicht lesen (z. B. lokale Adresse). Das Bild wurde nicht geprüft, das Gerät lädt es trotzdem.") + proxyHint);
+    }
+  }
 }
+
+btnCheckImageUrl.addEventListener("click", async () => {
+  if (!settingUrl.value.trim()) {
+    setFieldError(settingUrl, "Bitte zuerst eine Download-URL eingeben.");
+    settingUrl.focus();
+    return;
+  }
+  if (!validateUrlField(settingUrl)) {
+    settingUrl.focus();
+    return;
+  }
+
+  btnCheckImageUrl.textContent = "Prüfe…";
+  btnCheckImageUrl.disabled = true;
+  try {
+    await checkImageUrl(settingUrl.value, { allowProxy: true });
+  } finally {
+    btnCheckImageUrl.textContent = "Prüfen";
+    syncUi();
+  }
+});
 
 async function saveDeviceSettings() {
   if (state.busy) return false;
@@ -882,7 +974,7 @@ async function saveDeviceSettings() {
   if (success) {
     syncBadgeSettings.hidden = false;
     markSettingsDirty(false);
-    probeImageUrl(settings.url);
+    checkImageUrl(settings.url, { allowProxy: false });
   } else if (!bleInterface.isConnected) {
     setStatus("Nicht gespeichert: Das E-Paper ist nicht verbunden.", "err");
   }
