@@ -1,3 +1,4 @@
 pyserial>=3.5
 pytest>=8.0.0
 bleak>=0.22.0
+playwright>=1.49.0

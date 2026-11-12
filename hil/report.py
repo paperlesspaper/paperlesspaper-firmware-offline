@@ -31,8 +31,14 @@ TEST_TITLES = {
     "test_00": "Kandidaten-Firmware per BLE installieren",
     "test_01": "Werksreset (5x Taster)",
     "test_02": "BLE-Schnittstelle (GATT)",
+    "test_10": "Web-UI: Verbindung und Geräteanzeige",
+    "test_11": "Web-UI: Einstellungen speichern",
+    "test_12": "Web-UI: Bild senden und anzeigen",
+    "test_13": "Web-UI: Firmware-Update",
     "test_99": "Cloud-Firmware wiederherstellen",
 }
+
+WEB_RESULT = "WEB"  # result of the browser tests against the simulated device (webtest/)
 
 MAX_AI_DIAGNOSES = 4  # later failures are usually consequences of the first ones
 
@@ -69,7 +75,9 @@ def load_risk(path):
 def build(targets, risk, fw_version, commit):
     """Returns (markdown, ok). `targets` maps a device name to its test cases."""
     failed = [(name, c) for name, cases in targets.items() for c in cases if c["outcome"] == "failed"]
-    tests_ok = bool(targets) and not failed and all(targets.values())
+    # The web UI test runs without hardware: its result alone does not make a run pass.
+    hardware = [name for name in targets if name != WEB_RESULT]
+    tests_ok = bool(hardware) and not failed and all(targets.values())
     blocked = bool(risk and risk["blocked"])
     ok = tests_ok and not blocked
 
@@ -96,8 +104,9 @@ def build(targets, risk, fw_version, commit):
         n_failed = sum(1 for c in cases if c["outcome"] == "failed")
         seconds = sum(c["seconds"] for c in cases)
         status = "❌ Fehlgeschlagen" if n_failed or not cases else "✅ Bestanden"
-        out.append(f"| **{name}** | {status} | {passed}/{len(cases)} Tests bestanden ({seconds:.0f} s) |")
-    if not targets:
+        label = "Web-UI (simuliertes Gerät)" if name == WEB_RESULT else name
+        out.append(f"| **{label}** | {status} | {passed}/{len(cases)} Tests bestanden ({seconds:.0f} s) |")
+    if not hardware:
         out.append("| **Hardware-Tests** | ⚪ Nicht ausgeführt | Kein Testergebnis vorhanden: die Hardware-Jobs "
                    "liefen nicht oder brachen vor dem Teststart ab |")
     if risk:

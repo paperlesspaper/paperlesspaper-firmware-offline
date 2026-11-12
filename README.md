@@ -282,7 +282,18 @@ Every push to `main` and `dev` is tested on real hardware before it is published
 <summary><b>Details</b></summary>
 
 - **Hardware:** the tests (`hil/`) run on the same self-hosted Windows runner and devices as the [cloud firmware](https://github.com/paperlesspaper/paperlesspaper-firmware). Relays, serial ports and log masking come from its `testbench/` folder. The workflow checks that repository out to `_cloud/`. Locally, a checkout next to this repository is found automatically, or set `CLOUD_TESTBENCH_ROOT`.
-- **Steps per device:** flash the candidate over BLE (from cloud or offline firmware) → factory reset with 5 power cycles → check the BLE interface → flash the cloud production firmware back. The last step always runs because the cloud tests depend on it.
+- **Steps per device:** flash the candidate over BLE (from cloud or offline firmware) → factory reset with 5 power cycles → check the BLE interface → use the device through the web UI (see below) → flash the cloud production firmware back. The last step always runs because the cloud tests depend on it.
+- **Web UI test** (`webtest/`): the built page (`web/dist`) runs in a headless Chromium and is used like a person would use it. `navigator.bluetooth` is replaced by `webtest/shim.js`, which forwards every Bluetooth operation to the test.
+  - *Without hardware* (job "Web UI test", before anything is flashed): the page talks to a simulated device (`webtest/simdevice.py`, the BLE protocol of `src/main.cpp`). Covered: connection, settings and their validation, Wi-Fi, picture upload for both displays including packet loss, errors and abort, firmware update and refused firmware files, the check of the download URL.
+  - *With hardware* (`test_10` to `test_13` in `hil/`): the same page reaches the real device over the PC's Bluetooth (`hil/web_bridge.py`): settings survive a power cycle, a picture prepared in the browser arrives in the flash unchanged (CRC from the serial log) and is displayed, the firmware update of the page installs the candidate.
+  - *Consistency* (`webtest/test_consistency.py`, same job): the limits and BLE identifiers written down in the firmware, the web UI, the simulated device and the hardware tests must agree. Change them in all places together.
+  - Not covered: Chrome's own Bluetooth stack and device chooser, and flashing over USB.
+  ```powershell
+  pip install -r webtest/requirements.txt
+  python -m playwright install chromium
+  cd web; npm ci; npm run build; cd ..
+  python -m pytest webtest -v          # set WEBTEST_HEADED=1 to watch the browser
+  ```
 - **Run locally** (on the PC with the test hardware):
   ```powershell
   pip install -r hil/requirements.txt

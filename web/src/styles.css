@@ -637,6 +637,21 @@ summary:focus-visible {
   top: -2px;
 }
 
+/*
+ * Hover and press move the button down and to the right (by up to 4px). This strip keeps the
+ * place it left part of the button: otherwise a pointer on the top or left edge loses the
+ * button as soon as it moves, so it flickers on hover and a press there is not a click.
+ * 6px = 2px border + 4px travel.
+ */
+.btn-neu::before {
+  content: "";
+  position: absolute;
+  top: -6px;
+  left: -6px;
+  right: 0;
+  bottom: 0;
+}
+
 /* !important is intentional: hover and press must win over every colour variant */
 @media (hover: hover) {
   .btn-neu:not(:disabled):hover {

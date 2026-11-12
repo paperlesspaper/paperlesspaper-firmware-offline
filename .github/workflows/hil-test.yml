@@ -131,10 +131,68 @@ jobs:
           path: .pio/build/${{ matrix.target }}/firmware.bin
           if-no-files-found: error
 
+  # Web UI in a headless browser against a simulated device (webtest/). Also builds the web UI
+  # the hardware jobs use, with the firmware version of this run.
+  web:
+    name: "Web UI test"
+    runs-on: ubuntu-latest
+    needs: pre_flight
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web UI
+        working-directory: web
+        env:
+          FW_VERSION: ${{ env.FW_VERSION }} # see web/vite.config.js
+        run: |
+          npm ci
+          npm run build
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install test dependencies
+        run: |
+          pip install -r webtest/requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Run web UI tests
+        run: python -m pytest webtest -v -p no:cacheprovider --junitxml=junit_web.xml
+
+      # Same result format as the hardware jobs, so the test protocol lists the web UI tests too.
+      - name: Write result file
+        if: always()
+        run: python -m hil.results junit_web.xml hil_result_web.json web
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hil_result_web
+          path: hil_result_web.json
+          if-no-files-found: ignore
+
+      - name: Upload web UI for the hardware jobs
+        uses: actions/upload-artifact@v7
+        with:
+          name: hil_web
+          path: web/dist
+          if-no-files-found: error
+
   hil_epd7:
     name: "HIL Test: EPD7"
     runs-on: [self-hosted, Windows, hil-testbench]
-    needs: build
+    needs: [build, web]
     if: github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'epd7'
     timeout-minutes: 120
     steps:
@@ -161,6 +219,15 @@ jobs:
           name: hil_firmware_epd7
           path: build_artifact_epd7
 
+      - name: Download web UI
+        uses: actions/download-artifact@v8
+        with:
+          name: hil_web
+          path: web/dist
+
+      - name: Install browser for the web UI tests
+        run: python -m playwright install chromium
+
       - name: Run EPD7 HIL test
         env:
           CLOUD_TESTBENCH_ROOT: "${{ github.workspace }}/_cloud"
@@ -185,9 +252,9 @@ jobs:
     name: "HIL Test: EPD13"
     runs-on: [self-hosted, Windows, hil-testbench]
     # Strictly after EPD7: both devices share the host's COM ports, relays and Bluetooth.
-    needs: [build, hil_epd7]
+    needs: [build, web, hil_epd7]
     if: >
-      always() && needs.build.result == 'success' &&
+      always() && needs.build.result == 'success' && needs.web.result == 'success' &&
       (needs.hil_epd7.result == 'success' || needs.hil_epd7.result == 'skipped') &&
       (github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'epd13')
     timeout-minutes: 120
@@ -215,6 +282,15 @@ jobs:
           name: hil_firmware_epd13
           path: build_artifact_epd13
 
+      - name: Download web UI
+        uses: actions/download-artifact@v8
+        with:
+          name: hil_web
+          path: web/dist
+
+      - name: Install browser for the web UI tests
+        run: python -m playwright install chromium
+
       - name: Run EPD13 HIL test
         env:
           CLOUD_TESTBENCH_ROOT: "${{ github.workspace }}/_cloud"
@@ -237,7 +313,7 @@ jobs:
   report:
     name: "Test protocol"
     runs-on: ubuntu-latest
-    needs: [pre_flight, build, hil_epd7, hil_epd13]
+    needs: [pre_flight, build, web, hil_epd7, hil_epd13]
     if: always()
     steps:
       - name: Checkout repository
@@ -268,7 +344,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
         run: >
-          python hil/report.py results/hil_result_epd7.json results/hil_result_epd13.json
+          python hil/report.py results/hil_result_web.json results/hil_result_epd7.json results/hil_result_epd13.json
           --risk-report results/risk_report.md
           --fw-version "$FW_VERSION" --commit "$GITHUB_SHA"
           --output-md hil_test_protocol.md --output-json hil_test_protocol.json
@@ -287,9 +363,9 @@ jobs:
       - name: Enforce result
         if: always()
         run: |
-          for result in "${{ needs.pre_flight.result }}" "${{ needs.build.result }}" "${{ needs.hil_epd7.result }}" "${{ needs.hil_epd13.result }}"; do
+          for result in "${{ needs.pre_flight.result }}" "${{ needs.build.result }}" "${{ needs.web.result }}" "${{ needs.hil_epd7.result }}" "${{ needs.hil_epd13.result }}"; do
             if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
-              echo "::error::Risk analysis, build or hardware test did not pass ($result)."
+              echo "::error::Risk analysis, build, web UI test or hardware test did not pass ($result)."
               exit 1
             fi
           done
