@@ -580,7 +580,7 @@ bool hasValidFlashImage(const char *name = "tmp.bmp") {
 
 struct ImageConversion
 {
-   int outW = 0;              // size of the picture on the display
+   int outW = 0; // size of the picture on the display
    int outH = 0;
    int offX = 0;              // left margin (the top margin is written as white rows)
    int rowsWritten = 0;       // display rows written so far
@@ -1040,51 +1040,51 @@ bool powerSupplyDisplay(bool enable) {
 
 void WiFiEvent(WiFiEvent_t event) {
    switch (event) {
-      case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-         if (DEBUG_FLAG)
-            Serial.println("[NETWORK] WiFi connected");
-         Serial.printf("[NETWORK] IP address: ");
-         Serial.println(WiFi.localIP());
+   case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+      if (DEBUG_FLAG)
+         Serial.println("[NETWORK] WiFi connected");
+      Serial.printf("[NETWORK] IP address: ");
+      Serial.println(WiFi.localIP());
 
-         if (wifiSettings.wifiIsConnected != true) {
-            wifiSettings.wifiIsConnected = true;
-            if (wifiSettings.bleInitOk) {
-               uint8_t val = 1;
-               wifiConnectedCharacteristic->setValue(&val, 1);
-               wifiConnectedCharacteristic->notify();
+      if (wifiSettings.wifiIsConnected != true) {
+         wifiSettings.wifiIsConnected = true;
+         if (wifiSettings.bleInitOk) {
+            uint8_t val = 1;
+            wifiConnectedCharacteristic->setValue(&val, 1);
+            wifiConnectedCharacteristic->notify();
 
-               if (wifiInfoCharacteristic) {
-                  JsonDocument doc;
-                  doc["ip"] = WiFi.localIP().toString();
-                  doc["rssi"] = WiFi.RSSI();
-                  String json;
-                  serializeJson(doc, json);
-                  wifiInfoCharacteristic->setValue(json.c_str());
-                  wifiInfoCharacteristic->notify();
-               }
+            if (wifiInfoCharacteristic) {
+               JsonDocument doc;
+               doc["ip"] = WiFi.localIP().toString();
+               doc["rssi"] = WiFi.RSSI();
+               String json;
+               serializeJson(doc, json);
+               wifiInfoCharacteristic->setValue(json.c_str());
+               wifiInfoCharacteristic->notify();
             }
          }
+      }
 
-         break;
-      case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-         Serial.println("[NETWORK] WiFi lost connection");
-         wifiSettings.wifiOnboardingFailed = true;
-         if (wifiSettings.wifiIsConnected != false) {
-            wifiSettings.wifiIsConnected = false;
-            if (wifiSettings.bleInitOk) {
-               uint8_t val = 0;
-               wifiConnectedCharacteristic->setValue(&val, 1);
-               wifiConnectedCharacteristic->notify();
+      break;
+   case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+      Serial.println("[NETWORK] WiFi lost connection");
+      wifiSettings.wifiOnboardingFailed = true;
+      if (wifiSettings.wifiIsConnected != false) {
+         wifiSettings.wifiIsConnected = false;
+         if (wifiSettings.bleInitOk) {
+            uint8_t val = 0;
+            wifiConnectedCharacteristic->setValue(&val, 1);
+            wifiConnectedCharacteristic->notify();
 
-               if (wifiInfoCharacteristic) {
-                  wifiInfoCharacteristic->setValue("{}");
-                  wifiInfoCharacteristic->notify();
-               }
+            if (wifiInfoCharacteristic) {
+               wifiInfoCharacteristic->setValue("{}");
+               wifiInfoCharacteristic->notify();
             }
          }
-         break;
-      default:
-         break;
+      }
+      break;
+   default:
+      break;
    }
 }
 
@@ -1671,6 +1671,7 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
          }
          else if (cmd == "SAVE_SETTINGS") {
             Serial.println("[BLE] SAVE_SETTINGS received.");
+            storeSleepTimeMem(settings.timeout);
             saveSettingsToFlash(EEPROM_SETTINGS_ADR);
          }
          else if (cmd == "RESET") {
@@ -1691,8 +1692,8 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
             bleSeqError = false;
             bleExpectedSeq = 0;
             bleExpectedFwBytes = (cmd.startsWith("START_FW:") && cmd.length() > 9)
-                                    ? (uint32_t)strtoul(cmd.c_str() + 9, nullptr, 10)
-                                    : 0;
+                                     ? (uint32_t)strtoul(cmd.c_str() + 9, nullptr, 10)
+                                     : 0;
             bleBytesReceived = 0;
             bleWriteBufferPos = 0;
             bleRunningCrc = 0;
@@ -1781,8 +1782,8 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
                bleUploadError = true;
             }
             bool updateEndOk = (!bleUploadError && !bleSeqError && bleBytesReceived >= 65536)
-                                  ? Update.end(bleExpectedFwBytes == 0)
-                                  : false;
+                                   ? Update.end(bleExpectedFwBytes == 0)
+                                   : false;
             fwUpdateInProgress = false;
             if (bleWriteBuffer != nullptr) {
                free(bleWriteBuffer);

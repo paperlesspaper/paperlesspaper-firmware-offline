@@ -196,6 +196,12 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'epd7'
     timeout-minutes: 120
     steps:
+      # The job log is public and the steps below print paths of the test PC.
+      - name: Mask account and computer name in the log
+        run: |
+          Write-Output "::add-mask::$env:USERNAME"
+          Write-Output "::add-mask::$env:COMPUTERNAME"
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -259,6 +265,12 @@ jobs:
       (github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'epd13')
     timeout-minutes: 120
     steps:
+      # The job log is public and the steps below print paths of the test PC.
+      - name: Mask account and computer name in the log
+        run: |
+          Write-Output "::add-mask::$env:USERNAME"
+          Write-Output "::add-mask::$env:COMPUTERNAME"
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
