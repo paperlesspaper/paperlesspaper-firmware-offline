@@ -39,11 +39,18 @@ def main():
     import pytest
 
     from . import settings
-    from .cloud import ESP32HardwareController, HardwareSetupError
+    from .cloud import ESP32HardwareController, HardwareSetupError, register_github_mask
     from .lock import hardware_lock
-    from .results import remember, write_results
+    from .results import GENERIC_VALUES, HOST_ENV, remember, write_results
 
     target = settings.TARGETS[args.target]
+
+    # The job log is public. Tracebacks contain paths of the test PC (the user profile of its
+    # account), so its account and computer name are masked in everything printed from here on.
+    for name in HOST_ENV:
+        value = os.environ.get(name, "").strip()
+        if value and value.lower() not in GENERIC_VALUES:
+            register_github_mask(value)
 
     # Port/relay assignment is the cloud testbench's job; it also works with the
     # offline firmware, which prints the same UID and version lines at boot.

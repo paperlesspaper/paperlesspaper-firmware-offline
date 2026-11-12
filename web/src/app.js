@@ -2,7 +2,7 @@ import { GeneratePicture } from "./GeneratePicture.js";
 import { DeviceBleInterface, validateEsp32FirmwareBinary } from "./DeviceBleInterface.js";
 import { ESPLoader, Transport } from "esptool-js";
 import { checkImageForDevice, imageHeaderComplete } from "./imageCheck.js";
-import { $, setStatus, onStatus, currentStatus, setProgress, onProgress, setLed, initNavigation, navigate, getCurrentView, initDialogs, openDialog, closeDialog, showMessage, initCollapsibles, setCollapsible, nextFrame, byteLength, setFieldError, formatDuration, downloadBlob } from "./ui.js";
+import { $, setStatus, onStatus, currentStatus, setProgress, onProgress, setLed, initNavigation, navigate, getCurrentView, initDialogs, openDialog, closeDialog, showMessage, initCollapsibles, nextFrame, byteLength, setFieldError, formatDuration, downloadBlob } from "./ui.js";
 
 const EXPECTED_FW_VERSION = typeof __EXPECTED_FW_VERSION__ !== "undefined" ? __EXPECTED_FW_VERSION__ : "0.1.0";
 
@@ -107,7 +107,6 @@ async function fetchWithProxy(url, options = {}) {
 
 const btnConnect = $("btnConnect");
 const btnDisconnect = $("btnDisconnect");
-const connLed = $("connLed");
 const systemStatusBar = $("systemStatusBar");
 const notConnectedState = $("notConnectedState");
 const controls = $("controls");
@@ -148,18 +147,17 @@ const settingAutoRotation = $("settingAutoRotation");
 const fileInput = $("fileInput");
 const btnPickImage = $("btnPickImage");
 const btnUploadImage = $("btnUploadImage");
+const uploadHint = $("uploadHint");
 const btnDownloadBin = $("btnDownloadBin");
 const canvas = $("previewCanvas");
 const previewHoverCanvas = $("previewHoverCanvas");
 const previewContainer = $("previewContainer");
 const previewEmpty = $("previewEmpty");
 const previewStage = $("previewStage");
-const previewModeRow = $("previewModeRow");
-const btnPreviewRaw = $("btnPreviewRaw");
+const previewRawFlag = $("previewRawFlag");
 const displayBadge = $("displayBadge");
 const displayAutoBadge = $("displayAutoBadge");
 const displaySizeSelect = $("displaySizeSelect");
-const imageSettingsDetails = $("imageSettingsDetails");
 const errorDiffusionMatrix = $("errorDiffusionMatrix");
 const serpentine = $("serpentine");
 const paletteSelect = $("paletteSelect");
@@ -173,7 +171,6 @@ const btnRotate = $("btnRotate");
 
 const btnOtaBle = $("btnOtaBle");
 const btnOtaSerial = $("btnOtaSerial");
-const activeOtaModeBadge = $("activeOtaModeBadge");
 const bleModeNotice = $("bleModeNotice");
 const serialModeNotice = $("serialModeNotice");
 const serialUnsupportedNotice = $("serialUnsupportedNotice");
@@ -240,13 +237,6 @@ $("expectedOfflineFwBadge").textContent = `v${EXPECTED_FW_VERSION}`;
 // Central UI sync
 // ---------------------------------------------------------------------------
 
-const CONN_LABEL = {
-  disconnected: "Nicht verbunden",
-  connecting: "Verbindung wird aufgebaut",
-  reconnecting: "Verbindung wird wiederhergestellt",
-  connected: "Verbunden",
-};
-
 function syncUi() {
   const connected = state.conn === "connected";
   const pending = state.conn === "connecting" || state.conn === "reconnecting";
@@ -257,8 +247,6 @@ function syncUi() {
   btnConnect.disabled = !bluetoothAvailable;
   btnDisconnect.hidden = !(connected || pending);
   btnDisconnect.textContent = connected ? "Trennen" : "Abbrechen";
-  setLed(connLed, connected ? "ok" : pending ? "busy" : "idle");
-  connLed.setAttribute("aria-label", CONN_LABEL[state.conn] || CONN_LABEL.disconnected);
   document.querySelectorAll('[data-action="connect"]').forEach((btn) => {
     btn.disabled = !bluetoothAvailable || pending;
     btn.textContent = pending ? "Verbinde…" : "Mit E-Paper verbinden";
@@ -269,15 +257,19 @@ function syncUi() {
   controls.hidden = !connected;
 
   // Editor
-  btnPickImage.classList.toggle("btn-neu-signal", !state.hasImage);
-  btnPickImage.classList.toggle("btn-neu-primary", state.hasImage);
   btnPickImage.textContent = state.hasImage ? "Anderes Bild" : "Bild wählen";
-  btnRotate.disabled = !state.hasImage || busy;
+  btnRotate.hidden = !state.hasImage;
+  btnRotate.disabled = busy;
   btnAutoDither.disabled = !state.hasImage || busy;
   btnDownloadBin.disabled = !state.hasImage || busy;
-  btnUploadImage.disabled = !state.hasImage || !connected || busy;
-  // A disabled button says why it is disabled.
-  btnUploadImage.textContent = !state.hasImage ? "Senden – kein Bild" : !connected ? "Senden – nicht verbunden" : "An Gerät senden";
+  // Sending also works without a connection: the button then leads through connecting first.
+  // That needs Web Bluetooth, though.
+  const cannotConnect = !connected && !bluetoothAvailable;
+  btnUploadImage.disabled = !state.hasImage || cannotConnect || busy;
+  // A disabled send button says why, in small print below its label.
+  const sendHint = !state.hasImage ? "kein Bild" : cannotConnect ? "kein Bluetooth" : "";
+  uploadHint.textContent = sendHint;
+  uploadHint.hidden = !sendHint;
 
   // Device settings
   btnSaveWifi.disabled = busy;
@@ -430,6 +422,8 @@ bleInterface.onStatusChange = (text, level) => {
 
 bleInterface.onConnectionStateChange = (connectionState) => {
   state.conn = connectionState;
+  // connecting was cancelled or failed for good: nothing is sent later on its own
+  if (connectionState === "disconnected") sendAfterConnect = false;
   syncUi();
 };
 
@@ -442,6 +436,12 @@ bleInterface.onConnected = (isPaperL) => {
 
   state.conn = "connected";
   syncUi();
+
+  // "Senden" was pressed before a device was connected: the upload starts now.
+  if (sendAfterConnect) {
+    sendAfterConnect = false;
+    if (state.hasImage) startImageUpload();
+  }
 };
 
 bleInterface.onDisconnected = () => {
@@ -1223,8 +1223,7 @@ async function renderPreview() {
     const result = await generatePicture.processPreview(canvas, previewHoverCanvas, input.palette, input.matrix, input.isSerpentine, input.brightness, input.contrast, input.saturation, input.options);
 
     const hasSimulation = Boolean(result?.hasDisplaySimulation);
-    previewStage.classList.toggle("has-simulation", hasSimulation);
-    previewModeRow.hidden = !hasSimulation;
+    setSimulationAvailable(hasSimulation);
     if (!previewQueued) setStatus(bleInterface.isConnected ? "Bildvorschau optimiert und bereit zum Senden." : "Bildvorschau optimiert. Zum Senden das E-Paper verbinden oder als BMP herunterladen.", "ok");
   } catch (e) {
     setStatus("Fehler beim Dithering: " + e.message, "err");
@@ -1311,9 +1310,8 @@ function loadImageFile(file) {
     state.hasImage = true;
     previewEmpty.hidden = true;
     previewStage.hidden = false;
-    setCollapsible(imageSettingsDetails, true);
     syncUi();
-    updatePreview();
+    runAutoOptimise(); // every new picture starts with the automatic settings
   };
   img.onerror = () => {
     URL.revokeObjectURL(url);
@@ -1362,19 +1360,84 @@ btnRotate.addEventListener("click", () => {
   updatePreview();
 });
 
-btnPreviewRaw.addEventListener("click", () => {
-  const showRaw = btnPreviewRaw.getAttribute("aria-pressed") !== "true";
-  btnPreviewRaw.setAttribute("aria-pressed", String(showRaw));
-  previewStage.classList.toggle("show-raw", showRaw);
+// --- Simulation / raw data ---
+// With the calibrated profile the preview simulates the real display colours. The raw colours
+// that are sent to the device show while the mouse is over the picture, or after a tap on it
+// (touch). A small flag on the picture says so.
+
+function setRawPreview(showRaw) {
+  const available = previewStage.classList.contains("has-simulation");
+  const active = available && showRaw;
+  previewStage.classList.toggle("show-raw", active);
+  previewRawFlag.hidden = !active;
+  if (available) previewStage.setAttribute("aria-pressed", String(active));
+}
+
+function setSimulationAvailable(available) {
+  previewStage.classList.toggle("has-simulation", available);
+  if (available) {
+    previewStage.setAttribute("role", "button");
+    previewStage.setAttribute("tabindex", "0");
+    previewStage.setAttribute("aria-label", "Vorschau mit simulierten Display-Farben. Aktivieren zeigt die Rohdaten.");
+  } else {
+    ["role", "tabindex", "aria-label", "aria-pressed"].forEach((name) => previewStage.removeAttribute(name));
+  }
+  setRawPreview(previewStage.classList.contains("show-raw"));
+}
+
+let previewPointerType = "mouse";
+previewStage.addEventListener("pointerenter", (e) => {
+  if (e.pointerType === "mouse") setRawPreview(true);
+});
+previewStage.addEventListener("pointerleave", (e) => {
+  if (e.pointerType === "mouse") setRawPreview(false);
+});
+previewStage.addEventListener("pointerdown", (e) => {
+  previewPointerType = e.pointerType;
+});
+previewStage.addEventListener("click", () => {
+  // a mouse already shows the raw data by hovering
+  if (previewPointerType !== "mouse") setRawPreview(!previewStage.classList.contains("show-raw"));
+});
+previewStage.addEventListener("keydown", (e) => {
+  if ((e.key === "Enter" || e.key === " ") && previewStage.classList.contains("has-simulation")) {
+    e.preventDefault();
+    setRawPreview(!previewStage.classList.contains("show-raw"));
+  }
 });
 
-btnAutoDither.addEventListener("click", () => {
+/** Size of the preview canvas for the current display (the 13.3" preview is rendered at half size). */
+function previewSize() {
+  const scale = EPD_WIDTH === 1200 && EPD_HEIGHT === 1600 ? 0.5 : 1;
+  return [Math.floor(EPD_WIDTH * scale), Math.floor(EPD_HEIGHT * scale)];
+}
+
+/**
+ * Finds processing settings for the loaded picture, shows them in the sliders and renders the
+ * preview with them. Runs for every picture that is loaded and on "Auto-Optimieren".
+ * `announce` reports the result in the status line (button only).
+ */
+function runAutoOptimise({ announce = false } = {}) {
   if (!generatePicture.getOriginalImage()) return;
 
   generatePicture.setEpdDimensions(EPD_WIDTH, EPD_HEIGHT);
-  const result = generatePicture.autoOptimise(canvas, paletteSelect.value || "spectra6Custom");
+  // The picture is analysed on the preview canvas: it needs the display format, also before the first preview.
+  const [width, height] = previewSize();
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+
+  let result = null;
+  try {
+    result = generatePicture.autoOptimise(canvas, paletteSelect.value || "spectra6Custom");
+  } catch (e) {
+    console.error(e);
+  }
   if (!result) {
-    setStatus("Für dieses Bild wurde keine automatische Einstellung gefunden.", "warn");
+    activeAutoOptions = null;
+    toneSlidersTouched = false;
+    if (announce) setStatus("Für dieses Bild wurde keine automatische Einstellung gefunden.", "warn");
     updatePreview(); // autoOptimise drew the undithered picture onto the preview canvas
     return;
   }
@@ -1399,14 +1462,18 @@ btnAutoDither.addEventListener("click", () => {
   activeAutoOptions = resolvedOptions;
   toneSlidersTouched = false;
 
-  if (paletteSelect.value === "new" || !suggestion) {
-    setStatus("Automatisches Setting gefunden: Custom Color Profile", "ok");
-  } else {
-    setStatus(`Automatisches Setting gefunden: ${suggestion.classification.style}, Typ: ${suggestion.imageKind}`, "ok");
+  if (announce) {
+    if (paletteSelect.value === "new" || !suggestion) {
+      setStatus("Automatisches Setting gefunden: Custom Color Profile", "ok");
+    } else {
+      setStatus(`Automatisches Setting gefunden: ${suggestion.classification.style}, Typ: ${suggestion.imageKind}`, "ok");
+    }
   }
 
   updatePreview();
-});
+}
+
+btnAutoDither.addEventListener("click", () => runAutoOptimise({ announce: true }));
 
 // --- Palette ---
 
@@ -1464,10 +1531,7 @@ function renderPaletteEditor() {
 paletteSelect.addEventListener("change", () => {
   generatePicture.setCustomPalette(null);
   renderPaletteEditor();
-  if (paletteSelect.value !== "new") {
-    btnPreviewRaw.setAttribute("aria-pressed", "false");
-    previewStage.classList.remove("show-raw");
-  }
+  if (paletteSelect.value !== "new") setRawPreview(false);
   updatePreview();
 });
 
@@ -1545,15 +1609,49 @@ btnDownloadBin.addEventListener("click", async () => {
   }
 });
 
-btnUploadImage.addEventListener("click", async () => {
-  if (!generatePicture.getOriginalImage() || !bleInterface.isConnected) return;
-
-  await runTransfer({ title: "Bild wird gesendet", abortable: true, failTitle: "Senden fehlgeschlagen" }, async () => {
+function startImageUpload() {
+  return runTransfer({ title: "Bild wird gesendet", abortable: true, failTitle: "Senden fehlgeschlagen" }, async () => {
     setStatus("Generiere volle Auflösung für Upload…", "busy");
     await nextFrame();
     await generateFullBuffer();
     await bleInterface.uploadImage(generatePicture.getProcessedImageBuffer());
   });
+}
+
+// "Senden" without a connected device: a dialog explains how to connect (the steps of the device
+// view). Its button opens the Bluetooth device chooser, and once the device is connected the
+// upload starts by itself (see onConnected).
+const connectDialog = $("connectDialog");
+let sendAfterConnect = false;
+
+function openConnectDialog() {
+  const steps = $("connectDialogSteps");
+  if (!steps.hasChildNodes()) {
+    steps.append(document.querySelector("#notConnectedState .step-list").cloneNode(true));
+  }
+  openDialog(connectDialog);
+}
+
+$("btnCancelConnectDialog").addEventListener("click", () => closeDialog(connectDialog));
+
+$("btnConnectAndSend").addEventListener("click", () => {
+  sendAfterConnect = true;
+  closeDialog(connectDialog);
+  bleInterface.connect(); // opens the device chooser; must be called directly from this click
+});
+
+btnUploadImage.addEventListener("click", () => {
+  if (!generatePicture.getOriginalImage() || state.busy) return;
+
+  if (bleInterface.isConnected) {
+    startImageUpload();
+  } else if (state.conn !== "disconnected") {
+    // a connection attempt is already running: send as soon as it succeeds
+    sendAfterConnect = true;
+    setStatus("Verbindung wird aufgebaut – das Bild wird danach gesendet.", "busy");
+  } else {
+    openConnectDialog();
+  }
 });
 
 bleInterface.onUploadProgress = (type, percent) => {
@@ -1570,7 +1668,6 @@ function setOtaMode(mode) {
 
   btnOtaBle.setAttribute("aria-pressed", String(isBle));
   btnOtaSerial.setAttribute("aria-pressed", String(!isBle));
-  activeOtaModeBadge.textContent = isBle ? "Modus: Bluetooth" : "Modus: USB-Kabel";
 
   bleModeNotice.hidden = !isBle;
   serialModeNotice.hidden = isBle || !serialAvailable;
@@ -2178,8 +2275,10 @@ async function initReleaseChannel() {
   if (RELEASE_CHANNEL === "local") return; // nothing to switch to
 
   // The offline firmware card names the build it flashes: always the one of this web UI.
+  // Short (commit only) so the header stays on one line; amber marks the preview build.
   const fwBadge = $("offlineFwChannelBadge");
-  fwBadge.textContent = describeBuild(RELEASE_CHANNEL, { commit: BUILD_COMMIT });
+  fwBadge.textContent = BUILD_COMMIT || RELEASE_CHANNEL;
+  fwBadge.title = describeBuild(RELEASE_CHANNEL, { fwVersion: EXPECTED_FW_VERSION, commit: BUILD_COMMIT });
   fwBadge.classList.toggle("badge-mode", IS_DEV_CHANNEL);
   fwBadge.hidden = false;
 
@@ -2214,7 +2313,7 @@ async function initReleaseChannel() {
   $("btnCloseVersion").addEventListener("click", () => closeDialog(versionDialog));
 
   const btnVersion = $("btnVersion");
-  $("versionLabel").textContent = IS_DEV_CHANNEL ? "Dev" : "Stabil";
+  $("versionLabel").textContent = IS_DEV_CHANNEL ? "Dev" : "Main";
   btnVersion.dataset.channel = RELEASE_CHANNEL;
   btnVersion.setAttribute("aria-label", `Version: ${CHANNEL_LABEL[RELEASE_CHANNEL]} (${RELEASE_CHANNEL}). Version wechseln`);
   btnVersion.hidden = false;
@@ -2226,6 +2325,70 @@ async function initReleaseChannel() {
     bannerSwitch.addEventListener("click", openVersionDialog);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Install as an app (PWA)
+// ---------------------------------------------------------------------------
+
+// The service worker keeps the page for starting without internet (see public/sw.js).
+// Only in a built page: the dev server changes files all the time.
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js").catch((err) => console.warn("Service worker:", err));
+  });
+}
+
+const installBanner = $("installBanner");
+const INSTALL_DISMISSED_KEY = "paperlesspaper-install-dismissed";
+const INSTALL_ASK_AGAIN_MS = 14 * 24 * 60 * 60 * 1000; // after "Später": two weeks of quiet
+let installPrompt = null; // the browser's "beforeinstallprompt" event, kept until the user decides
+
+function installRecentlyDismissed() {
+  try {
+    const at = Number(localStorage.getItem(INSTALL_DISMISSED_KEY));
+    return at > 0 && Date.now() - at < INSTALL_ASK_AGAIN_MS;
+  } catch (e) {
+    return false; // storage blocked: ask again
+  }
+}
+
+function rememberInstallDismissed() {
+  try {
+    localStorage.setItem(INSTALL_DISMISSED_KEY, String(Date.now()));
+  } catch (e) {
+    // storage blocked: nothing to remember
+  }
+}
+
+// Fired by Chromium browsers when the page can be installed (and is not installed yet).
+window.addEventListener("beforeinstallprompt", (event) => {
+  event.preventDefault(); // our own banner instead of the browser's mini bar
+  installPrompt = event;
+  // The banner is for phones and tablets; on a PC the browser offers the installation in its address bar.
+  const touchDevice = window.matchMedia("(pointer: coarse)").matches;
+  installBanner.hidden = !touchDevice || installRecentlyDismissed();
+});
+
+$("btnInstallApp").addEventListener("click", async () => {
+  const prompt = installPrompt;
+  installPrompt = null;
+  installBanner.hidden = true;
+  if (!prompt) return;
+  prompt.prompt();
+  const choice = await prompt.userChoice;
+  if (choice?.outcome !== "accepted") rememberInstallDismissed();
+});
+
+$("btnInstallLater").addEventListener("click", () => {
+  installBanner.hidden = true;
+  rememberInstallDismissed();
+});
+
+window.addEventListener("appinstalled", () => {
+  installPrompt = null;
+  installBanner.hidden = true;
+  setStatus("Die App ist installiert und liegt jetzt auf dem Startbildschirm.", "ok");
+});
 
 // ---------------------------------------------------------------------------
 // Start

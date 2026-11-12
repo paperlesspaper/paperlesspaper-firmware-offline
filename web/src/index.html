@@ -5,6 +5,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#ffffff" />
+    <meta name="apple-mobile-web-app-title" content="Paperlesspaper" />
     <meta name="color-scheme" content="light" />
     <meta name="description" content="Paperlesspaper Offline: E-Paper per Bluetooth einrichten, Bilder aufbereiten und senden, Firmware flashen." />
     <title>E-Paper Konfiguration</title>
@@ -30,6 +31,9 @@
         <symbol id="i-eye" viewBox="0 0 24 24">
             <path d="M2 12l4-5h12l4 5-4 5H6z M10 10h4v4h-4z" />
         </symbol>
+        <symbol id="i-gear" viewBox="0 0 24 24">
+            <path d="M12 6.5a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11z M11 11h2v2h-2z M12 2v3 M12 19v3 M2 12h3 M19 12h3 M4.93 4.93l2.12 2.12 M16.95 16.95l2.12 2.12 M4.93 19.07l2.12-2.12 M16.95 7.05l2.12-2.12" />
+        </symbol>
         <symbol id="i-eye-off" viewBox="0 0 24 24">
             <path d="M2 12l4-5h12l4 5-4 5H6z M10 10h4v4h-4z M4 3l16 18" />
         </symbol>
@@ -40,8 +44,8 @@
     <header class="app-bar">
         <!-- Only shown in the dev (preview) build -->
         <div class="env-banner" id="channelBanner" hidden>
-            <span>🧪 Vorschau-Version (dev) · wird noch getestet</span>
-            <button type="button" class="env-banner-btn" id="btnChannelBannerSwitch" hidden>Zur stabilen Version</button>
+            <span class="env-banner-text">🧪 Vorschau (dev)<span class="env-banner-more"> · wird noch getestet</span></span>
+            <button type="button" class="env-banner-btn" id="btnChannelBannerSwitch" hidden>Stabile Version</button>
         </div>
         <div class="app-bar-inner">
             <div class="brand">
@@ -76,9 +80,34 @@
             </nav>
 
             <div class="conn">
-                <span class="status-led state-0" id="connLed" role="img" aria-label="Nicht verbunden"></span>
+                <!-- Always a gear; its colour shows the state of the last message. Opens the status line and the log below the bar. -->
+                <button type="button" class="status-btn" id="btnStatus" aria-expanded="false" aria-controls="statusDock" aria-label="Status und Verlauf anzeigen" title="Status und Verlauf">
+                    <span class="status-led state-0" id="statusIcon" aria-hidden="true">
+                        <svg class="icon"><use href="#i-gear" /></svg>
+                    </span>
+                </button>
                 <button type="button" id="btnConnect" class="btn-neu btn-util btn-neu-signal">Verbinden</button>
                 <button type="button" id="btnDisconnect" class="btn-neu btn-util btn-neu-danger-text" hidden>Trennen</button>
+            </div>
+        </div>
+        <!-- Status line, progress and log. Hidden until the status button is pressed or an error occurs. -->
+        <div class="status-dock" id="statusDock" hidden>
+            <div class="dock-progress" id="dockProgress" hidden>
+                <div class="dock-progress-fill" id="dockProgressFill"></div>
+            </div>
+            <div class="dock-inner">
+                <div class="dock-head">
+                    <span class="status-led state-0" id="statusLed" aria-hidden="true"></span>
+                    <p class="dock-text" id="status">Warte auf Verbindung…</p>
+                    <span class="dock-percent" id="dockPercent" hidden>0%</span>
+                    <button type="button" class="dock-log-btn" id="dockLogToggle" aria-expanded="false" aria-controls="dockLog">
+                        Log
+                        <span class="collapsible-icon" aria-hidden="true">▲</span>
+                    </button>
+                </div>
+                <div class="dock-log" id="dockLog" hidden>
+                    <pre class="terminal" id="statusLogOutput" tabindex="0" aria-label="Verlauf der Statusmeldungen"></pre>
+                </div>
             </div>
         </div>
     </header>
@@ -105,7 +134,21 @@
         </div>
     </div>
 
+    <p class="visually-hidden" id="statusLive" role="status" aria-live="polite"></p>
+
     <main id="main" class="app-main">
+        <!-- Offer to install the page as an app. Shown on phones and tablets when the browser allows it. -->
+        <div id="installBanner" class="banner banner-info" hidden>
+            <div class="banner-body">
+                <p class="banner-title">📲 Als App installieren</p>
+                <p class="banner-text">Legt Paperlesspaper auf dem Startbildschirm ab. Bild-Editor und Bluetooth funktionieren dann auch ohne Internet.</p>
+            </div>
+            <div class="banner-actions">
+                <button type="button" id="btnInstallApp" class="btn-neu btn-util btn-neu-signal">Installieren</button>
+                <button type="button" id="btnInstallLater" class="btn-neu btn-util">Später</button>
+            </div>
+        </div>
+
         <!-- Browser cannot talk to the device -->
         <div id="bluetoothUnsupported" class="banner banner-err" role="alert" hidden>
             <div class="banner-body">
@@ -141,40 +184,30 @@
                             <span class="preview-empty-title">Kein Bild geladen</span>
                             <span class="preview-empty-sub">Tippen, um ein Bild auszuwählen – oder Datei hierher ziehen</span>
                         </button>
+                        <!-- With the calibrated profile: hover (mouse) or tap (touch) shows the raw colours -->
                         <div class="preview-stage" id="previewStage" hidden>
                             <canvas id="previewCanvas" role="img" aria-label="Vorschau des aufbereiteten Bildes"></canvas>
                             <canvas id="previewHoverCanvas" aria-hidden="true"></canvas>
                         </div>
-                        <div class="preview-busy" aria-hidden="true">
+                        <span class="preview-chip preview-flag" id="previewRawFlag" hidden>Rohdaten</span>
+                        <div class="preview-chip preview-busy" aria-hidden="true">
                             <span class="spinner spinner-sm"></span>
                             Berechne
                         </div>
-                    </div>
-
-                    <div class="preview-tools" id="previewModeRow" hidden>
-                        <button type="button" class="btn-toggle" id="btnPreviewRaw" aria-pressed="false">Rohdaten zeigen</button>
-                        <span class="field-hint">Die Vorschau simuliert die echten Display-Farben. „Rohdaten“ zeigt die Farben, die an das Gerät gesendet werden.</span>
+                        <button type="button" id="btnRotate" class="preview-action" aria-label="Bild um 90° drehen" title="Bild um 90° drehen" hidden>↻</button>
                     </div>
 
                     <input type="file" id="fileInput" accept="image/*" class="visually-hidden" tabindex="-1" aria-hidden="true" />
-                    <div class="btn-row">
-                        <button type="button" id="btnPickImage" class="btn-neu btn-neu-signal">Bild wählen</button>
-                        <button type="button" id="btnRotate" class="btn-neu btn-fit" disabled>↻ Drehen</button>
+                    <div class="btn-row btn-row-pair">
+                        <button type="button" id="btnUploadImage" class="btn-neu btn-neu-signal btn-stacked" disabled>
+                            <span>Senden</span>
+                            <span class="btn-hint" id="uploadHint">kein Bild</span>
+                        </button>
+                        <button type="button" id="btnPickImage" class="btn-neu btn-neu-primary">Bild wählen</button>
                     </div>
                 </div>
 
                 <div class="stack">
-                    <div class="neu-card" data-tone="ok">
-                        <div class="card-head">
-                            <h2>Übertragen</h2>
-                        </div>
-                        <p class="card-desc" id="imageSecDesc">Das Bild wird automatisch für das 6-Farben-Display aufbereitet. Sende es per Bluetooth an das E-Paper oder lade es als BMP für den Server-Betrieb herunter.</p>
-                        <div class="btn-row">
-                            <button type="button" id="btnUploadImage" class="btn-neu btn-neu-signal btn-grow" disabled>Senden – kein Bild</button>
-                            <button type="button" id="btnDownloadBin" class="btn-neu btn-neu-info" disabled>BMP herunterladen</button>
-                        </div>
-                    </div>
-
                     <div class="collapsible" id="imageSettingsDetails" data-collapsible data-tone="warn">
                         <button type="button" class="collapsible-head" aria-expanded="false" aria-controls="imageSettingsBody">
                             <span>Bild-Einstellungen</span>
@@ -197,8 +230,8 @@
                                         <label class="form-label" for="paletteSelect">Palette</label>
                                         <select id="paletteSelect" class="neu-select">
                                             <option value="spectra6Original">Spectra 6 Originalfarben (knallig)</option>
-                                            <option value="spectra6Custom" selected>Spectra 6 Custom</option>
-                                            <option value="new">Spectra 6 Profil (kalibriert)</option>
+                                            <option value="spectra6Custom">Spectra 6 Custom</option>
+                                            <option value="new" selected>Spectra 6 Profil (kalibriert)</option>
                                         </select>
                                     </div>
 
@@ -245,6 +278,11 @@
                                 </div>
                             </div>
                         </div>
+                    </div>
+
+                    <!-- Last thing on the page: just the button, no box around it -->
+                    <div class="btn-row page-action">
+                        <button type="button" id="btnDownloadBin" class="btn-neu btn-neu-info" disabled>BMP herunterladen</button>
                     </div>
                 </div>
             </div>
@@ -480,15 +518,24 @@
 
         <!-- ============================== VIEW: FIRMWARE ============================== -->
         <section id="viewOta" class="view" aria-label="Firmware" hidden>
-            <div id="controlsOta" class="stack">
-                <div class="neu-card">
+            <div id="controlsOta" class="stack view-narrow">
+                <!-- Offline firmware: what most people come here for -->
+                <div id="offlineFirmwareCard" class="neu-card" data-tone="ok">
                     <div class="card-head">
-                        <h2>Verbindungsweg</h2>
-                        <span id="activeOtaModeBadge" class="badge">Modus: Bluetooth</span>
+                        <h2>Offline Firmware</h2>
+                        <div class="badges">
+                            <span id="expectedOfflineFwBadge" class="badge">v0.1.0</span>
+                            <span class="badge" id="offlineFwChannelBadge" hidden></span>
+                        </div>
                     </div>
-                    <div class="seg" role="group" aria-label="Verbindungsweg wählen">
-                        <button type="button" id="btnOtaBle" class="seg-btn" aria-pressed="true">Bluetooth (BLE)</button>
-                        <button type="button" id="btnOtaSerial" class="seg-btn" aria-pressed="false">USB-Kabel (COM)</button>
+                    <p class="card-desc">Open-Source-Firmware für maximale Unabhängigkeit. Alle Daten laufen lokal über Bluetooth oder WLAN.</p>
+
+                    <div class="field">
+                        <span class="form-label" id="otaModeTitle">Verbindungsweg</span>
+                        <div class="seg" role="group" aria-labelledby="otaModeTitle">
+                            <button type="button" id="btnOtaBle" class="seg-btn" aria-pressed="true">Bluetooth (BLE)</button>
+                            <button type="button" id="btnOtaSerial" class="seg-btn" aria-pressed="false">USB-Kabel (COM)</button>
+                        </div>
                     </div>
                     <p id="bleModeNotice" class="callout callout-info">
                         <span class="callout-caption">📶 Bluetooth-Update</span>
@@ -502,105 +549,96 @@
                         <span class="callout-caption">⚠️ Nicht unterstützt</span>
                         Dieser Browser unterstützt keine serielle Verbindung (Web Serial API). Nutze Chrome, Edge oder Opera auf einem PC für USB-Flashing.
                     </p>
+
+                    <div class="btn-row">
+                        <button type="button" id="btnUpdateOfflineFw" class="btn-neu btn-neu-signal btn-sys">
+                            Flashen
+                            <span class="btn-chip otaModeLabel">BLE</span>
+                        </button>
+                    </div>
+                    <p class="field-hint">
+                        Dokumentation &amp; Quellcode:
+                        <a href="https://github.com/paperlesspaper/paperlesspaper-firmware-offline" target="_blank" rel="noopener noreferrer">Offline-Firmware auf GitHub ↗</a>
+                    </p>
                 </div>
 
-                <div class="grid-2">
-                    <div class="stack">
-                        <!-- Offline Firmware -->
-                        <div id="offlineFirmwareCard" class="neu-card" data-tone="ok">
-                            <div class="card-head">
-                                <h3>Offline Firmware</h3>
-                                <div class="badges">
-                                    <span id="expectedOfflineFwBadge" class="badge">v0.1.0</span>
-                                    <span class="badge badge-ok">Lokal</span>
-                                    <span class="badge badge-mode" id="offlineFwChannelBadge" hidden>Dev</span>
+                <!-- Everything else: cloud firmware, certificate backup, custom firmware, debug monitor -->
+                <div class="collapsible" id="moreFirmware" data-collapsible>
+                    <button type="button" class="collapsible-head" aria-expanded="false" aria-controls="moreFirmwareBody">
+                        <span>Weitere Optionen</span>
+                        <span class="collapsible-icon" aria-hidden="true">▲</span>
+                    </button>
+                    <div class="collapsible-body" id="moreFirmwareBody">
+                        <div class="collapsible-inner">
+                            <div class="collapsible-content">
+                                <p class="field-hint">Cloud-Firmware, Zertifikat-Backup und eigene Firmware. Der oben gewählte Verbindungsweg gilt auch hier.</p>
+
+                                <div class="sub-head">
+                                    <h3>Original Cloud Firmware</h3>
+                                    <span class="badge badge-info">Cloud</span>
                                 </div>
-                            </div>
-                            <p class="card-desc">Open-Source-Firmware für maximale Unabhängigkeit. Alle Daten laufen lokal über Bluetooth oder WLAN.</p>
-                            <div class="btn-row">
-                                <button type="button" id="btnUpdateOfflineFw" class="btn-neu btn-neu-signal btn-sys">
-                                    Flashen
-                                    <span class="btn-chip otaModeLabel">BLE</span>
-                                </button>
-                            </div>
-                            <p class="field-hint">
-                                Dokumentation &amp; Quellcode:
-                                <a href="https://github.com/paperlesspaper/paperlesspaper-firmware-offline" target="_blank" rel="noopener noreferrer">Offline-Firmware auf GitHub ↗</a>
-                            </p>
-                        </div>
+                                <p class="card-desc">Offizielle Firmware zur Verbindung mit der Paperlesspaper Cloud und Bildanzeige über die App.</p>
+                                <div class="btn-row">
+                                    <button type="button" id="btnFetchOriginalFw" class="btn-neu btn-neu-info btn-sys">
+                                        Flashen
+                                        <span class="btn-chip otaModeLabel">BLE</span>
+                                    </button>
+                                </div>
+                                <p class="field-hint">
+                                    Dokumentation &amp; Quellcode:
+                                    <a href="https://github.com/paperlesspaper/paperlesspaper-firmware" target="_blank" rel="noopener noreferrer">Cloud-Firmware auf GitHub ↗</a>
+                                </p>
 
-                        <!-- Eigene Firmware -->
-                        <div class="neu-card" data-tone="warn">
-                            <div class="card-head">
-                                <h3>Eigene Firmware</h3>
-                                <span class="badge badge-warn">.bin</span>
-                            </div>
-                            <p class="card-desc">
-                                Flasht ein selbst gebautes App-Image (
-                                <code>firmware.bin</code>
-                                ) für den ESP32-C6.
-                            </p>
-                            <div class="btn-row">
-                                <button type="button" id="btnSelectFw" class="btn-neu btn-neu-attention btn-sys">
-                                    Datei wählen
-                                    <span class="btn-chip otaModeLabel">BLE</span>
-                                </button>
-                            </div>
-                            <input type="file" id="fwInput" accept=".bin" class="visually-hidden" tabindex="-1" aria-hidden="true" />
-                            <input type="file" id="spiffsInput" accept=".bin" class="visually-hidden" tabindex="-1" aria-hidden="true" />
-                        </div>
-                    </div>
+                                <hr class="divider" />
 
-                    <div class="stack">
-                        <!-- Original Cloud Firmware -->
-                        <div class="neu-card" data-tone="info">
-                            <div class="card-head">
-                                <h3>Original Cloud Firmware</h3>
-                                <span class="badge badge-info">Cloud</span>
-                            </div>
-                            <p class="card-desc">Offizielle Firmware zur Verbindung mit der Paperlesspaper Cloud und Bildanzeige über die App.</p>
-                            <div class="btn-row">
-                                <button type="button" id="btnFetchOriginalFw" class="btn-neu btn-neu-info btn-sys">
-                                    Flashen
-                                    <span class="btn-chip otaModeLabel">BLE</span>
-                                </button>
-                            </div>
-                            <p class="field-hint">
-                                Dokumentation &amp; Quellcode:
-                                <a href="https://github.com/paperlesspaper/paperlesspaper-firmware" target="_blank" rel="noopener noreferrer">Cloud-Firmware auf GitHub ↗</a>
-                            </p>
+                                <div class="sub-head">
+                                    <h3>Zertifikate sichern (SPIFFS)</h3>
+                                    <span class="badge">0x3B0000 · 256 KB</span>
+                                </div>
+                                <p class="card-desc">Die Cloud-Firmware benötigt gerätespezifische AWS-IoT-Zertifikate auf der SPIFFS-Partition. Sichere sie, bevor du die Firmware wechselst.</p>
+                                <div id="spiffsBleNotice" class="callout callout-warn callout-action">
+                                    <span>Backup und Wiederherstellung der Zertifikate funktionieren nur über das USB-Kabel.</span>
+                                    <button type="button" id="btnSwitchToUsb" class="btn-neu btn-util btn-neu-primary">Zu USB wechseln</button>
+                                </div>
+                                <div id="spiffsUsbTools" class="btn-row" hidden>
+                                    <button type="button" id="btnBackupSpiffs" class="btn-neu btn-neu-ready btn-sys">Zertifikate sichern</button>
+                                    <button type="button" id="btnSelectSpiffs" class="btn-neu btn-neu-attention btn-sys">Zertifikate wiederherstellen</button>
+                                </div>
 
-                            <hr class="divider" />
+                                <hr class="divider" />
 
-                            <div class="sub-head">
-                                <h4>Zertifikate &amp; SPIFFS-Partition</h4>
-                                <span class="badge">0x3B0000 · 256 KB</span>
-                            </div>
-                            <p class="card-desc">Die Cloud-Firmware benötigt gerätespezifische AWS-IoT-Zertifikate auf der SPIFFS-Partition. Sichere sie, bevor du die Firmware wechselst.</p>
+                                <div class="sub-head">
+                                    <h3>Eigene Firmware</h3>
+                                    <span class="badge badge-warn">.bin</span>
+                                </div>
+                                <p class="card-desc">
+                                    Flasht ein selbst gebautes App-Image (
+                                    <code>firmware.bin</code>
+                                    ) für den ESP32-C6.
+                                </p>
+                                <div class="btn-row">
+                                    <button type="button" id="btnSelectFw" class="btn-neu btn-neu-attention btn-sys">
+                                        Datei wählen
+                                        <span class="btn-chip otaModeLabel">BLE</span>
+                                    </button>
+                                </div>
+                                <input type="file" id="fwInput" accept=".bin" class="visually-hidden" tabindex="-1" aria-hidden="true" />
+                                <input type="file" id="spiffsInput" accept=".bin" class="visually-hidden" tabindex="-1" aria-hidden="true" />
 
-                            <div id="spiffsBleNotice" class="callout callout-warn callout-action">
-                                <span>Backup und Wiederherstellung der Zertifikate funktionieren nur über das USB-Kabel.</span>
-                                <button type="button" id="btnSwitchToUsb" class="btn-neu btn-util btn-neu-primary">Zu USB wechseln</button>
-                            </div>
-
-                            <div id="spiffsUsbTools" class="btn-row" hidden>
-                                <button type="button" id="btnBackupSpiffs" class="btn-neu btn-neu-ready btn-sys">Zertifikate sichern</button>
-                                <button type="button" id="btnSelectSpiffs" class="btn-neu btn-neu-attention btn-sys">Zertifikate wiederherstellen</button>
-                            </div>
-                        </div>
-
-                        <!-- Serial monitor: diagnostic zone (dashed) -->
-                        <div id="serialMonitorContainer" class="neu-card card-aux" hidden>
-                            <div class="card-head">
-                                <h3>Serieller Debug-Monitor</h3>
-                                <span class="badge">115200 Baud</span>
-                            </div>
-                            <div class="btn-row">
-                                <button type="button" id="btnToggleSerialMonitor" class="btn-neu btn-sys btn-grow">Monitor verbinden</button>
-                                <button type="button" id="btnClearSerialLog" class="btn-neu btn-neu-danger-text btn-sys">Log leeren</button>
-                            </div>
-                            <div id="serialLogBox" hidden>
-                                <pre id="serialLogOutput" class="terminal terminal-serial" tabindex="0" aria-label="Serielle Ausgabe"></pre>
+                                <!-- Serial monitor: diagnostic zone (dashed), USB only -->
+                                <div id="serialMonitorContainer" class="aux-zone" hidden>
+                                    <div class="sub-head">
+                                        <h3>Serieller Debug-Monitor</h3>
+                                        <span class="badge">115200 Baud</span>
+                                    </div>
+                                    <div class="btn-row">
+                                        <button type="button" id="btnToggleSerialMonitor" class="btn-neu btn-sys btn-grow">Monitor verbinden</button>
+                                        <button type="button" id="btnClearSerialLog" class="btn-neu btn-neu-danger-text btn-sys">Log leeren</button>
+                                    </div>
+                                    <div id="serialLogBox" hidden>
+                                        <pre id="serialLogOutput" class="terminal terminal-serial" tabindex="0" aria-label="Serielle Ausgabe"></pre>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -610,7 +648,7 @@
 
         <!-- ============================== VIEW: HILFE ============================== -->
         <section id="viewHelp" class="view" aria-labelledby="helpTitle" hidden>
-            <div class="stack view-narrow">
+            <div class="stack view-narrow accordion">
                 <div class="neu-card" data-tone="info">
                     <div class="card-head">
                         <h2 id="helpTitle">Hilfe</h2>
@@ -719,7 +757,7 @@
                                         <span class="step-num">2</span>
                                         <div>
                                             <strong>Bei Bedarf anpassen</strong>
-                                            <span class="step-desc">„Auto-Optimieren“ wählt passende Werte. Palette, Dithering, Helligkeit, Kontrast und Sättigung stehen unter „Bild-Einstellungen“.</span>
+                                            <span class="step-desc">„Auto-Optimieren“ wählt passende Werte. Palette, Dithering, Helligkeit, Kontrast und Sättigung stehen unter „Bild-Einstellungen“. Das Symbol ↻ auf dem Bild dreht es. Mit der kalibrierten Palette zeigt die Vorschau die echten Display-Farben; Antippen (am PC: mit der Maus darüberfahren) zeigt die Rohdaten.</span>
                                         </div>
                                     </li>
                                     <li class="step-item">
@@ -892,35 +930,14 @@
                     </div>
                 </div>
 
-                <p class="field-hint mono" id="buildInfo" hidden></p>
-                <p class="field-hint">
+                <p class="field-hint mono bleed-pad" id="buildInfo" hidden></p>
+                <p class="field-hint bleed-pad">
                     Technische Details zur Offline-Firmware stehen in der
                     <a href="https://github.com/paperlesspaper/paperlesspaper-firmware-offline" target="_blank" rel="noopener noreferrer">README auf GitHub ↗</a>
                 </p>
             </div>
         </section>
     </main>
-
-    <!-- Status dock: one persistent status line, progress and a collapsible log -->
-    <div class="status-dock" id="statusDock">
-        <div class="dock-progress" id="dockProgress" hidden>
-            <div class="dock-progress-fill" id="dockProgressFill"></div>
-        </div>
-        <div class="dock-inner">
-            <div class="dock-head">
-                <span class="status-led state-0" id="statusLed" aria-hidden="true"></span>
-                <p class="dock-text" id="status" role="status" aria-live="polite">Warte auf Verbindung…</p>
-                <span class="dock-percent" id="dockPercent" hidden>0%</span>
-                <button type="button" class="dock-log-btn" id="dockLogToggle" aria-expanded="false" aria-controls="dockLog">
-                    Log
-                    <span class="collapsible-icon" aria-hidden="true">▲</span>
-                </button>
-            </div>
-            <div class="dock-log" id="dockLog" hidden>
-                <pre class="terminal" id="statusLogOutput" tabindex="0" aria-label="Verlauf der Statusmeldungen"></pre>
-            </div>
-        </div>
-    </div>
 
     <!-- ============================== DIALOGS ============================== -->
 
@@ -1056,6 +1073,20 @@
             <div class="modal-actions">
                 <button type="button" id="btnCancelUsbBackup" class="btn-neu">Abbrechen</button>
                 <button type="button" id="btnConfirmUsbBackup" class="btn-neu btn-neu-signal btn-grow">COM-Port wählen &amp; sichern</button>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- "Senden" without a connection: how to connect, then connect and send in one go -->
+    <dialog id="connectDialog" class="modal" aria-labelledby="connectDialogTitle">
+        <div class="modal-body">
+            <h3 id="connectDialogTitle">Kein Gerät verbunden</h3>
+            <p class="modal-text">Zum Senden wird das E-Paper per Bluetooth verbunden. Sobald die Verbindung steht, startet die Übertragung von selbst.</p>
+            <!-- the same steps as in the device view, copied from there by app.js -->
+            <div id="connectDialogSteps"></div>
+            <div class="modal-actions">
+                <button type="button" id="btnCancelConnectDialog" class="btn-neu">Abbrechen</button>
+                <button type="button" id="btnConnectAndSend" class="btn-neu btn-neu-signal btn-grow">Mit E-Paper verbinden</button>
             </div>
         </div>
     </dialog>

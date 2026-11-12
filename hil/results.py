@@ -111,3 +111,10 @@ def write_results(junit_path, out_path, target_name):
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump({"target": target_name.upper(), "cases": cases}, f, indent=2, ensure_ascii=False)
     return len(cases)
+
+
+if __name__ == "__main__":
+    # python -m hil.results junit.xml hil_result_web.json web
+    if len(sys.argv) != 4:
+        sys.exit("usage: python -m hil.results <junit.xml> <result.json> <name>")
+    print(f"{write_results(sys.argv[1], sys.argv[2], sys.argv[3])} test cases written to {sys.argv[2]}")

@@ -129,6 +129,59 @@ function readReleaseChannel() {
   return channel === "main" || channel === "dev" ? channel : "local";
 }
 
+/**
+ * Makes the page installable as an app (PWA): writes manifest.webmanifest next to index.html
+ * and links it. The manifest depends on the release channel, so the stable and the preview
+ * version install as two separate apps. Icons and the service worker are static files in
+ * src/public/.
+ */
+function pwaManifestPlugin() {
+  const isDev = readReleaseChannel() === "dev";
+  const manifest = {
+    name: isDev ? "Paperlesspaper Offline (Dev)" : "Paperlesspaper Offline",
+    short_name: isDev ? "Paperless Dev" : "Paperlesspaper",
+    description: "E-Paper per Bluetooth einrichten, Bilder aufbereiten und senden, Firmware flashen.",
+    lang: "de",
+    // relative to the manifest: the folder of this version (site root, or ./dev/)
+    start_url: "./",
+    scope: "./",
+    display: "standalone",
+    background_color: "#ffffff",
+    theme_color: "#ffffff",
+    icons: [
+      { src: "icons/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+      { src: "icons/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+      // the artwork keeps to the safe zone, so the same files serve as maskable icons
+      { src: "icons/icon-192.png", sizes: "192x192", type: "image/png", purpose: "maskable" },
+      { src: "icons/icon-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+    ],
+  };
+  const source = JSON.stringify(manifest, null, 2);
+
+  return {
+    name: "pwa-manifest",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if ((req.url || "").split("?")[0] === "/manifest.webmanifest") {
+          res.setHeader("Content-Type", "application/manifest+json");
+          res.end(source);
+        } else {
+          next();
+        }
+      });
+    },
+    generateBundle() {
+      this.emitFile({ type: "asset", fileName: "manifest.webmanifest", source });
+    },
+    transformIndexHtml() {
+      return [
+        { tag: "link", attrs: { rel: "manifest", href: "./manifest.webmanifest" }, injectTo: "head" },
+        { tag: "link", attrs: { rel: "apple-touch-icon", href: "./icons/apple-touch-icon.png" }, injectTo: "head" },
+      ];
+    },
+  };
+}
+
 export default defineConfig({
   root: "src",
   base: "./",
@@ -141,7 +194,7 @@ export default defineConfig({
         .slice(0, 7),
     ),
   },
-  plugins: [colorProfilesPlugin(), ditherTestImagesPlugin(), viteSingleFile()],
+  plugins: [colorProfilesPlugin(), ditherTestImagesPlugin(), pwaManifestPlugin(), viteSingleFile()],
   build: {
     outDir: "../dist",
     emptyOutDir: true,
