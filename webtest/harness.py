@@ -47,6 +47,15 @@ def run(coro, timeout=180):
 
 
 class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+    # Python takes MIME types from the Windows registry, where ".js" is often "text/plain".
+    # A browser refuses to register a service worker served like that (GitHub Pages sends the
+    # right types).
+    extensions_map = {
+        **http.server.SimpleHTTPRequestHandler.extensions_map,
+        ".js": "text/javascript",
+        ".webmanifest": "application/manifest+json",
+    }
+
     def log_message(self, *args):
         pass
 
@@ -148,7 +157,8 @@ class WebApp:
             await page.add_init_script("Object.defineProperty(navigator, 'bluetooth', { value: undefined, configurable: true });")
 
         await page.goto(self.site.url)
-        await page.wait_for_selector("#status")
+        # The status line sits in a panel that is closed until the status button is pressed.
+        await page.wait_for_selector("#status", state="attached")
         return self
 
     async def __aexit__(self, *exc):
@@ -215,6 +225,12 @@ class WebApp:
         await self.view("geraet")
         if await self.page.get_attribute('[aria-controls="expertBody"]', "aria-expanded") != "true":
             await self.click('[aria-controls="expertBody"]')
+
+    async def open_more_firmware(self):
+        """Opens the collapsed "Weitere Optionen" of the firmware view (cloud firmware, certificates, custom firmware)."""
+        await self.view("firmware")
+        if await self.page.get_attribute('[aria-controls="moreFirmwareBody"]', "aria-expanded") != "true":
+            await self.click('[aria-controls="moreFirmwareBody"]')
 
     async def connect(self, timeout=40000):
         await self.click("#btnConnect")

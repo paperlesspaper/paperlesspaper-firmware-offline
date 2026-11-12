@@ -414,6 +414,52 @@ def test_picture_upload(app_session, target):
     run(body(), timeout=240)
 
 
+def test_send_without_connection_connects_first(app_session):
+    """'Senden' without a connected device explains how to connect, connects and then sends by itself."""
+
+    async def body():
+        device = SimulatedDevice()
+        async with app_session(device) as (app, site):
+            await app.load_image(assets.test_picture(device.width // 2, device.height // 2))
+            assert not await app.is_connected()
+            assert await app.locator("#btnUploadImage").is_enabled(), "Sending must be offered without a connection."
+
+            async def connect_and_send():
+                await app.click("#btnUploadImage")
+                await app.page.wait_for_selector("#connectDialog[open]")
+                # the same steps as in the device view while nothing is connected
+                assert await app.text("#connectDialogSteps") == await app.text("#notConnectedState .step-list")
+                await app.click("#btnConnectAndSend")
+
+            result = await app.transfer(connect_and_send, timeout=180000)
+
+            assert result is None, f"Upload ended with an error screen: {result}"
+            assert await app.is_connected()
+            assert device.image is not None and len(device.image) == device.image_bytes
+            assert device.displayed == device.image, "APPLY was not sent after the upload."
+
+    run(body(), timeout=240)
+
+
+def test_cancelled_connect_dialog_sends_nothing(app_session):
+    """Closing the dialog must not leave an upload waiting for the next connection."""
+
+    async def body():
+        device = SimulatedDevice()
+        async with app_session(device) as (app, site):
+            await app.load_image(assets.test_picture())
+            await app.click("#btnUploadImage")
+            await app.page.wait_for_selector("#connectDialog[open]")
+            await app.click("#btnCancelConnectDialog")
+
+            await app.connect()
+            await asyncio.sleep(1)
+            assert await app.page.evaluate("window.__transferOpens") == 0
+            assert device.image is None
+
+    run(body())
+
+
 def test_upload_repeats_a_window_after_packet_loss(app_session):
     async def body():
         device = SimulatedDevice()
@@ -548,7 +594,7 @@ def test_cloud_firmware_update(app_session):
         device = SimulatedDevice()
         async with app_session(device, files=files) as (app, site):
             await app.connect()
-            await app.view("firmware")
+            await app.open_more_firmware()
             await app.click("#btnFetchOriginalFw")
             await app.page.wait_for_function("() => document.getElementById('otaVersion').textContent === '3.0.99'")
             title, message = await app.transfer(lambda: app.click("#btnConfirmOta"))

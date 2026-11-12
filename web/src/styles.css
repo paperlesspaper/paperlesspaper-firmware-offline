@@ -60,6 +60,8 @@
 
   /* Page canvas: slightly off-white so the white boxes stand out */
   --canvas: #f4f4f0;
+  /* Space between boxes: none on phones (they follow each other, divided by a line), 12px from 600px up */
+  --box-gap: 0px;
 
   /* Section colours (header band of a box). One strong accent + one band tint per role:
      ok = device / local / save, info = cloud / network / image, warn = tools / expert,
@@ -112,7 +114,7 @@ html {
   text-size-adjust: 100%;
   scroll-padding-top: calc(var(--header-h) + 16px);
   /* keyboard focus and scrollIntoView() must not end up under the fixed dock / navigation */
-  scroll-padding-bottom: calc(var(--nav-h) + var(--dock-h) + var(--safe-b) + 24px);
+  scroll-padding-bottom: calc(var(--nav-h) + var(--safe-b) + 24px);
 }
 
 body {
@@ -125,7 +127,7 @@ body {
   line-height: 1.5;
   -webkit-tap-highlight-color: transparent;
   /* room for the fixed status dock + bottom navigation */
-  padding-bottom: calc(var(--nav-h) + var(--dock-h) + var(--safe-b) + 24px);
+  padding-bottom: calc(var(--nav-h) + var(--safe-b) + 24px);
 }
 
 h1,
@@ -253,10 +255,8 @@ summary:focus-visible {
 
 .brand {
   display: flex;
-  flex-direction: column; /* phones: title above the version switch */
-  align-items: flex-start;
-  justify-content: center;
-  gap: 3px;
+  align-items: center; /* title and version switch on one line */
+  gap: 8px;
   min-width: 0;
   margin-right: auto;
 }
@@ -266,7 +266,6 @@ summary:focus-visible {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  max-width: 100%;
 }
 
 /* Version switch (stable / preview) next to the product name */
@@ -275,6 +274,7 @@ summary:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  flex-shrink: 0;
   min-height: 26px;
   padding: 0 8px;
   background: var(--muted-bg);
@@ -331,12 +331,45 @@ summary:focus-visible {
   flex-shrink: 0;
 }
 
-.conn .status-led {
-  margin-right: 0;
+/* Status button: an LED that shows the state of the last message and opens the status line */
+.status-btn {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
 }
-/* While disconnected the yellow connect button says it all; an empty LED reads as a checkbox. */
-.conn .status-led.state-0 {
-  display: none;
+.status-btn::after {
+  content: "";
+  position: absolute;
+  inset: -10px -6px; /* touch target of 44px */
+}
+/* Lifted with a hard shadow like every pressable element, so it does not read as a checkbox. */
+.status-btn .status-led {
+  position: relative;
+  left: -1px;
+  top: -1px;
+  width: 28px;
+  height: 28px;
+  border-color: var(--border);
+  box-shadow: 2px 2px 0px #000000;
+  transition: all var(--dur-press) ease-out;
+}
+.status-btn .status-led.state-0 {
+  border-color: var(--border);
+  color: var(--text-primary);
+}
+/* always a gear: the state glyphs of the LED are not shown here, the colour carries the state */
+.status-btn .status-led.status-led::after {
+  content: none;
+}
+.status-btn .icon {
+  width: 18px;
+  height: 18px;
+}
+.status-btn:active .status-led,
+.status-btn[aria-expanded="true"] .status-led {
+  left: 1px;
+  top: 1px;
+  box-shadow: 0px 0px 0px #000000; /* pressed in: the panel is open */
 }
 
 /* ---------- Navigation: bottom bar on phones, tabs in the app bar on wide screens ---------- */
@@ -450,10 +483,19 @@ summary:focus-visible {
 .app-main {
   max-width: var(--content-max);
   margin: 0 auto;
-  padding: var(--gutter);
+  padding: 0; /* phones: boxes run from edge to edge, directly below the header */
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--box-gap);
+}
+
+/* Text that sits directly in a view, without a box around it */
+.bleed-pad {
+  padding: 12px var(--gutter) 0;
+}
+/* A button that stands on the page by itself, without a box (BMP download) */
+.btn-row.page-action {
+  padding: 14px var(--gutter) 4px;
 }
 
 .view {
@@ -470,13 +512,17 @@ summary:focus-visible {
 .stack {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--box-gap);
   min-width: 0;
+}
+/* a stack inside a box arranges content, not boxes */
+.neu-card .stack {
+  gap: 12px;
 }
 
 .grid-2 {
   display: grid;
-  gap: 12px;
+  gap: var(--box-gap);
   align-items: start;
 }
 
@@ -486,7 +532,8 @@ summary:focus-visible {
   --card-band: var(--band-neutral);
   --card-accent: var(--border);
   background-color: var(--bg);
-  border: 2px solid var(--border);
+  border: solid var(--border);
+  border-width: 0 0 2px; /* phones: edge to edge, boxes divided by one line */
   padding: var(--card-pad);
   display: flex;
   flex-direction: column;
@@ -505,12 +552,12 @@ summary:focus-visible {
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 6px 10px;
-  min-height: 48px;
+  gap: 4px 10px;
+  min-height: 38px;
   margin: calc(-1 * var(--card-pad)) calc(-1 * var(--card-pad)) 0;
-  padding: 8px var(--card-pad) 8px calc(var(--card-pad) - 8px);
+  padding: 4px var(--card-pad) 4px calc(var(--card-pad) - 6px);
   background: var(--card-band);
-  border-left: 8px solid var(--card-accent);
+  border-left: 6px solid var(--card-accent);
   border-bottom: 2px solid var(--border);
 }
 
@@ -536,7 +583,7 @@ summary:focus-visible {
 }
 .card-head h2,
 .card-head h3 {
-  font-size: 16px;
+  font-size: 14px;
 }
 
 .card-desc {
@@ -594,6 +641,8 @@ summary:focus-visible {
 }
 .card-head .badge {
   background: #ffffff; /* readable on every band colour */
+  font-size: 11px;
+  padding: 2px 6px;
 }
 .card-head .badge-ok {
   background: var(--status-ok);
@@ -650,6 +699,22 @@ summary:focus-visible {
   left: -6px;
   right: 0;
   bottom: 0;
+}
+/*
+ * The strip travels with the button. It is extended by the distance travelled (hover 1px,
+ * press up to 4px), so its top and left edge stay exactly where they were. Otherwise a pointer
+ * resting on that edge leaves the strip as soon as the button moves, the hover ends, the
+ * button moves back under the pointer - and so on without end.
+ */
+@media (hover: hover) {
+  .btn-neu:not(:disabled):hover::before {
+    top: -7px;
+    left: -7px;
+  }
+}
+.btn-neu:not(:disabled):active::before {
+  top: -10px;
+  left: -10px;
 }
 
 /* !important is intentional: hover and press must win over every colour variant */
@@ -772,6 +837,46 @@ summary:focus-visible {
 }
 .btn-row > .btn-fit {
   flex: 0 1 auto;
+}
+/* two actions that always share one line, also on phones */
+.btn-row-pair {
+  flex-wrap: nowrap;
+}
+.btn-row-pair > * {
+  flex: 1 1 0;
+  min-width: 0;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+/* label with a small second line (why a button is disabled) */
+.btn-stacked {
+  flex-direction: column;
+  gap: 1px;
+  padding-top: 3px; /* two lines fit into the normal button height */
+  padding-bottom: 3px;
+}
+.btn-hint {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  line-height: 1.2;
+}
+
+/* diagnostic zone inside a box (dashed = auxiliary) */
+.aux-zone {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 2px dashed var(--border);
+  background: var(--muted-bg);
+}
+
+/* collapsible entries that follow each other form one block, without gaps */
+.accordion > .collapsible + .collapsible {
+  margin-top: calc(-1 * var(--box-gap)); /* swallows the gap of .stack */
+  border-top: none;
 }
 
 /* Toggle: a mode that is on or off. Active = pressed in and amber. */
@@ -1185,7 +1290,8 @@ input[type="range"]::-moz-range-thumb {
 .collapsible {
   --card-band: var(--band-neutral);
   --card-accent: var(--border);
-  border: 2px solid var(--border);
+  border: solid var(--border);
+  border-width: 0 0 2px; /* phones: edge to edge, like .neu-card */
   background: var(--bg);
 }
 .collapsible-head {
@@ -1194,10 +1300,10 @@ input[type="range"]::-moz-range-thumb {
   justify-content: space-between;
   gap: 12px;
   width: 100%;
-  min-height: 48px;
-  padding: 8px 14px 8px 8px;
+  min-height: 38px;
+  padding: 4px 14px 4px 10px;
   background: var(--card-band);
-  border-left: 8px solid var(--card-accent);
+  border-left: 6px solid var(--card-accent);
   font-family: var(--font-display);
   font-weight: 800;
   font-size: 13px;
@@ -1247,7 +1353,7 @@ input[type="range"]::-moz-range-thumb {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding: 14px;
+  padding: 14px 16px;
   border-top: 2px solid var(--border);
 }
 
@@ -1329,19 +1435,28 @@ input[type="range"]::-moz-range-thumb {
   flex-wrap: wrap;
   align-items: center;
   gap: 10px 16px;
-  border: 2px solid var(--border);
+  border: solid var(--border);
+  border-width: 0 0 2px; /* phones: edge to edge and flat, floating with a shadow from 600px up */
   padding: 10px 14px;
-  box-shadow: 3px 3px 0px #000000;
-  margin: 0 3px 3px 0;
   background: var(--muted-bg);
 }
 .banner-warn {
   background: var(--tint-warn);
-  border-left: 8px solid var(--status-warn);
+  border-left: 6px solid var(--status-warn);
 }
 .banner-err {
   background: var(--tint-err);
-  border-left: 8px solid var(--status-err);
+  border-left: 6px solid var(--status-err);
+}
+.banner-info {
+  background: var(--tint-info);
+  border-left: 6px solid var(--cat-info);
+}
+.banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 1px 1px 3px 1px;
 }
 .banner-body {
   flex: 1 1 240px;
@@ -1516,17 +1631,25 @@ input[type="range"]::-moz-range-thumb {
 /* ---------- Editor ---------- */
 .editor-grid {
   display: grid;
-  gap: 12px;
+  gap: var(--box-gap);
   align-items: start;
+}
+
+/* The picture box: the preview fills it from edge to edge, right below the header band. */
+.editor-preview {
+  gap: 0;
+}
+.editor-preview > .btn-row {
+  margin-top: 14px;
 }
 
 .preview-frame {
   position: relative;
-  width: 100%;
+  margin: 0 calc(-1 * var(--card-pad));
   aspect-ratio: var(--epd-ratio, 800 / 480);
   max-height: min(62vh, 620px);
   background: var(--muted-bg);
-  border: 2px solid var(--border);
+  border-bottom: 2px solid var(--border);
   overflow: hidden;
   transition: background-color var(--dur-press) ease;
 }
@@ -1585,6 +1708,13 @@ input[type="range"]::-moz-range-thumb {
   opacity: 0;
   transition: opacity var(--dur) ease;
 }
+.preview-stage.has-simulation {
+  cursor: pointer; /* hover or tap shows the raw data */
+}
+.preview-stage.has-simulation:focus-visible {
+  outline: 3px solid var(--border);
+  outline-offset: -3px;
+}
 .preview-stage.has-simulation #previewHoverCanvas {
   opacity: 1;
 }
@@ -1592,11 +1722,10 @@ input[type="range"]::-moz-range-thumb {
   opacity: 0;
 }
 
-.preview-busy {
+/* Small notes on the picture: "Rohdaten" (top left), "Berechne" (top right) */
+.preview-chip {
   position: absolute;
   top: 8px;
-  right: 8px;
-  display: none;
   align-items: center;
   gap: 8px;
   padding: 4px 10px;
@@ -1607,19 +1736,58 @@ input[type="range"]::-moz-range-thumb {
   font-size: 11px;
   font-weight: 800;
   text-transform: uppercase;
+  pointer-events: none;
+}
+.preview-flag {
+  left: 8px;
+  display: inline-flex;
+}
+.preview-busy {
+  right: 8px;
+  display: none;
 }
 .preview-frame.is-busy .preview-busy {
   display: inline-flex;
 }
 
-.preview-tools {
-  display: flex;
-  flex-wrap: wrap;
+/* Action on the picture (rotate), bottom right */
+.preview-action {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: inline-flex;
   align-items: center;
-  gap: 8px 12px;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  background: #ffffff;
+  border: 2px solid var(--border);
+  box-shadow: 2px 2px 0px #000000;
+  font-family: var(--font-mono);
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1;
+  transition:
+    background-color var(--dur-press) ease-out,
+    color var(--dur-press) ease-out,
+    box-shadow var(--dur-press) ease-out,
+    translate var(--dur-press) ease-out;
 }
-.preview-tools .field-hint {
-  flex: 1 1 160px;
+.preview-action:not(:disabled):active {
+  background: var(--btn-pressed);
+  color: #ffffff;
+  box-shadow: 0px 0px 0px #000000;
+  translate: 2px 2px;
+}
+.preview-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+@media (hover: hover) {
+  .preview-action:not(:disabled):hover {
+    background: var(--text-primary);
+    color: #ffffff;
+  }
 }
 
 /* ---------- Step list / FAQ ---------- */
@@ -1740,15 +1908,12 @@ input[type="range"]::-moz-range-thumb {
 }
 
 /* ---------- Status dock (always visible status line + collapsible log) ---------- */
+/* Status line + log. Sits in the sticky header, below the bar; opened by the status button. */
 .status-dock {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: calc(var(--nav-h) + var(--safe-b) + 3px);
-  z-index: 90;
   background: var(--bg);
   border-top: 2px solid var(--border);
   transition: background-color 0.15s ease;
+  animation: view-in var(--dur) var(--ease-out);
 }
 .status-dock[data-level="ok"] {
   background: var(--tint-ok);
@@ -2143,17 +2308,17 @@ dialog.transfer::backdrop {
   padding: 12px 14px;
   background: var(--tint-err);
   border: 2px solid var(--border);
-  border-left: 8px solid var(--status-err);
+  border-left: 6px solid var(--status-err);
 }
 
 /* ---------- Environment banner (dev / preview build) ---------- */
 .env-banner {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   justify-content: center;
-  gap: 6px 12px;
-  padding: 6px var(--gutter);
+  gap: 10px;
+  padding: 3px var(--gutter);
+  white-space: nowrap; /* always one line: the long text is shortened on phones */
   background-color: var(--status-warn);
   border-bottom: 2px solid var(--border);
   font-family: var(--font-display);
@@ -2163,7 +2328,11 @@ dialog.transfer::backdrop {
   text-transform: uppercase;
   text-align: center;
 }
+.env-banner-more {
+  display: none; /* shown from 600px up */
+}
 .env-banner-btn {
+  flex-shrink: 0;
   min-height: 32px;
   padding: 2px 12px;
   background: #ffffff;
@@ -2189,18 +2358,64 @@ dialog.transfer::backdrop {
 }
 /* the sticky header is taller while the banner is shown */
 .has-env-banner {
-  --header-h: 104px;
+  --header-h: 100px;
 }
 
 /* ---------- Breakpoints ---------- */
+/* Phones: the header (title, version switch, status button, connect button) stays on one line.
+   Ordered from wide to narrow, so the narrower rule wins. */
+@media (max-width: 599px) {
+  .app-bar-inner {
+    gap: 8px;
+  }
+  .conn {
+    gap: 8px;
+  }
+  .conn .btn-util {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+}
+
+@media (max-width: 399px) {
+  .app-bar-inner {
+    gap: 6px;
+  }
+  .brand {
+    gap: 6px;
+  }
+  .conn {
+    gap: 6px;
+  }
+  .brand-title {
+    font-size: 14px;
+    letter-spacing: 0;
+  }
+}
+
 @media (max-width: 359px) {
   /* very narrow phones: a wrapped button fills its row instead of sitting half-width */
   .btn-row > .btn-fit {
     flex: 1 1 100%;
   }
+  .brand-title {
+    font-size: 12px;
+  }
+  .brand-version {
+    padding: 0 5px;
+    gap: 4px;
+  }
+  .conn .btn-util {
+    padding: 4px 8px;
+    font-size: 12px;
+  }
+  .status-btn .status-led {
+    width: 26px;
+    height: 26px;
+  }
 }
 
-@media (min-width: 380px) {
+@media (min-width: 400px) {
   .brand-title {
     font-size: 16px;
   }
@@ -2215,9 +2430,40 @@ dialog.transfer::backdrop {
 @media (min-width: 600px) {
   :root {
     --gutter: 16px;
+    --box-gap: 12px;
+  }
+  /* from here on the boxes float on the canvas: side margin, full border */
+  .app-main {
+    padding: var(--gutter);
+  }
+  .bleed-pad {
+    padding: 0;
+  }
+  .btn-row.page-action {
+    padding: 2px 2px 4px 2px; /* the column already has its margin */
   }
   .neu-card {
     --card-pad: 20px;
+    border-width: 2px;
+  }
+  .collapsible {
+    border-width: 2px;
+  }
+  .collapsible-content {
+    padding: 14px 20px;
+  }
+  .banner {
+    border-width: 2px;
+    box-shadow: 3px 3px 0px #000000;
+    margin: 0 3px 3px 0;
+  }
+  .banner-warn,
+  .banner-err,
+  .banner-info {
+    border-left-width: 6px;
+  }
+  .env-banner-more {
+    display: inline;
   }
 
   /* centred dialog card instead of a bottom sheet */
@@ -2252,10 +2498,34 @@ dialog.transfer::backdrop {
 
 @media (min-width: 900px) {
   html {
-    scroll-padding-bottom: calc(var(--dock-h) + 24px);
+    scroll-padding-bottom: 24px;
   }
   body {
-    padding-bottom: calc(var(--dock-h) + 32px);
+    padding-bottom: 32px;
+  }
+
+  /* a mouse needs less height than a finger */
+  .btn-neu {
+    min-height: 44px;
+    font-size: 14px;
+  }
+  .btn-hero {
+    min-height: 52px;
+    font-size: 16px;
+  }
+  .btn-sys {
+    min-height: 40px;
+  }
+  .btn-util {
+    min-height: 36px;
+    font-size: 13px;
+  }
+  .btn-small {
+    min-height: 48px; /* stays as high as the input next to it */
+    font-size: 13px;
+  }
+  .seg-btn {
+    min-height: 40px;
   }
 
   .app-bar-inner {
@@ -2313,10 +2583,6 @@ dialog.transfer::backdrop {
   }
   .nav-btn[aria-current="page"]:focus-visible {
     outline-color: var(--border);
-  }
-
-  .status-dock {
-    bottom: 0;
   }
 
   .editor-grid {

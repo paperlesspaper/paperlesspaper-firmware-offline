@@ -30,6 +30,9 @@ const statusEl = $("status");
 const statusLed = $("statusLed");
 const statusLogOutput = $("statusLogOutput");
 const statusDock = $("statusDock");
+const statusIcon = $("statusIcon");
+const statusLive = $("statusLive");
+const btnStatus = $("btnStatus");
 const dockLogToggle = $("dockLogToggle");
 const dockLog = $("dockLog");
 
@@ -71,7 +74,10 @@ export function setStatus(text, level = "idle") {
   currentStatus.level = level;
   if (statusEl) statusEl.textContent = message;
   setLed(statusLed, level);
-  if (statusDock) statusDock.dataset.level = level; // tints the dock in the status colour
+  setLed(statusIcon, level); // the button in the header always shows the current state
+  if (statusLive) statusLive.textContent = message;
+  if (statusDock) statusDock.dataset.level = level; // tints the panel in the status colour
+  if (level === "err") setStatusPanel(true); // an error must not go unnoticed
   appendLog(message, level);
   statusListeners.forEach((fn) => fn(message, level));
 }
@@ -79,6 +85,26 @@ export function setStatus(text, level = "idle") {
 export function onStatus(fn) {
   statusListeners.add(fn);
   return () => statusListeners.delete(fn);
+}
+
+/** Shows or hides the status line below the header bar. */
+export function setStatusPanel(open) {
+  if (!statusDock) return;
+  statusDock.hidden = !open;
+  if (btnStatus) btnStatus.setAttribute("aria-expanded", String(open));
+}
+
+if (btnStatus) {
+  btnStatus.addEventListener("click", () => setStatusPanel(statusDock.hidden));
+}
+
+// The header changes its height (dev banner, status panel, log). Sticky elements and the
+// scroll padding follow the real height.
+const appBar = document.querySelector(".app-bar");
+if (appBar && typeof ResizeObserver !== "undefined") {
+  new ResizeObserver(() => {
+    document.documentElement.style.setProperty("--header-h", appBar.offsetHeight + "px");
+  }).observe(appBar);
 }
 
 if (dockLogToggle && dockLog) {
