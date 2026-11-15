@@ -28,7 +28,9 @@ const DEVICE_LIMITS = {
 const BATTERY_LOW_MV = 4400;
 
 // Flash layout (part.csv)
-const APP_ADDRESS = 0x10000;
+const APP_ADDRESS = 0x10000; // app0, the first of the two app slots
+const OTADATA_ADDRESS = 0xe000; // selects the app slot the bootloader starts
+const OTADATA_SIZE = 0x2000;
 const SPIFFS_ADDRESS = 0x3b0000;
 const SPIFFS_SIZE = 0x40000; // 256 KB
 
@@ -1804,15 +1806,21 @@ async function flashSerial(buffer, address, label, port) {
     setStatus("Lade Bootloader…", "busy");
     await esploader.main();
 
+    const fileArray = [{ data: buffer, address }];
+    if (address === APP_ADDRESS) {
+      fileArray.push({ data: new Uint8Array(OTADATA_SIZE).fill(0xff), address: OTADATA_ADDRESS });
+    }
+
     setStatus(`Flashe ${label}…`, "busy");
     await esploader.writeFlash({
-      fileArray: [{ data: buffer, address }],
+      fileArray,
       flashMode: "keep",
       flashFreq: "keep",
       flashSize: "keep",
       eraseAll: false,
       compress: true,
       reportProgress: (fileIndex, written, total) => {
+        if (fileIndex !== 0) return; // otadata: a few bytes
         const percent = Math.round((written / total) * 100);
         setProgress(percent);
         setStatus(`Flashe ${label} per USB: ${percent}%...`, "busy");

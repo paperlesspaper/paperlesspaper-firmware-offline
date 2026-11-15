@@ -293,7 +293,7 @@ A disconnect during an upload discards it.
 
 **USB flashing**
 
-The Web UI uses `esptool-js` over Web Serial at 921600 baud. The firmware is written to `0x10000`, the certificates to `0x3B0000`.
+The Web UI uses `esptool-js` over Web Serial at 921600 baud. The firmware is written to `0x10000` (app slot `app0`), the certificates to `0x3B0000`. With a firmware, `otadata` (`0xE000`) is erased as well, so that the bootloader starts `app0`: after an update over the air or over Bluetooth the frame may start `app1`.
 
 </details>
 
