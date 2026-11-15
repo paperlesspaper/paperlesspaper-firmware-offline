@@ -582,7 +582,8 @@ bleInterface.onWifiInfoChange = (info) => {
   if (!info.ip) return;
   infoIp.textContent = info.ip;
   infoRssi.textContent = info.rssi + " dBm";
-  infoSsid.textContent = info.ssid || "Netzwerk";
+  // Older firmware does not report the network name: the device then joined the one in the field.
+  infoSsid.textContent = info.ssid || wifiSsid.value.trim() || "Netzwerk";
   if (info.rssi > -60) infoQuality.textContent = "Ausgezeichnet";
   else if (info.rssi > -75) infoQuality.textContent = "Gut";
   else infoQuality.textContent = "Schwach";

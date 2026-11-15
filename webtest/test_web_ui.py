@@ -202,6 +202,25 @@ def test_connect_shows_device_and_loads_its_settings(app_session, target):
     run(body())
 
 
+def test_device_ends_an_idle_setup_mode(app_session):
+    """The device leaves the setup mode on its own: the page says why and does not try to reconnect."""
+
+    async def body():
+        device = SimulatedDevice()
+        async with app_session(device) as (app, site):
+            await app.connect()
+            await device.end_setup_mode()
+            await app.wait_status("ohne Eingabe beendet")
+            assert not await app.is_connected()
+            assert await app.locator("#btnConnect").is_visible()
+
+            await asyncio.sleep(6)  # an unexpected disconnect is followed by a reconnect after 5 s
+            assert device.connections == 1, "The page must not reconnect to a device that went to sleep."
+            assert "ohne Eingabe beendet" in await app.status()
+
+    run(body())
+
+
 def test_cancelled_device_chooser(app_session):
     async def body():
         device = SimulatedDevice()

@@ -113,6 +113,7 @@ class SimulatedDevice:
         self.networks = {}  # ssid -> (password, rssi): the networks "in range"
         self.voltage = 4100
         self.usb = True
+        self.setup_timeout = False  # the device announced the end of its setup mode
 
         # Records for the assertions of a test
         self.commands = []
@@ -179,7 +180,16 @@ class SimulatedDevice:
         info = {"voltage": self.voltage, "usb": self.usb, "charging": False, "display": self.display}
         if not self.legacy:
             info.update(version=self.version, fw="offline")
+        if self.setup_timeout:
+            info["setupTimeout"] = True
         return info
+
+    async def end_setup_mode(self):
+        """On battery power the firmware ends the setup mode when the client is idle for too long
+        (SETUP_IDLE_TIMEOUT): it announces that in the system info and then stops Bluetooth."""
+        self.setup_timeout = True
+        await self._notify(CHR_SYSTEM_INFO)
+        self._later(0.5, self.drop_link)
 
     def scan_result(self):
         return "".join(f"{ssid}´{rssi}´´" for ssid, (_, rssi) in self.networks.items())

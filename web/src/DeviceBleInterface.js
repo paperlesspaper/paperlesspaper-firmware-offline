@@ -88,6 +88,8 @@ export class DeviceBleInterface {
     this.reconnectInterval = null;
     this.manualDisconnect = false;
     this.otaRebooting = false;
+    this.resetRebooting = false;
+    this.setupTimedOut = false;
     this.reconnectAttempts = 0;
     this.isScanningWifi = false;
     this.isWritingDirectSettings = false;
@@ -165,6 +167,9 @@ export class DeviceBleInterface {
     }
     try {
       this.manualDisconnect = false;
+      this.otaRebooting = false;
+      this.resetRebooting = false;
+      this.setupTimedOut = false;
       this.reconnectAttempts = 0;
       this._clearReconnect();
       if (this.bleDevice) {
@@ -317,6 +322,14 @@ export class DeviceBleInterface {
       this.otaRebooting = false;
       this._setState("disconnected");
       this.onStatusChange("Firmware erfolgreich installiert! Gerät startet neu... 🚀", "ok");
+    } else if (this.resetRebooting) {
+      this.resetRebooting = false;
+      this._setState("disconnected");
+      this.onStatusChange("Gerät wurde zurückgesetzt und startet neu.", "ok");
+    } else if (this.setupTimedOut) {
+      this.setupTimedOut = false;
+      this._setState("disconnected");
+      this.onStatusChange("Das E-Paper hat die Verbindung nach 10 Minuten ohne Eingabe beendet, um die Batterien zu schonen. Zum Weitermachen die Reset-Taste drücken und neu verbinden.", "warn");
     } else {
       this._setState("disconnected");
       this.onStatusChange("Gerät getrennt.", "warn");
@@ -491,6 +504,15 @@ export class DeviceBleInterface {
         if (jsonStr.length > 2) {
           try {
             const parsed = JSON.parse(jsonStr);
+            if (parsed && parsed.setupTimeout === true) {
+              // On battery power the device ends its setup mode when the client is idle for too
+              // long. It is on its way to sleep: reconnecting would only fail.
+              this.manualDisconnect = true;
+              this.setupTimedOut = true;
+              this._clearReconnect();
+              if (this.bleDevice?.gatt?.connected) this.bleDevice.gatt.disconnect();
+              return;
+            }
             if (parsed && typeof parsed.version === "string" && parsed.version.trim()) {
               this.deviceFirmwareVersion = parsed.version.trim();
             }
@@ -584,7 +606,8 @@ export class DeviceBleInterface {
         return true;
       } else {
         this.onWifiStatusChange(false);
-        this.onStatusChange("WLAN gespeichert, aber Verbindung fehlgeschlagen (Passwort falsch?)", "err");
+        // The device stores the credentials only after a successful connection test.
+        this.onStatusChange("WLAN-Verbindung fehlgeschlagen – Zugangsdaten wurden nicht gespeichert (Passwort falsch?)", "err");
         return false;
       }
     } catch (e) {
@@ -687,8 +710,23 @@ export class DeviceBleInterface {
     try {
       this.onStatusChange("Führe Factory Reset aus...", "busy");
       const cmdChar = await this.settingsService.getCharacteristic(this.UPLOAD_CMD_UUID);
-      await cmdChar.writeValue(this.encodeText("RESET"));
-      this.onStatusChange("Gerät wird zurückgesetzt und neugestartet.", "ok");
+      // The device restarts after the reset and is then no longer in setup mode: the dropped
+      // link is expected and reconnecting would only fail twelve times.
+      this.manualDisconnect = true;
+      this.resetRebooting = true;
+      this._clearReconnect();
+      try {
+        await cmdChar.writeValue(this.encodeText("RESET"));
+      } catch (writeErr) {
+        // Firmware before the deferred restart resets inside the write: the answer never
+        // arrives, the link drops instead. Only a failed write on a live link is an error.
+        if (this.bleDevice?.gatt?.connected) throw writeErr;
+        console.warn("RESET was not answered, the device restarted:", writeErr);
+      }
+      if (this.resetRebooting) {
+        // still connected (otherwise handleDisconnect() has already reported the restart)
+        this.onStatusChange("Gerät wird zurückgesetzt und neugestartet.", "ok");
+      }
 
       setTimeout(() => {
         if (this.bleDevice && this.bleDevice.gatt.connected) {
@@ -697,6 +735,8 @@ export class DeviceBleInterface {
       }, 1500);
     } catch (e) {
       console.error(e);
+      this.manualDisconnect = false;
+      this.resetRebooting = false;
       this.onStatusChange("Fehler beim Factory Reset.", "err");
     }
   }

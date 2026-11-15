@@ -53,7 +53,7 @@ You can switch between both firmwares at any time in the Web UI.
 
 | Action | Result |
 | :--- | :--- |
-| Press reset **once** | Setup mode: Bluetooth is active for 30 seconds. Without a connection the frame continues with a normal update. |
+| Press reset **once** | Setup mode: Bluetooth is active for 30 seconds. Without a connection the frame continues with a normal update. On battery power the frame ends a connection after 10 minutes without input. |
 | Press reset **twice** | Skips setup mode and downloads the image again, even if it has not changed. |
 | Press reset **5 times** | Factory reset: deletes settings, WiFi credentials and the stored image. |
 | Hold the small button, press reset, release the small button | Bootloader mode for USB flashing. |
@@ -90,11 +90,13 @@ Display resolution: 800×480 (7.3", landscape) or 1200×1600 (13.3", portrait). 
 Details:
 
 - **URL:** `http://` or `https://`, up to 128 characters. HTTPS certificates are not verified.
+- **File size:** up to 6 MB (less if the flash of the frame is smaller). The server does not have to send `Content-Length`: responses with `Transfer-Encoding: chunked` are supported.
 - **Check:** the button **Prüfen** next to the download URL in the Web UI tells you whether the frame can show the picture and how it will be placed.
 - **Login:** optional HTTP Basic Auth for the image download.
 - **Caching:** if the server sends an `ETag` (preferred) or `Last-Modified` header, an unchanged image is neither written to flash nor refreshed on the display.
 - **Server-controlled interval:** the response header `X-OpenPaper-Sleep-Seconds` (60–86400) sets the time until the next wake-up.
-- **Errors:** if the download fails, the frame shows an error message and tries again after 1 to 5 minutes.
+- **Errors:** if the download fails, the frame shows an error message once and tries again after 5 minutes, then 15 minutes, then 1 hour, and from then on at the update interval (at least 1 hour). A press of the reset button starts over.
+- **Not set up:** without WiFi credentials or a download URL, and without a picture sent over Bluetooth, the frame shows a setup hint once and sleeps until the reset button is pressed.
 - **Motion wake-up (optional):** the frame also updates when it is moved.
 - **Low battery:** below 4.0 V without USB power the frame skips updates to protect the batteries.
 
@@ -208,9 +210,9 @@ All characteristics: read, notify. UUID suffix: `-7b0e-11ed-a1eb-0242ac120002`.
 | UUID | Name | Value |
 | :--- | :--- | :--- |
 | `4c578d4c` | WiFi connected | One byte: `1` connected, `0` not connected |
-| `4c578d4d` | WiFi info | JSON, e.g. `{"ip": "192.168.1.20", "rssi": -65}`; `{}` when not connected |
+| `4c578d4d` | WiFi info | JSON, e.g. `{"ip": "192.168.1.20", "rssi": -65, "ssid": "MyWiFi"}`; `{}` when not connected |
 | `5131a3fc` | WiFi scan | `SSID´RSSI´´SSID2´RSSI2´´…`, filled after the command `SCAN_WIFI` |
-| `60000001` | System info | JSON with `voltage` (mV), `usb`, `charging`, `version`, `fw` (`offline`), `display` (`7` or `13`). Updated every 10 seconds. |
+| `60000001` | System info | JSON with `voltage` (mV), `usb`, `charging`, `version`, `fw` (`offline`), `display` (`7` or `13`). Updated every 10 seconds. `setupTimeout: true` announces that the frame ends the setup mode (client idle for 10 minutes on battery power). |
 
 #### WiFi: `0515c086-7b0c-11ed-a1eb-0242ac120002`
 

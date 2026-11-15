@@ -586,7 +586,7 @@ void displayWipe(bool quick) {
    display.refresh();
 }
 
-void displaySetText(String info, bool isBlackboard, bool quickRefresh) {
+void displaySetText(String info, bool isBlackboard, bool quickRefresh, String info2) {
    int foreGround = GxEPD_BLACK_I;
    int backGround = GxEPD_WHITE_I;
    bool invert = false;
@@ -630,6 +630,13 @@ void displaySetText(String info, bool isBlackboard, bool quickRefresh) {
       u8g2_for_adafruit_gfx.print(info);
       if (info.length() > 1) {
          displayInfos.deviceInfoString = true;
+      }
+      if (info2.length() > 0) {
+         u8g2_for_adafruit_gfx.setFont(FONT_SMALL);
+         int16_t tw2 = u8g2_for_adafruit_gfx.getUTF8Width(info2.c_str());
+         int16_t th2 = u8g2_for_adafruit_gfx.getFontAscent() - u8g2_for_adafruit_gfx.getFontDescent();
+         u8g2_for_adafruit_gfx.setCursor((EPD_HEIGHT - tw2) / 2, (EPD_WIDTH - th) / 2 + th2 + 12);
+         u8g2_for_adafruit_gfx.print(info2);
       }
 
       displayOverlays(display, displayInfos, invert, false);
