@@ -56,7 +56,7 @@ You can switch between both firmwares at any time in the Web UI.
 | Press reset **once** | Setup mode: Bluetooth is active for 30 seconds. Without a connection the frame continues with a normal update. On battery power the frame ends a connection after 10 minutes without input. |
 | Press reset **twice** | Skips setup mode and downloads the image again, even if it has not changed. |
 | Press reset **5 times** | Factory reset: deletes settings, WiFi credentials and the stored image. |
-| Hold the small button, press reset, release the small button | Bootloader mode for USB flashing. |
+| Hold the small button, press reset, release the small button | Bootloader mode for USB flashing. Only needed with older firmware: the Web UI switches the frame to the bootloader itself and asks for one press of reset. |
 
 Multiple presses count when each press follows the previous one within 3 seconds.
 
@@ -177,7 +177,7 @@ The cloud firmware authenticates with device-specific AWS IoT certificates in th
 - **Restore:** **Zertifikate wiederherstellen** writes a backup, or a file from customer support, back to the frame.
 - **Back to the cloud firmware:** **Firmware → Original Cloud Firmware → Flashen**.
 
-Backup and restore need a USB cable and bootloader mode (see [Buttons](#buttons)).
+Backup and restore need a USB cable. The Web UI asks you to press reset once.
 
 ## Build from source
 
@@ -192,7 +192,7 @@ pio run -e epd7 -t upload     # 7.3" display
 pio run -e epd13 -t upload    # 13.3" display
 ```
 
-Put the frame into bootloader mode before uploading. You can also flash `.pio/build/<env>/firmware.bin` in the Web UI (**Firmware → Eigene Firmware**).
+Put the frame into bootloader mode before uploading (see [Buttons](#buttons)). You can also flash `.pio/build/<env>/firmware.bin` in the Web UI (**Firmware → Eigene Firmware**).
 
 > [!CAUTION]
 > Do not erase the whole flash and do not upload a filesystem image. Both delete the certificates.
@@ -293,6 +293,8 @@ A disconnect during an upload discards it.
 
 **USB flashing**
 
+The board has no auto reset. While the frame starts (it prints `[MAIN] test mode check...`) and while it is in setup mode, the character `B` on the serial line (115200 baud) restarts it into the ROM bootloader, if USB power is connected. The cloud firmware has the same command. The Web UI sends it, so the boot button is not needed.
+
 The Web UI uses `esptool-js` over Web Serial at 921600 baud. The firmware is written to `0x10000` (app slot `app0`), the certificates to `0x3B0000`. With a firmware, `otadata` (`0xE000`) is erased as well, so that the bootloader starts `app0`: after an update over the air or over Bluetooth the frame may start `app1`.
 
 </details>
@@ -305,12 +307,12 @@ Every push to `main` and `dev` is tested on real hardware before it is published
 <summary><b>Details</b></summary>
 
 - **Hardware:** the tests (`hil/`) run on the same self-hosted Windows runner and devices as the [cloud firmware](https://github.com/paperlesspaper/paperlesspaper-firmware). Relays, serial ports and log masking come from its `testbench/` folder. The workflow checks that repository out to `_cloud/`. Locally, a checkout next to this repository is found automatically, or set `CLOUD_TESTBENCH_ROOT`.
-- **Steps per device:** flash the candidate over BLE (from cloud or offline firmware) → factory reset with 5 power cycles → check the BLE interface → use the device through the web UI (see below) → flash the cloud production firmware back. The last step always runs because the cloud tests depend on it.
+- **Steps per device:** flash the candidate over BLE (from cloud or offline firmware) → factory reset with 5 power cycles → check the BLE interface → use the device through the web UI (see below) → flash over USB without the boot button and check that the flashed firmware starts from `app0` → flash the cloud production firmware back. The last step always runs because the cloud tests depend on it.
 - **Web UI test** (`webtest/`): the built page (`web/dist`) runs in a headless Chromium and is used like a person would use it. `navigator.bluetooth` is replaced by `webtest/shim.js`, which forwards every Bluetooth operation to the test.
   - *Without hardware* (job "Web UI test", before anything is flashed): the page talks to a simulated device (`webtest/simdevice.py`, the BLE protocol of `src/main.cpp`). Covered: connection, settings and their validation, Wi-Fi, picture upload for both displays including packet loss, errors and abort, firmware update and refused firmware files, the check of the download URL.
   - *With hardware* (`test_10` to `test_13` in `hil/`): the same page reaches the real device over the PC's Bluetooth (`hil/web_bridge.py`): settings survive a power cycle, a picture prepared in the browser arrives in the flash unchanged (CRC from the serial log) and is displayed, the firmware update of the page installs the candidate.
   - *Consistency* (`webtest/test_consistency.py`, same job): the limits and BLE identifiers written down in the firmware, the web UI, the simulated device and the hardware tests must agree. Change them in all places together.
-  - Not covered: Chrome's own Bluetooth stack and device chooser, and flashing over USB.
+  - Not covered: Chrome's own Bluetooth stack and device chooser, and the USB code of the page (Web Serial, `esptool-js`). Flashing over USB is tested with `esptool` and the same steps (`test_14`).
   ```powershell
   pip install -r webtest/requirements.txt
   python -m playwright install chromium

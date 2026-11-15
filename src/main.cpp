@@ -21,8 +21,10 @@
 #include <Update.h>
 #include <WiFiClientSecure.h>
 #include <Wire.h>
+#include <esp_ota_ops.h>
 #include <rom/crc.h>
 #include <rom/rtc.h>
+#include <soc/lp_aon_reg.h>
 
 #include "chunked_decoder.h"
 #include "epaper_display.h"
@@ -1185,6 +1187,27 @@ void WiFiEvent(WiFiEvent_t event) {
       break;
    default:
       break;
+   }
+}
+
+// Restarts into the download mode of the ROM, as if the boot button was held during a reset.
+void rebootIntoRomBootloader() {
+   Serial.println("[SYSTEM] Rebooting into ROM Download Bootloader...");
+   Serial.flush();
+   delay(100);
+#ifdef LP_AON_SYS_CFG_REG
+   REG_WRITE(LP_AON_SYS_CFG_REG, REG_READ(LP_AON_SYS_CFG_REG) | LP_AON_FORCE_DOWNLOAD_BOOT);
+#endif
+   esp_restart();
+}
+
+void checkSerialBootloaderCommand() {
+   while (Serial.available()) {
+      const int received = Serial.read();
+      if ((received == 'B' || received == 'b') && systemData.usbConnected) {
+         Serial.println("[MAIN] Bootloader command 'B' received via Serial!");
+         rebootIntoRomBootloader();
+      }
    }
 }
 
@@ -3241,6 +3264,9 @@ void runSetupMode() {
          ESP.restart();
       }
 
+      if (!isBleTransferActive)
+         checkSerialBootloaderCommand();
+
       if (forceExitSetup) {
          Serial.println("[MAIN] Manual exit requested via Web UI. Switching to fetch/refresh mode.");
          break;
@@ -3591,11 +3617,13 @@ void setup() {
    pinMode(LED_PIN, OUTPUT);
    digitalWrite(LED_PIN, LOW);
    Serial.begin(115200);
+   Serial.println("[MAIN] test mode check..."); // flashers wait for this line, then send 'B'
    analogReadResolution(12);
    systemData.usbConnected = usbCheckConnect();
    delay(80);
 
    systemData.vddValue = readVDD(false);
+   checkSerialBootloaderCommand();
    if (!systemData.usbConnected && systemData.vddValue < BAT_OFF_VALUE) {
       if (DEBUG_FLAG)
          Serial.printf("[MAIN] Bat low protection: %dmV\n", systemData.vddValue);
@@ -3653,6 +3681,8 @@ void setup() {
 
    Serial.printf("[MAIN] INIT Device V: %s\n", firmwareVersion);
    Serial.println("[MAIN] FW: offline"); // lets tools tell this firmware apart from the cloud firmware
+   const esp_partition_t *runningApp = esp_ota_get_running_partition();
+   Serial.printf("[MAIN] App slot: %s\n", runningApp ? runningApp->label : "unknown"); // app0 or app1
    if (DEBUG_FLAG)
       Serial.printf("[MAIN] Current counter value: %u VDD: %d\n", StartCounter, systemData.vddValue);
    if (!SPIFFS.begin(false)) {

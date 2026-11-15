@@ -7,7 +7,7 @@ device, test_99 always puts the cloud production firmware back.
 
 test_10 to test_13 use the device through the web UI: the built page (web/dist)
 runs in a headless browser and reaches the device over the PC's Bluetooth
-(hil/web_bridge.py).
+(hil/web_bridge.py). test_14 flashes over USB with esptool, with the steps of the web UI.
 """
 
 import os
@@ -269,6 +269,26 @@ def test_13_web_ui_updates_the_firmware(device, target, run_state):
     booted = device.wait_for_reboot(since["log"], timeout=90)
     assert booted.firmware == "offline"
     assert booted.version == run_state["candidate_version"]
+
+
+def test_14_usb_flash_starts_the_flashed_firmware(device, target, run_state):
+    """Flashing over USB works without the boot button, and the flashed firmware is the one that
+    starts: also when the device ran from the second app slot, as it does after an update over BLE."""
+    _require_candidate(run_state)
+
+    booted = device.identify()
+    if booted.slot != "app1":
+        # An update over BLE goes to the other slot: from app0 to app1.
+        device.enter_setup_mode()
+        booted = _flash_over_ble(device, target.candidate_bin)
+    assert booted.slot == "app1", f"Device runs from {booted.slot}, the test needs it on app1."
+
+    device.enter_bootloader()
+    booted = device.flash_over_usb(target.candidate_bin)
+
+    assert booted.firmware == "offline"
+    assert booted.version == run_state["candidate_version"]
+    assert booted.slot == "app0", f"The firmware flashed over USB does not start: the device still runs from {booted.slot}."
 
 
 def test_99_restore_cloud_firmware(device, target):

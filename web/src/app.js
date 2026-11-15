@@ -2,6 +2,7 @@ import { GeneratePicture } from "./GeneratePicture.js";
 import { DeviceBleInterface, validateEsp32FirmwareBinary } from "./DeviceBleInterface.js";
 import { ESPLoader, Transport } from "esptool-js";
 import { checkImageForDevice, imageHeaderComplete } from "./imageCheck.js";
+import { bootloaderAnswers, requestBootloader, readBootLog } from "./serialBoot.js";
 import { $, setStatus, onStatus, currentStatus, setProgress, onProgress, setLed, initNavigation, navigate, getCurrentView, initDialogs, openDialog, closeDialog, showMessage, initCollapsibles, setCollapsible, nextFrame, byteLength, setFieldError, formatDuration, downloadBlob } from "./ui.js";
 
 const EXPECTED_FW_VERSION = typeof __EXPECTED_FW_VERSION__ !== "undefined" ? __EXPECTED_FW_VERSION__ : "0.1.0";
@@ -384,9 +385,9 @@ async function runTransfer({ title, abortable = false, successTitle = "Fertig", 
   let ok = false;
   try {
     await nextFrame();
-    await task();
+    const outcome = await task();
     ok = true;
-    finishTransfer({ ok: true, title: successTitle, message: currentStatus.text, sticky: stickySuccess });
+    finishTransfer({ ok: true, title: outcome?.title || successTitle, message: currentStatus.text, sticky: stickySuccess });
   } catch (err) {
     console.error(err);
     if (transfer.aborted) {
@@ -1778,12 +1779,35 @@ const loaderTerminal = {
   write: (data) => console.log(data),
 };
 
+const BOOTLOADER_HELP = "Der Bootloader des E-Paper antwortet nicht. Starte den Vorgang erneut und drücke kurz die Reset-Taste, sobald die Seite dazu auffordert. Bei älterer Firmware: kleinen Knopf halten, Reset kurz drücken, kleinen Knopf loslassen – dann erneut starten.";
+
+/** Brings the device into the bootloader (see serialBoot.js) and connects to it. */
 async function openEspLoader(port) {
   await disconnectSerialMonitor();
   setStatus("Verbindung mit USB-Gerät wird hergestellt…", "busy");
+  let mode = "default_reset"; // boards with auto reset
+  if (await bootloaderAnswers(port, loaderTerminal)) {
+    mode = "no_reset";
+  } else {
+    setStatus("Drücke jetzt kurz die Reset-Taste (großer Knopf) am E-Paper…", "busy");
+    if ((await requestBootloader(port)) === "entered") {
+      mode = "no_reset";
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+
+  setStatus("Lade Bootloader…", "busy");
   // tracing off: it hex-dumps every packet to the console and into memory
   const transport = new Transport(port, false);
   const esploader = new ESPLoader({ transport, baudrate: 921600, terminal: loaderTerminal });
+  try {
+    await esploader.main(mode);
+  } catch (err) {
+    await closeTransport(transport);
+    if (err?.name === "InvalidStateError" || err?.message?.includes("already open")) throw err;
+    console.error(err);
+    throw new Error(BOOTLOADER_HELP);
+  }
   return { transport, esploader };
 }
 
@@ -1796,15 +1820,40 @@ async function closeTransport(transport) {
   }
 }
 
-async function flashSerial(buffer, address, label, port) {
+/**
+ * Waits for the start of a firmware that was just flashed and tells whether it is the one that runs.
+ * expected: { offline, version } of the flashed firmware, null if unknown (own file).
+ */
+async function confirmFirmwareStart(port, label, expected) {
+  setProgress(null);
+  setStatus(`${label} ist geschrieben. Drücke jetzt kurz die Reset-Taste am E-Paper, damit sie startet…`, "busy");
+  let boot = null;
+  try {
+    boot = await readBootLog(port);
+  } catch (err) {
+    console.warn("Boot log:", err);
+  }
+  if (!boot) {
+    setStatus(`${label} ist geschrieben, der Start wurde aber nicht erkannt. Drücke die Reset-Taste und verbinde dich per Bluetooth: Die Geräteleiste zeigt dann die laufende Firmware.`, "warn");
+    return { title: "Geschrieben, Start nicht geprüft" };
+  }
+
+  const running = `${boot.offline ? "Offline" : "Cloud"}-Firmware v${boot.version}`;
+  const rightSlot = boot.slot === null || boot.slot === "app0";
+  const rightFirmware = !expected || (expected.offline === boot.offline && (!expected.version || expected.version === boot.version));
+  if (!rightSlot || !rightFirmware) {
+    throw new Error(`Auf dem E-Paper startet die ${running}${boot.slot ? ` (${boot.slot})` : ""}, nicht die eben geflashte Firmware. Bitte erneut flashen.`);
+  }
+  setStatus(`✅ Die ${running} läuft auf dem E-Paper.`, "ok");
+  return undefined;
+}
+
+async function flashSerial(buffer, address, label, port, expected = null) {
   let transport = null;
   try {
     const loader = await openEspLoader(port);
     transport = loader.transport;
     const esploader = loader.esploader;
-
-    setStatus("Lade Bootloader…", "busy");
-    await esploader.main();
 
     const fileArray = [{ data: buffer, address }];
     if (address === APP_ADDRESS) {
@@ -1834,13 +1883,16 @@ async function flashSerial(buffer, address, label, port) {
     }
 
     setProgress(100);
-    setStatus(`✅ ${label} erfolgreich geflasht! Drücke jetzt den Reset-Knopf am E-Paper, um zu starten.`, "ok");
   } catch (err) {
     console.error(err);
     throw new Error(describeSerialError(err));
   } finally {
     await closeTransport(transport);
   }
+
+  if (address === APP_ADDRESS) return confirmFirmwareStart(port, label, expected);
+  setStatus(`✅ ${label} erfolgreich geflasht! Drücke jetzt den Reset-Knopf am E-Paper, um zu starten.`, "ok");
+  return undefined;
 }
 
 // --- USB flash confirmation dialog (custom firmware / SPIFFS restore) ---
@@ -1967,7 +2019,7 @@ btnConfirmOta.addEventListener("click", async () => {
     if (method === "ble") {
       await bleInterface.uploadFirmware(buffer);
     } else {
-      await flashSerial(buffer, APP_ADDRESS, "Original Cloud Firmware", port);
+      return flashSerial(buffer, APP_ADDRESS, "Original Cloud Firmware", port, { offline: false });
     }
   });
 });
@@ -2011,7 +2063,8 @@ btnConfirmOfflineOta.addEventListener("click", async () => {
     if (method === "ble") {
       await bleInterface.uploadFirmware(buffer);
     } else {
-      await flashSerial(buffer, APP_ADDRESS, "Offline Firmware", port);
+      // a local build may load the firmware of the published site: its version is not known here
+      return flashSerial(buffer, APP_ADDRESS, "Offline Firmware", port, { offline: true, version: RELEASE_CHANNEL === "local" ? null : EXPECTED_FW_VERSION });
     }
   });
 });
@@ -2091,9 +2144,6 @@ async function backupSpiffsSerial(port) {
     const loader = await openEspLoader(port);
     transport = loader.transport;
     const esploader = loader.esploader;
-
-    setStatus("Lade Bootloader…", "busy");
-    await esploader.main();
 
     setStatus("Lese SPIFFS Zertifikat-Partition aus…", "busy");
     const spiffsData = await esploader.readFlash(SPIFFS_ADDRESS, SPIFFS_SIZE, (packet, current, total) => {

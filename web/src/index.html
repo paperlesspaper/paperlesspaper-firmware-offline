@@ -538,7 +538,7 @@
                     </p>
                     <p id="serialModeNotice" class="callout callout-warn" hidden>
                         <span class="callout-caption">🔌 Anleitung für USB</span>
-                        Entferne die Holzabdeckung vom Bilderrahmen vorsichtig. Verbinde das E-Paper per USB-Kabel mit dem PC. Halte den kleinen Knopf gedrückt, drücke kurz den Reset-Knopf (große Taste) und lass den kleinen Knopf los (Bootloader-Modus).
+                        Entferne die Holzabdeckung vom Bilderrahmen vorsichtig und verbinde das E-Paper per USB-Kabel mit dem PC. Nach dem Start fordert dich die Seite auf, kurz den Reset-Knopf (große Taste) zu drücken. Bei älterer Firmware vorher: kleinen Knopf halten, Reset kurz drücken, kleinen Knopf loslassen (Bootloader-Modus).
                     </p>
                     <p id="serialUnsupportedNotice" class="callout callout-err" role="alert" hidden>
                         <span class="callout-caption">⚠️ Nicht unterstützt</span>
@@ -723,7 +723,7 @@
                                     </div>
                                     <div class="def-row">
                                         <dt>Klein + Reset</dt>
-                                        <dd>Bootloader-Modus für das USB-Kabel: kleinen Knopf halten, Reset kurz drücken, kleinen Knopf loslassen.</dd>
+                                        <dd>Bootloader-Modus für das USB-Kabel, nur noch bei älterer Firmware nötig: kleinen Knopf halten, Reset kurz drücken, kleinen Knopf loslassen.</dd>
                                     </div>
                                 </dl>
                                 <p class="field-hint">Reset ist der große Knopf auf der Rückseite. Mehrfaches Drücken zählt, wenn jeder Druck innerhalb von 3 Sekunden auf den vorigen folgt.</p>
@@ -872,7 +872,22 @@
                                     </div>
                                     <div class="def-row">
                                         <dt>USB-Kabel</dt>
-                                        <dd>Am PC: Gerät per USB-C anschließen, Bootloader-Modus aktivieren (siehe „Tasten am Gerät“) und auf „Flashen“ tippen.</dd>
+                                        <dd>Am PC: Gerät per USB-C anschließen, auf „Flashen“ tippen und nach Aufforderung kurz Reset drücken. Am Ende meldet die Seite, welche Firmware gestartet ist.</dd>
+                                    </div>
+                                </dl>
+                                <p>Woran erkennst du, welche Firmware läuft?</p>
+                                <dl class="def-list">
+                                    <div class="def-row">
+                                        <dt>Nach dem Flashen</dt>
+                                        <dd>Per USB meldet die Seite am Ende, welche Firmware gestartet ist. Per Bluetooth startet das Gerät neu und ist danach nicht mehr verbunden.</dd>
+                                    </div>
+                                    <div class="def-row">
+                                        <dt>Am Gerät</dt>
+                                        <dd>Die Offline-Firmware zeigt ohne Einrichtung den Hinweis „Not set up“ auf dem Display. Nach einmal Reset ist Bluetooth 30 Sekunden aktiv.</dd>
+                                    </div>
+                                    <div class="def-row">
+                                        <dt>In dieser Seite</dt>
+                                        <dd>Reset drücken und verbinden: Die Geräteleiste zeigt die Version der Offline-Firmware. Mit der Cloud-Firmware klappt das Verbinden hier nicht, sie ist weiter über die paperlesspaper-App erreichbar.</dd>
                                     </div>
                                 </dl>
                                 <p class="callout callout-info">
@@ -898,7 +913,7 @@
                                         <span class="step-num">1</span>
                                         <div>
                                             <strong>Unter „Firmware“ den Verbindungsweg „USB-Kabel (COM)“ wählen</strong>
-                                            <span class="step-desc">Gerät per USB-C anschließen und den Bootloader-Modus aktivieren (siehe „Tasten am Gerät“).</span>
+                                            <span class="step-desc">Gerät per USB-C anschließen. Nach dem Start fordert dich die Seite auf, kurz Reset zu drücken.</span>
                                         </div>
                                     </li>
                                     <li class="step-item">
@@ -1029,7 +1044,7 @@
             </div>
             <p class="callout callout-warn">
                 <span class="callout-caption">🔌 Bitte beachten</span>
-                Verbinde das E-Paper per USB-Kabel. Halte den Boot-Knopf gedrückt, drücke kurz Reset und lass den Boot-Knopf los.
+                Verbinde das E-Paper per USB-Kabel. Nach dem Start fordert dich die Seite auf, kurz Reset zu drücken.
             </p>
             <div class="modal-actions">
                 <button type="button" id="btnCancelUsbFlash" class="btn-neu">Abbrechen</button>
@@ -1063,7 +1078,7 @@
             </div>
             <p class="callout callout-warn">
                 <span class="callout-caption">🔌 Bitte beachten</span>
-                Verbinde das E-Paper per USB-Kabel. Halte den Boot-Knopf gedrückt, drücke kurz Reset und lass den Boot-Knopf los (Bootloader-Modus).
+                Verbinde das E-Paper per USB-Kabel. Nach dem Start fordert dich die Seite auf, kurz Reset zu drücken.
             </p>
             <div class="modal-actions">
                 <button type="button" id="btnCancelUsbBackup" class="btn-neu">Abbrechen</button>

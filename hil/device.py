@@ -9,7 +9,11 @@ reset button to the firmware:
 counter, 3 s after boot.
 """
 
+import os
 import re
+import subprocess
+import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -20,6 +24,8 @@ from .cloud import ESP32HardwareController, mask_uid, register_github_mask, sani
 VERSION_RE = re.compile(r"\[MAIN\] INIT Device V:\s*(\S+)")
 UID_RE = re.compile(r"\[MAIN\] UID:\s*(\S+)")
 COUNTER_RE = re.compile(r"\[MAIN\] Current counter value:\s*(\d+)")
+SLOT_RE = re.compile(r"\[MAIN\] App slot:\s*(\w+)")
+BOOTLOADER_MARKER = "Rebooting into ROM Download Bootloader"
 OFFLINE_MARKERS = ("[MAIN] FW: offline", "[MAIN] Setup Mode Triggered", "[MAIN] skip setup Mode")
 
 CRASH_PATTERNS = (
@@ -38,6 +44,7 @@ class BootInfo:
     version: str
     uid: str
     counter: int | None
+    slot: str | None = None  # "app0" / "app1", None if the firmware does not report it
 
 
 class _Controller(ESP32HardwareController):
@@ -175,7 +182,7 @@ class OfflineDevice:
         while time.time() < end and not any(m in l for l in self._boot_lines(since) for m in OFFLINE_MARKERS):
             time.sleep(0.2)
 
-        version = uid = counter = None
+        version = uid = counter = slot = None
         offline = False
         for line in self._boot_lines(since):
             if (m := VERSION_RE.search(line)):
@@ -184,6 +191,8 @@ class OfflineDevice:
                 uid = m.group(1)
             if (m := COUNTER_RE.search(line)):
                 counter = int(m.group(1))
+            if (m := SLOT_RE.search(line)):
+                slot = m.group(1)
             if any(marker in line for marker in OFFLINE_MARKERS):
                 offline = True
 
@@ -197,8 +206,8 @@ class OfflineDevice:
 
         self.uid = uid
         register_github_mask(uid)
-        info = BootInfo("offline" if offline else "cloud", version, uid, counter)
-        print(f"🔎 [{self.target.name}] Firmware: {info.firmware} V{info.version} (UID {mask_uid(info.uid)})")
+        info = BootInfo("offline" if offline else "cloud", version, uid, counter, slot)
+        print(f"🔎 [{self.target.name}] Firmware: {info.firmware} V{info.version} slot {info.slot} (UID {mask_uid(info.uid)})")
         return info
 
     def identify(self):
@@ -247,6 +256,62 @@ class OfflineDevice:
         self.wait_for(r"\[MAIN\] \+5 button presses", timeout=15)
         self.wait_for(r"\[MAIN\] Reset - WIFI 1", timeout=10)
         return self.wait_for_reboot(self.log_position(), timeout=30)
+
+    # --- flashing over USB ------------------------------------------------
+
+    def enter_bootloader(self):
+        """Restarts the device into the ROM bootloader without the boot button.
+
+        The board has no auto reset. The firmware restarts into the bootloader when it
+        receives 'B' on the serial line while it starts or is in setup mode.
+        """
+        since = self.log_position()
+        self._let_press_counter_expire()
+        self._power_cycle()
+        end = time.time() + settings.BOOTLOADER_TIMEOUT
+        while time.time() < end:
+            if any(BOOTLOADER_MARKER in line for line in self.logs_since(since)):
+                print(f"✅ [{self.target.name}] Device is in the ROM bootloader.")
+                return
+            try:
+                if self.ctrl.ser and self.ctrl.ser.is_open:
+                    self.ctrl.ser.write(b"B")
+            except Exception:
+                pass  # the COM port is still coming back after the power cycle
+            time.sleep(0.05)
+        tail = "\n".join(sanitize_log_line(l) for l in self.logs_since(since)[-15:]) or "<no log output>"
+        raise RuntimeError(f"[{self.target.name}] Device did not enter the bootloader on the serial command 'B':\n{tail}")
+
+    def flash_over_usb(self, firmware_path):
+        """Flashes a firmware the way the web UI does over USB and returns the boot info of what starts.
+
+        The firmware goes to app0 and otadata is erased, so that the bootloader starts app0.
+        The device must be in the bootloader (enter_bootloader()).
+        """
+        blank = tempfile.NamedTemporaryFile(suffix=".bin", delete=False)
+        blank.write(b"\xff" * settings.OTADATA_SIZE)
+        blank.close()
+        cmd = [
+            sys.executable, "-m", "esptool",
+            "--chip", "esp32c6", "--port", self.target.port, "--baud", "921600",
+            "--before", "no_reset", "--after", "no_reset",
+            "write_flash", "-z",
+            hex(settings.APP_ADDRESS), firmware_path,
+            hex(settings.OTADATA_ADDRESS), blank.name,
+        ]
+        self.ctrl.disconnect()  # esptool needs the serial port
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=settings.USB_FLASH_TIMEOUT)
+        finally:
+            os.unlink(blank.name)
+            self.ctrl.connect(retries=20, retry_delay=0.5)
+        if result.returncode != 0:
+            output = (result.stdout + result.stderr).splitlines()[-15:]
+            raise RuntimeError(
+                f"[{self.target.name}] esptool failed:\n" + "\n".join(sanitize_log_line(l) for l in output)
+            )
+        print(f"✅ [{self.target.name}] Firmware written over USB, restarting...")
+        return self.identify()
 
     # --- cloud firmware ---------------------------------------------------
 

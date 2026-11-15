@@ -134,6 +134,9 @@ def test_usb_flash_addresses_match_the_partition_table():
     assert (web["OTADATA_ADDRESS"], web["OTADATA_SIZE"]) == partitions["otadata"]
     assert (web["SPIFFS_ADDRESS"], web["SPIFFS_SIZE"]) == partitions["spiffs"]
     assert "address: OTADATA_ADDRESS" in read("web/src/app.js"), "flashSerial() no longer resets otadata."
+    # the hardware test flashes over USB with the same addresses
+    for name in ("APP_ADDRESS", "OTADATA_ADDRESS", "OTADATA_SIZE"):
+        assert assignment("hil/settings.py", name) == web[name], f"{name} differs between hil/settings.py and web/src/app.js."
 
 
 def test_picture_sizes():
