@@ -112,6 +112,7 @@ struct SystemData
    bool displayPowerOn;
    bool sdIsInit;
    bool sdReady;
+   bool charging; // last state reported by chargeMode()
 };
 
 struct DataLayout

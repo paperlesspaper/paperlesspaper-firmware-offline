@@ -119,6 +119,48 @@ def test_button_stays_under_the_pointer(app_session, edge):
 # --- connection -----------------------------------------------------------
 
 
+@pytest.mark.parametrize("width", [320, 390, 768])
+def test_device_info_fits_on_a_narrow_screen(app_session, width):
+    """Device, battery, USB and firmware are all visible at once, shortened, without scrolling."""
+
+    async def body():
+        device = SimulatedDevice("epd13")
+        async with app_session(device) as (app, site):
+            device.version = await expected_version(app)
+            await app.page.set_viewport_size({"width": width, "height": 800})
+            await app.connect()
+            await app.page.wait_for_function("() => document.getElementById('systemVoltage').textContent.includes('V')")
+
+            strip = await app.page.evaluate(
+                """() => {
+                    const inner = document.querySelector('.device-strip-inner');
+                    const chips = [...inner.querySelectorAll('.chip')].map((chip) => {
+                        const box = chip.getBoundingClientRect();
+                        const value = chip.querySelector('span[id]');
+                        return {
+                            id: chip.id, left: box.left, right: box.right, top: box.top,
+                            shown: value.dataset.short || value.textContent,
+                            cut: value.scrollWidth > value.clientWidth + 1,
+                        };
+                    });
+                    return { chips, scrolls: inner.scrollWidth > inner.clientWidth + 1, width: innerWidth };
+                }"""
+            )
+            assert not strip["scrolls"], "The device strip must not scroll sideways."
+            assert len(strip["chips"]) == 4
+            for chip in strip["chips"]:
+                assert chip["left"] >= 0 and chip["right"] <= strip["width"], f"{chip['id']} is outside the screen"
+                assert chip["top"] == strip["chips"][0]["top"], "All values belong in one row."
+                assert not chip["cut"], f"{chip['id']} is cut off: {chip['shown']}"
+            shown = {chip["id"]: chip["shown"] for chip in strip["chips"]}
+            assert shown["chipDevice"] == f"epd13-…{device.name[-4:]}"
+            assert shown["chipFw"] == f"v{device.version} ✓"
+            # the complete text stays in the document
+            assert device.name in await app.text("#systemDeviceName")
+
+    run(body())
+
+
 @pytest.mark.parametrize("target", TARGETS)
 def test_connect_shows_device_and_loads_its_settings(app_session, target):
     async def body():

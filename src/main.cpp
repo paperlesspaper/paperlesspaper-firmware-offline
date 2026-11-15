@@ -1223,6 +1223,13 @@ int readIntFromFlash(int addr) {
    return data3.integer;
 }
 
+// The charger must never run unless the user switched "Charger Mode" on (normal batteries must
+// not be charged). So only a clean 1 in an initialised memory counts as on; an empty, older or
+// damaged memory means off.
+bool storedChargerMode() {
+   return EEPROM.read(499) == 42 && readIntFromFlash(EEPROM_SETTINGS_ADR + 550) == 1;
+}
+
 // Writes exactly the 4 bytes of the value. (Writing the whole 8 byte DataLayout
 // put 4 uninitialised bytes into the field that follows 5 bytes later.)
 void writeIntToFlash(int value, int startAddr, bool commit) {
@@ -1265,7 +1272,7 @@ void restoreSettingsToFlash(int startAddr) {
    settings.httpAuthUser = readStringFromFlash(startAddr + 285);
    settings.httpAuthPassword = readStringFromFlash(startAddr + 415);
    settings.motionWakeup = readIntFromFlash(startAddr + 545);
-   settings.chargerMode = readIntFromFlash(startAddr + 550);
+   settings.chargerMode = storedChargerMode();
    settings.settingsUrl = readStringFromFlash(startAddr + 555);
    settings.settingsLastModified = readStringFromFlash(startAddr + 685);
    int autoRot = readIntFromFlash(startAddr + 815);
@@ -1274,6 +1281,31 @@ void restoreSettingsToFlash(int startAddr) {
    if (DEBUG_FLAG) {
       Serial.printf("[MEM] Settings - BatteryWarning: %d WifiWarning: %d SleepDisabled: %d ImageMode: %d MotionWakeup: %d ChargerMode: %d\n", settings.showBatteryWarning, settings.showWifiWarning, settings.sleepDisabled, settings.imageMode, settings.motionWakeup, settings.chargerMode);
    }
+}
+
+// Device status for the server, sent with every request to the image and settings URL.
+// The values are the ones taken at wake-up (battery voltage before WiFi was switched on).
+void addTelemetryHeaders(HTTPClient &http) {
+   http.addHeader("X-OpenPaper-Battery-Millivolts", String(systemData.vddValue));
+   http.addHeader("X-OpenPaper-USB-Connected", systemData.usbConnected ? "1" : "0");
+   http.addHeader("X-OpenPaper-Charging", systemData.charging ? "1" : "0");
+   http.addHeader("X-OpenPaper-Firmware-Version", SOFTWARE_VERSION);
+#ifdef EPD_TYPE_13INCH
+   http.addHeader("X-OpenPaper-Display", "epd13");
+#else
+   http.addHeader("X-OpenPaper-Display", "epd7");
+#endif
+   const char *wakeup = "reset";
+   if (systemData.wakeupCause == wakeup_reason_t::BUTTON)
+      wakeup = "button";
+   else if (systemData.wakeupCause == wakeup_reason_t::MOTION)
+      wakeup = "motion";
+   else if (systemData.wakeupCause == wakeup_reason_t::TIMER)
+      wakeup = "timer";
+   http.addHeader("X-OpenPaper-Wakeup", wakeup);
+   http.addHeader("X-OpenPaper-WiFi-RSSI", String(WiFi.RSSI()));
+   if (systemData.deviceOrientation >= 0) // -1: the sensor gave no valid reading
+      http.addHeader("X-OpenPaper-Orientation", String(systemData.deviceOrientation));
 }
 
 String getRedirect(String url) {
@@ -1295,6 +1327,7 @@ String getRedirect(String url) {
    const char *headerkeys[] = {"Location"};
    size_t headerkeyssize = sizeof(headerkeys) / sizeof(char *);
    http.collectHeaders(headerkeys, headerkeyssize);
+   addTelemetryHeaders(http);
    int httpCode = http.GET();
 
    if (httpCode > 0) {
@@ -2066,6 +2099,7 @@ int downloadAndSaveFile(String fileName, String url) {
 
    const char *headerKeys[] = {"Last-Modified", "ETag", "X-OpenPaper-Sleep-Seconds"};
    http.collectHeaders(headerKeys, 3);
+   addTelemetryHeaders(http);
 
    int httpCode = http.GET();
    int srvSleep = http.header("X-OpenPaper-Sleep-Seconds").toInt();
@@ -2407,6 +2441,9 @@ void setDeviceUid() {
 // sleep x seconds
 void gotToDeepSleep(int wakeuptimeout, bool showScreen, bool motionWake) {
    Serial.printf("[MAIN] Going to Sleep for %d seconds (MotionWake: %d)\n", wakeuptimeout, motionWake);
+   // Standby: the charger is off and stays off (pin held low through deep sleep). Only if the
+   // user switched "Charger Mode" on, it keeps charging while the frame sleeps.
+   chargeMode(settings.chargerMode);
    checkOrientationInBackground(0, false);
    if (!settings.sleepDisabled)
       WiFi.disconnect(true);
@@ -2444,7 +2481,6 @@ void gotToDeepSleep(int wakeuptimeout, bool showScreen, bool motionWake) {
    pinMode(I2C_SDA_PIN, INPUT);
    pinMode(I2C_SCL_PIN, INPUT);
    pinMode(BAT_VOLT_EN_PIN, INPUT);
-   pinMode(CHG_EN_PIN, INPUT);
    pinMode(12, INPUT); // USB TEST PINS
    pinMode(13, INPUT); // USB TEST PINS
    if (settings.sleepDisabled) {
@@ -2733,38 +2769,35 @@ void checkOrientationInBackground(int setOrientValue, bool isRunning) {
 }
 
 bool chargeMode(bool enable) {
-   // charge pin high disables the charger (GND enabled)
+   // on  = enable pin released (input), the hold is lifted
+   // off = enable pin driven low and held, so it stays low through deep sleep
    bool chargeState = false;
    bool isCharging = false;
    pinMode(CHG_STAT_PIN, INPUT);
    delay(1);
    if (enable) {
       pinMode(CHG_EN_PIN, INPUT);
-      delay(2);
+      gpio_hold_dis((gpio_num_t)CHG_EN_PIN);
+      delay(5);
       chargeState = digitalRead(CHG_STAT_PIN);
       if (chargeState == LOW) {
-         Serial.println("[CHARGE] on - Charging");
+         Serial.println("[CHARGE] on - Charger ON");
          isCharging = true;
       }
       else {
-         Serial.println("[CHARGE] on - Charge Done");
-         digitalWrite(CHG_EN_PIN, LOW);
+         Serial.println("[CHARGE] on - Charger DONE");
+         isCharging = false;
       }
    }
    else {
+      digitalWrite(CHG_EN_PIN, LOW);
       pinMode(CHG_EN_PIN, OUTPUT);
-      digitalWrite(CHG_EN_PIN, HIGH);
-      delay(2);
-      chargeState = digitalRead(CHG_STAT_PIN);
-      if (chargeState == LOW) {
-         Serial.println("[CHARGE] off - Charging");
-         isCharging = true;
-      }
-      else {
-         Serial.println("[CHARGE] off - Charge Done");
-         digitalWrite(CHG_EN_PIN, LOW);
-      }
+      digitalWrite(CHG_EN_PIN, LOW);
+      gpio_hold_dis((gpio_num_t)CHG_EN_PIN); // renew an older hold
+      gpio_hold_en((gpio_num_t)CHG_EN_PIN);  // keeps the level while the chip sleeps
+      Serial.println("[CHARGE] off - Charge OFF");
    }
+   systemData.charging = isCharging;
    return isCharging;
 }
 
@@ -2784,6 +2817,8 @@ bool resetAll(bool resetWifi) {
    settings.timeout = DEFAULT_SLEEP;
    settings.httpAuthUser = "";
    settings.httpAuthPassword = "";
+   settings.chargerMode = false; // after a reset the charger is off until the user switches it on again
+   chargeMode(false);
    if (resetWifi) {
       writeStringToFlash("", 0);  // storing ssid at address 0
       writeStringToFlash("", 40); // storing pss at address 40
@@ -3131,6 +3166,7 @@ void fetchRemoteSettings() {
 
    const char *headerKeys[] = {"Last-Modified"};
    http.collectHeaders(headerKeys, 1);
+   addTelemetryHeaders(http);
 
    int httpCode = http.GET();
    if (httpCode == HTTP_CODE_OK) {
@@ -3286,6 +3322,10 @@ void setup() {
       if (DEBUG_FLAG)
          Serial.printf("[MAIN] Bat low protection: %dmV\n", systemData.vddValue);
       analogWrite(LED_PIN, LED_DIM_VALUE);
+      // Empty rechargeable batteries must be able to charge when USB is plugged in while the
+      // frame sleeps: take the charger setting from the memory (off unless the user switched it on).
+      if (EepromInit(EEPROM_SIZE))
+         settings.chargerMode = storedChargerMode();
       gotToDeepSleep(86000, false, false);
    }
    systemData.wakeupCause = getWakeupReason();
@@ -3403,6 +3443,9 @@ void loop() {
       if (settings.autoRotation) {
          accUpdateOrient();
          checkOrientationInBackground(systemData.deviceOrientation, true);
+      }
+      else {
+         systemData.deviceOrientation = accInit(); // only reported to the server, the picture is not rotated
       }
 
       delay(200);

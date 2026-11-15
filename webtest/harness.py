@@ -157,7 +157,7 @@ class WebApp:
             await page.add_init_script("Object.defineProperty(navigator, 'bluetooth', { value: undefined, configurable: true });")
 
         await page.goto(self.site.url)
-        # The status line sits in a panel that is closed until the status button is pressed.
+        # The status text sits in a toast that is hidden unless a message is being shown.
         await page.wait_for_selector("#status", state="attached")
         return self
 

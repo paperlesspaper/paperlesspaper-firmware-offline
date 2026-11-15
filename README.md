@@ -98,6 +98,23 @@ Details:
 - **Motion wake-up (optional):** the frame also updates when it is moved.
 - **Low battery:** below 4.0 V without USB power the frame skips updates to protect the batteries.
 
+### Device status headers
+
+The frame sends its status as request headers with every request to the image URL and to the Settings-JSON-URL. A server can record them without waking the frame an extra time.
+
+| Header | Example | Meaning |
+| :--- | :--- | :--- |
+| `X-OpenPaper-Battery-Millivolts` | `5120` | Battery voltage in mV, measured at wake-up before WiFi is switched on |
+| `X-OpenPaper-USB-Connected` | `0` | `1` if USB power is connected |
+| `X-OpenPaper-Charging` | `0` | `1` if the batteries are being charged (only with charger mode switched on) |
+| `X-OpenPaper-Firmware-Version` | `0.1.35` | Firmware version |
+| `X-OpenPaper-Display` | `epd7` | `epd7` (7.3") or `epd13` (13.3") |
+| `X-OpenPaper-Wakeup` | `timer` | Why the frame woke up: `timer`, `button`, `motion` or `reset` |
+| `X-OpenPaper-WiFi-RSSI` | `-67` | WiFi signal strength in dBm |
+| `X-OpenPaper-Orientation` | `0` | Side the frame stands on, `0`–`3`. `0` and `2` are opposite sides, `1` and `3` as well; between the two pairs the frame is turned by 90°. Missing if the sensor gave no reading. |
+
+If the server answers with a redirect, the headers are not sent to the redirect target.
+
 ## Remote settings (JSON)
 
 Enter a **Settings-JSON-URL** in the Web UI to manage the frame from your server without Bluetooth. The frame loads the file on every wake-up, before the image. If the server sends `Last-Modified`, an unchanged file is skipped.
@@ -121,7 +138,7 @@ Enter a **Settings-JSON-URL** in the Web UI to manage the frame from your server
 | `httpAuthUser`, `httpAuthPassword` | HTTP Basic Auth for the image download |
 | `motionWakeup` | Update when the frame is moved |
 | `autoRotation` | Rotate the image according to the orientation sensor |
-| `chargerMode` | Charge the batteries over USB-C. **Only with NiMH batteries!** |
+| `chargerMode` | Charge the batteries over USB-C, also while the frame sleeps. Off by default and after a reset. **Only with NiMH batteries!** |
 
 All keys are optional. The button **Prüfen** in the Web UI shows the file and applies it directly.
 

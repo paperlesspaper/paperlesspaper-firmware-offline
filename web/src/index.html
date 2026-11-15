@@ -49,15 +49,7 @@
         </div>
         <div class="app-bar-inner">
             <div class="brand">
-                <div class="brand-line">
-                    <h1 class="brand-title">Paperlesspaper</h1>
-                    <span class="badge">Offline</span>
-                </div>
-                <!-- Version switch (stable / preview): only shown when both versions are deployed -->
-                <button type="button" class="brand-version" id="btnVersion" aria-haspopup="dialog" hidden>
-                    <span id="versionLabel">Stabil</span>
-                    <span aria-hidden="true">▾</span>
-                </button>
+                <h1 class="brand-title">Paperlesspaper</h1>
             </div>
 
             <nav class="app-nav" aria-label="Hauptnavigation">
@@ -80,34 +72,13 @@
             </nav>
 
             <div class="conn">
-                <!-- Always a gear; its colour shows the state of the last message. Opens the status line and the log below the bar. -->
-                <button type="button" class="status-btn" id="btnStatus" aria-expanded="false" aria-controls="statusDock" aria-label="Status und Verlauf anzeigen" title="Status und Verlauf">
-                    <span class="status-led state-0" id="statusIcon" aria-hidden="true">
-                        <svg class="icon"><use href="#i-gear" /></svg>
-                    </span>
+                <!-- Version switch (stable / preview): only shown when both versions are deployed -->
+                <button type="button" class="btn-neu btn-util btn-neu-primary version-btn" id="btnVersion" aria-haspopup="dialog" hidden>
+                    <span id="versionLabel">Main</span>
+                    <span class="version-caret" aria-hidden="true">▾</span>
                 </button>
                 <button type="button" id="btnConnect" class="btn-neu btn-util btn-neu-signal">Verbinden</button>
                 <button type="button" id="btnDisconnect" class="btn-neu btn-util btn-neu-danger-text" hidden>Trennen</button>
-            </div>
-        </div>
-        <!-- Status line, progress and log. Hidden until the status button is pressed or an error occurs. -->
-        <div class="status-dock" id="statusDock" hidden>
-            <div class="dock-progress" id="dockProgress" hidden>
-                <div class="dock-progress-fill" id="dockProgressFill"></div>
-            </div>
-            <div class="dock-inner">
-                <div class="dock-head">
-                    <span class="status-led state-0" id="statusLed" aria-hidden="true"></span>
-                    <p class="dock-text" id="status">Warte auf Verbindung…</p>
-                    <span class="dock-percent" id="dockPercent" hidden>0%</span>
-                    <button type="button" class="dock-log-btn" id="dockLogToggle" aria-expanded="false" aria-controls="dockLog">
-                        Log
-                        <span class="collapsible-icon" aria-hidden="true">▲</span>
-                    </button>
-                </div>
-                <div class="dock-log" id="dockLog" hidden>
-                    <pre class="terminal" id="statusLogOutput" tabindex="0" aria-label="Verlauf der Statusmeldungen"></pre>
-                </div>
             </div>
         </div>
     </header>
@@ -125,7 +96,7 @@
             </span>
             <span class="chip" id="chipUsb">
                 <span class="chip-key">USB</span>
-                <span id="systemChargerStatus">Prüfe…</span>
+                <span id="systemChargerStatus" data-short="…">Prüfe…</span>
             </span>
             <span class="chip" id="chipFw">
                 <span class="chip-key">Firmware</span>
@@ -135,6 +106,20 @@
     </div>
 
     <p class="visually-hidden" id="statusLive" role="status" aria-live="polite"></p>
+
+    <!-- Messages appear as a toast and go away again; an error stays until it is closed.
+         Screen readers get the text from the live region above, the history is the log in the "Gerät" view. -->
+    <div class="toast" id="toast" data-level="idle" hidden>
+        <div class="toast-body">
+            <span class="status-led state-0" id="statusLed" aria-hidden="true"></span>
+            <p class="toast-text" id="status">Warte auf Verbindung…</p>
+            <span class="toast-percent" id="toastPercent" hidden>0%</span>
+            <button type="button" class="toast-close" id="btnToastClose" aria-label="Meldung schließen">✕</button>
+        </div>
+        <div class="toast-progress" id="toastProgress" hidden>
+            <div class="toast-progress-fill" id="toastProgressFill"></div>
+        </div>
+    </div>
 
     <main id="main" class="app-main">
         <!-- Offer to install the page as an app. Shown on phones and tablets when the browser allows it. -->
@@ -198,11 +183,16 @@
                     </div>
 
                     <input type="file" id="fileInput" accept="image/*" class="visually-hidden" tabindex="-1" aria-hidden="true" />
-                    <div class="btn-row btn-row-pair">
+                    <!-- Main action, centred below the picture -->
+                    <div class="btn-row editor-send">
                         <button type="button" id="btnUploadImage" class="btn-neu btn-neu-signal btn-stacked" disabled>
-                            <span>Senden</span>
+                            <span>Bild senden</span>
                             <span class="btn-hint" id="uploadHint">kein Bild</span>
                         </button>
+                    </div>
+                    <!-- Below it: BMP download on the left, picking a picture on the right -->
+                    <div class="btn-row btn-row-pair">
+                        <button type="button" id="btnDownloadBin" class="btn-neu btn-neu-info" disabled>BMP-Download</button>
                         <button type="button" id="btnPickImage" class="btn-neu btn-neu-primary">Bild wählen</button>
                     </div>
                 </div>
@@ -216,7 +206,26 @@
                         <div class="collapsible-body" id="imageSettingsBody">
                             <div class="collapsible-inner">
                                 <div class="collapsible-content" id="expertControls">
+                                    <div class="range-row">
+                                        <label for="processingBrightness">Helligkeit</label>
+                                        <input type="range" id="processingBrightness" min="-100" max="100" value="0" />
+                                        <output for="processingBrightness" id="processingBrightnessOut">0</output>
+                                    </div>
+                                    <div class="range-row">
+                                        <label for="processingContrast">Kontrast</label>
+                                        <input type="range" id="processingContrast" min="-100" max="100" value="0" />
+                                        <output for="processingContrast" id="processingContrastOut">0</output>
+                                    </div>
+                                    <div class="range-row">
+                                        <label for="processingSaturation">Sättigung</label>
+                                        <input type="range" id="processingSaturation" min="-100" max="100" value="0" />
+                                        <output for="processingSaturation" id="processingSaturationOut">0</output>
+                                    </div>
+
                                     <button type="button" id="btnAutoDither" class="btn-neu btn-neu-attention btn-sys" disabled>Auto-Optimieren</button>
+                                    <button type="button" id="btnResetProcessing" class="btn-neu btn-util btn-neu-danger-text">Anpassungen zurücksetzen</button>
+
+                                    <hr class="divider" />
 
                                     <div class="field">
                                         <label class="form-label" for="displaySizeSelect">Display</label>
@@ -256,33 +265,9 @@
                                             <span class="check-desc">Wechselt die Richtung pro Zeile – vermeidet sichtbare Muster.</span>
                                         </span>
                                     </label>
-
-                                    <hr class="divider" />
-
-                                    <div class="range-row">
-                                        <label for="processingBrightness">Helligkeit</label>
-                                        <input type="range" id="processingBrightness" min="-100" max="100" value="0" />
-                                        <output for="processingBrightness" id="processingBrightnessOut">0</output>
-                                    </div>
-                                    <div class="range-row">
-                                        <label for="processingContrast">Kontrast</label>
-                                        <input type="range" id="processingContrast" min="-100" max="100" value="0" />
-                                        <output for="processingContrast" id="processingContrastOut">0</output>
-                                    </div>
-                                    <div class="range-row">
-                                        <label for="processingSaturation">Sättigung</label>
-                                        <input type="range" id="processingSaturation" min="-100" max="100" value="0" />
-                                        <output for="processingSaturation" id="processingSaturationOut">0</output>
-                                    </div>
-                                    <button type="button" id="btnResetProcessing" class="btn-neu btn-util btn-neu-danger-text">Anpassungen zurücksetzen</button>
                                 </div>
                             </div>
                         </div>
-                    </div>
-
-                    <!-- Last thing on the page: just the button, no box around it -->
-                    <div class="btn-row page-action">
-                        <button type="button" id="btnDownloadBin" class="btn-neu btn-neu-info" disabled>BMP herunterladen</button>
                     </div>
                 </div>
             </div>
@@ -320,11 +305,6 @@
                 <div class="btn-row">
                     <button type="button" class="btn-neu btn-neu-signal btn-hero" data-action="connect">Mit E-Paper verbinden</button>
                 </div>
-                <p class="field-hint">
-                    Probleme beim Verbinden? In der
-                    <a href="#hilfe">Hilfe</a>
-                    stehen die Details.
-                </p>
             </div>
 
             <div id="controls" class="grid-2" hidden>
@@ -514,6 +494,21 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Help and log: at the end of the view, with or without a connected device -->
+            <div class="view-foot view-narrow" id="deviceFoot">
+                <div class="view-foot-row">
+                    <p class="field-hint">
+                        Probleme? In der
+                        <a href="#hilfe">Hilfe</a>
+                        stehen die Details.
+                    </p>
+                    <button type="button" class="btn-neu btn-util btn-neu-primary log-btn" id="btnLog" aria-expanded="false" aria-controls="logPanel">Log</button>
+                </div>
+                <div class="log-panel" id="logPanel" hidden>
+                    <pre class="terminal" id="statusLogOutput" tabindex="0" aria-label="Verlauf der Meldungen"></pre>
+                </div>
+            </div>
         </section>
 
         <!-- ============================== VIEW: FIRMWARE ============================== -->
@@ -632,7 +627,7 @@
                                         <span class="badge">115200 Baud</span>
                                     </div>
                                     <div class="btn-row">
-                                        <button type="button" id="btnToggleSerialMonitor" class="btn-neu btn-sys btn-grow">Monitor verbinden</button>
+                                        <button type="button" id="btnToggleSerialMonitor" class="btn-neu btn-sys btn-grow">Starten</button>
                                         <button type="button" id="btnClearSerialLog" class="btn-neu btn-neu-danger-text btn-sys">Log leeren</button>
                                     </div>
                                     <div id="serialLogBox" hidden>
@@ -804,7 +799,7 @@
                                         <span class="step-num">3</span>
                                         <div>
                                             <strong>Bild auf dem Server ablegen</strong>
-                                            <span class="step-desc">Am besten ein Bild aus dem Editor: unter „Bild“ auf „BMP herunterladen“ tippen.</span>
+                                            <span class="step-desc">Am besten ein Bild aus dem Editor: unter „Bild“ auf „BMP-Download“ tippen.</span>
                                         </div>
                                     </li>
                                 </ol>
@@ -1038,7 +1033,7 @@
             </p>
             <div class="modal-actions">
                 <button type="button" id="btnCancelUsbFlash" class="btn-neu">Abbrechen</button>
-                <button type="button" id="btnConfirmUsbFlash" class="btn-neu btn-neu-signal btn-grow">COM-Port wählen &amp; flashen</button>
+                <button type="button" id="btnConfirmUsbFlash" class="btn-neu btn-neu-signal btn-grow">Port wählen &amp; flashen</button>
             </div>
         </div>
     </dialog>
@@ -1072,7 +1067,7 @@
             </p>
             <div class="modal-actions">
                 <button type="button" id="btnCancelUsbBackup" class="btn-neu">Abbrechen</button>
-                <button type="button" id="btnConfirmUsbBackup" class="btn-neu btn-neu-signal btn-grow">COM-Port wählen &amp; sichern</button>
+                <button type="button" id="btnConfirmUsbBackup" class="btn-neu btn-neu-signal btn-grow">Port wählen &amp; sichern</button>
             </div>
         </div>
     </dialog>

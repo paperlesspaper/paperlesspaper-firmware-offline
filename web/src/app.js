@@ -2,7 +2,7 @@ import { GeneratePicture } from "./GeneratePicture.js";
 import { DeviceBleInterface, validateEsp32FirmwareBinary } from "./DeviceBleInterface.js";
 import { ESPLoader, Transport } from "esptool-js";
 import { checkImageForDevice, imageHeaderComplete } from "./imageCheck.js";
-import { $, setStatus, onStatus, currentStatus, setProgress, onProgress, setLed, initNavigation, navigate, getCurrentView, initDialogs, openDialog, closeDialog, showMessage, initCollapsibles, nextFrame, byteLength, setFieldError, formatDuration, downloadBlob } from "./ui.js";
+import { $, setStatus, onStatus, currentStatus, setProgress, onProgress, setLed, initNavigation, navigate, getCurrentView, initDialogs, openDialog, closeDialog, showMessage, initCollapsibles, setCollapsible, nextFrame, byteLength, setFieldError, formatDuration, downloadBlob } from "./ui.js";
 
 const EXPECTED_FW_VERSION = typeof __EXPECTED_FW_VERSION__ !== "undefined" ? __EXPECTED_FW_VERSION__ : "0.1.0";
 
@@ -254,6 +254,7 @@ function syncUi() {
 
   systemStatusBar.hidden = !connected;
   notConnectedState.hidden = connected;
+  $("deviceFoot").classList.toggle("view-narrow", !connected); // as wide as the box above it
   controls.hidden = !connected;
 
   // Editor
@@ -409,11 +410,23 @@ window.addEventListener("beforeunload", (e) => {
 // Connection
 // ---------------------------------------------------------------------------
 
-function setChip(valueId, text, tone = "neutral") {
+/**
+ * Sets one value of the device strip. `short` is the form for narrow screens, where all four
+ * values share one row (shown by CSS in place of the text).
+ */
+function setChip(valueId, text, tone = "neutral", short = "") {
   const valueEl = $(valueId);
   if (!valueEl) return;
   valueEl.textContent = text;
+  if (short && short !== text) valueEl.dataset.short = short;
+  else delete valueEl.dataset.short;
   valueEl.parentElement.dataset.tone = tone;
+}
+
+/** "epd13-9c139ecf61a8" -> "epd13-…61a8": the type and the end of the id tell the frames apart. */
+function shortDeviceName(name) {
+  const match = /^([a-z]+\d+)-([0-9a-f]{6,})$/i.exec(name);
+  return match ? `${match[1]}-…${match[2].slice(-4)}` : name;
 }
 
 bleInterface.onStatusChange = (text, level) => {
@@ -432,7 +445,8 @@ bleInterface.onConnected = (isPaperL) => {
   applyDisplayProfile(is13Inch, true);
 
   document.title = is13Inch ? 'paper L Setup (13.3")' : 'paper 7 Setup (7.3")';
-  setChip("systemDeviceName", `${bleInterface.bleDevice?.name || "E-Paper"} · ${is13Inch ? '13.3"' : '7.3"'}`);
+  const deviceName = bleInterface.bleDevice?.name || "E-Paper";
+  setChip("systemDeviceName", `${deviceName} · ${is13Inch ? '13.3"' : '7.3"'}`, "neutral", shortDeviceName(deviceName));
 
   state.conn = "connected";
   syncUi();
@@ -457,7 +471,7 @@ bleInterface.onDisconnected = () => {
   firmwareVersionWarning.hidden = true;
   setChip("systemFwVersion", "--");
   setChip("systemVoltage", "-- V");
-  setChip("systemChargerStatus", "Prüfe…");
+  setChip("systemChargerStatus", "Prüfe…", "neutral", "…");
 
   finishWifiScan();
   wifiList.replaceChildren();
@@ -501,7 +515,7 @@ function updateFirmwareVersionUI(versionInfo) {
   } else {
     firmwareVersionWarningTitle.textContent = "⚠️ Veraltete oder abweichende Firmware erkannt";
     firmwareVersionWarningText.textContent = `Auf deinem E-Paper ist nicht die aktuelle Offline-Firmware v${EXPECTED_FW_VERSION} installiert. Ein Update wird empfohlen.`;
-    setChip("systemFwVersion", "Veraltet ⚠", "warn");
+    setChip("systemFwVersion", "Veraltet ⚠", "warn", "alt ⚠");
   }
 }
 
@@ -524,21 +538,21 @@ bleInterface.onSystemStatusChange = (info) => {
   const v = hasVoltage ? (info.voltage / 1000).toFixed(2) : null;
 
   if (!hasVoltage) {
-    setChip("systemVoltage", "Keine Batterie", "warn");
+    setChip("systemVoltage", "Keine Batterie", "warn", "keine");
   } else if (info.charging) {
-    setChip("systemVoltage", `${v} V · lädt`, "ok");
+    setChip("systemVoltage", `${v} V · lädt`, "ok", `${v} V`);
   } else if (info.voltage > 3300) {
     setChip("systemVoltage", `${v} V`, "ok");
   } else if (info.voltage > 2800) {
     setChip("systemVoltage", `${v} V`, "warn");
   } else {
-    setChip("systemVoltage", `${v} V · schwach`, "err");
+    setChip("systemVoltage", `${v} V · schwach`, "err", `${v} V`);
   }
 
   if (info.usb) {
-    setChip("systemChargerStatus", info.charging ? "Verbunden · lädt" : "Verbunden", info.charging ? "ok" : "info");
+    setChip("systemChargerStatus", info.charging ? "Verbunden · lädt" : "Verbunden", info.charging ? "ok" : "info", info.charging ? "lädt" : "an");
   } else {
-    setChip("systemChargerStatus", "Nicht verbunden");
+    setChip("systemChargerStatus", "Nicht verbunden", "neutral", "aus");
   }
 
   if (info.display === "13" || info.display === 13 || info.display === "epd13") {
@@ -1079,7 +1093,7 @@ settingChargerMode.addEventListener("change", async () => {
       tone: "warn",
       text: "Der Charger Mode lädt die eingelegten Zellen über USB-C. Aktiviere ihn nur, wenn NiMH-Akkus eingelegt sind.",
       detail: "Normale Batterien (z. B. Alkaline) dürfen nicht geladen werden – sie können auslaufen oder überhitzen.",
-      okLabel: "Ja, NiMH-Akkus eingelegt",
+      okLabel: "Ja, NiMH eingelegt",
       cancelLabel: "Abbrechen",
       okVariant: "danger",
     });
@@ -2153,7 +2167,7 @@ function appendSerialLog(text) {
 
 function updateSerialMonitorUi() {
   const active = Boolean(serialMonitor);
-  btnToggleSerialMonitor.textContent = active ? "Monitor trennen" : "Monitor verbinden";
+  btnToggleSerialMonitor.textContent = active ? "Stoppen" : "Starten";
   btnToggleSerialMonitor.classList.toggle("btn-neu-danger-text", active);
 }
 
@@ -2314,7 +2328,7 @@ async function initReleaseChannel() {
 
   const btnVersion = $("btnVersion");
   $("versionLabel").textContent = IS_DEV_CHANNEL ? "Dev" : "Main";
-  btnVersion.dataset.channel = RELEASE_CHANNEL;
+  btnVersion.dataset.channel = RELEASE_CHANNEL; // dev: amber
   btnVersion.setAttribute("aria-label", `Version: ${CHANNEL_LABEL[RELEASE_CHANNEL]} (${RELEASE_CHANNEL}). Version wechseln`);
   btnVersion.hidden = false;
   btnVersion.addEventListener("click", openVersionDialog);
@@ -2397,6 +2411,10 @@ window.addEventListener("appinstalled", () => {
 initNavigation();
 initDialogs();
 initCollapsibles();
+// With room for two columns the picture settings stand open next to the picture.
+if (window.matchMedia("(min-width: 900px)").matches) {
+  setCollapsible($("imageSettingsDetails"), true);
+}
 renderPaletteEditor();
 updateSliderOutputs();
 setOtaMode("ble");
