@@ -72,6 +72,7 @@ LIMITS = {
     "MAX_SETTING_STRING_LEN": "settingStringBytes",
     "MIN_SLEEP_TIMEOUT": "timeoutMin",
     "MAX_SLEEP_TIMEOUT": "timeoutMax",
+    "BAT_OFF_VALUE": "batteryOffMv",
 }
 
 

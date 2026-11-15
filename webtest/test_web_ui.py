@@ -350,6 +350,45 @@ def test_switches_are_stored_immediately(app_session):
     run(body())
 
 
+def test_settings_json_cannot_switch_the_charger_on(app_session):
+    """Charging normal batteries is dangerous: a settings file may switch the charger off, not on."""
+
+    async def body():
+        device = SimulatedDevice()
+        files = {"settings.json": json.dumps({"timeout": 900, "chargerMode": True}).encode()}
+        async with app_session(device, files=files) as (app, site):
+            await app.connect()
+            await app.view("geraet")
+            await app.page.fill("#settingSettingsUrl", site.url + "settings.json")
+            await app.click("#btnPreviewJson")
+            await app.click("#btnApplyJson")
+            await app.wait_status("nicht übernommen")
+            assert device.saved_settings["timeout"] == 900
+            assert device.saved_settings["charger_mode"] is False
+            assert not await app.page.is_checked("#settingChargerMode")
+
+    run(body())
+
+
+@pytest.mark.parametrize("voltage, tone, text", [
+    (5200, "ok", "5.20 V"),
+    (4300, "warn", "schwach"),
+    (3900, "err", "leer"),
+])
+def test_battery_level_matches_the_firmware(app_session, voltage, tone, text):
+    """4 AA cells: the device stops below 4.0 V, so that is empty and not 'fine'."""
+
+    async def body():
+        device = SimulatedDevice()
+        device.voltage = voltage
+        async with app_session(device) as (app, site):
+            await app.connect()
+            assert text in await app.text("#systemVoltage")
+            assert await app.page.evaluate("document.getElementById('systemVoltage').parentElement.dataset.tone") == tone
+
+    run(body())
+
+
 def test_factory_reset_needs_confirmation(app_session):
     async def body():
         device = SimulatedDevice()
@@ -399,6 +438,25 @@ def test_wifi_scan_and_join(app_session):
             assert await app.text("#infoSsid") == "Werkstatt"
             assert await app.text("#infoIp") == "192.168.4.23"
             assert device.settings["image_mode"] == 1, "After joining a network the device must load from the URL."
+
+    run(body())
+
+
+def test_wifi_list_is_complete_with_a_small_mtu(app_session):
+    """A notification carries at most MTU - 3 bytes. The page must read the whole list."""
+
+    async def body():
+        device = SimulatedDevice()
+        device.networks = {f"Netzwerk-Nummer-{i:02d}": ("pw", -40 - i) for i in range(20)}
+        device.notify_limit = 182  # macOS
+        async with app_session(device) as (app, site):
+            await app.connect()
+            await app.view("geraet")
+            await app.click("#btnScanWifi")
+            await app.page.wait_for_selector("#wifiList .wifi-item")
+            names = await app.page.locator("#wifiList .wifi-ssid").all_inner_texts()
+            assert names == list(device.networks), "Networks are missing or cut off."
+            assert (await app.ble_stats())["maxParallel"] == 1
 
     run(body())
 
@@ -471,6 +529,25 @@ def test_picture_upload(app_session, target):
             # black, white, blue, green, red, yellow in the colour codes of the display
             assert bar_codes(device.image, device.width, device.height) == [0, 6, 1, 2, 3, 5]
             assert (await app.ble_stats())["maxParallel"] == 1
+
+    run(body(), timeout=240)
+
+
+def test_upload_waits_for_the_display_refresh(app_session):
+    """While the device draws the previous picture it refuses START. The page waits and tries again."""
+
+    async def body():
+        device = SimulatedDevice()
+        device.display_busy_starts = 2
+        async with app_session(device) as (app, site):
+            await app.connect()
+            await app.load_image(assets.test_picture(device.width // 2, device.height // 2))
+            result = await app.transfer(lambda: app.click("#btnUploadImage"), timeout=180000)
+
+            assert result is None, f"Upload ended with an error screen: {result}"
+            assert device.commands.count("START") == 3
+            assert "aktualisiert noch das Display" in await app.status_log()
+            assert device.displayed == device.image and device.image is not None
 
     run(body(), timeout=240)
 

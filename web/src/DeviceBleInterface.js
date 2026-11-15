@@ -1,5 +1,6 @@
 export const MAX_OTA_FW_SIZE = 0x1d0000; // 1.900.544 Bytes (app0/app1 in part.csv)
 export const MIN_OTA_FW_SIZE = 65536;
+const DISPLAY_BUSY_WAIT_S = 90; // a display refresh takes up to about 45 s
 
 export async function validateEsp32FirmwareBinary(buffer) {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
@@ -484,10 +485,21 @@ export class DeviceBleInterface {
         }
       };
       await scanChar.startNotifications();
+      // A notification carries at most MTU - 3 bytes (182 on macOS), a long list arrives cut off.
+      // So the notification only says that the list is ready, the list itself is read.
+      let readingScan = true; // readValue() fires this event as well
       scanChar.addEventListener("characteristicvaluechanged", (event) => {
-        processScanData(event.target.value);
+        if (readingScan) return;
+        readingScan = true;
+        const notified = event.target.value;
+        this._enqueue(() => scanChar.readValue())
+          .then(processScanData, () => processScanData(notified))
+          .finally(() => {
+            readingScan = false;
+          });
       });
       const initialScanData = await scanChar.readValue();
+      readingScan = false;
       if (initialScanData.byteLength > 0) {
         processScanData(initialScanData);
       }
@@ -769,8 +781,19 @@ export class DeviceBleInterface {
       this.onStatusChange(isFirmware ? "Starte Firmware Update..." : "Öffne Flash Puffer...", "busy");
       await cmdChar.writeValue(this.encodeText(isFirmware ? "START_FW" : "START"));
 
-      const initView = await cmdChar.readValue();
-      const initStatus = initView.getUint16(0, true);
+      let initView = await cmdChar.readValue();
+      let initStatus = initView.getUint16(0, true);
+      // 0xFFFD: the device still draws the previous picture and cannot take a new one yet.
+      for (let waited = 0; initStatus === 0xfffd; waited += 2) {
+        if (waited >= DISPLAY_BUSY_WAIT_S) {
+          throw new Error("Das E-Paper aktualisiert noch das Display. Bitte in einer Minute erneut senden.");
+        }
+        this.onStatusChange("Das E-Paper aktualisiert noch das Display – der Upload startet danach…", "busy");
+        await new Promise((r) => setTimeout(r, 2000));
+        await cmdChar.writeValue(this.encodeText("START"));
+        initView = await cmdChar.readValue();
+        initStatus = initView.getUint16(0, true);
+      }
       if (initStatus === 0xffff) {
         throw new Error(isFirmware ? "OTA-Partition auf dem Gerät konnte nicht geöffnet werden (Flash/RAM Fehler)." : "Geräte-Puffer konnte nicht initialisiert werden (Flash/RAM Fehler).");
       }

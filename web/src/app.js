@@ -21,7 +21,11 @@ const DEVICE_LIMITS = {
   settingStringBytes: 128, // MAX_SETTING_STRING_LEN
   timeoutMin: 60, // MIN_SLEEP_TIMEOUT
   timeoutMax: 2592000, // MAX_SLEEP_TIMEOUT (30 days)
+  batteryOffMv: 4000, // BAT_OFF_VALUE: below this the device only sleeps when it runs on batteries
 };
+
+// 4 AA cells (alkaline or NiMH): about 1.1 V per cell is nearly empty for both.
+const BATTERY_LOW_MV = 4400;
 
 // Flash layout (part.csv)
 const APP_ADDRESS = 0x10000;
@@ -541,12 +545,13 @@ bleInterface.onSystemStatusChange = (info) => {
     setChip("systemVoltage", "Keine Batterie", "warn", "keine");
   } else if (info.charging) {
     setChip("systemVoltage", `${v} V · lädt`, "ok", `${v} V`);
-  } else if (info.voltage > 3300) {
+  } else if (info.voltage >= BATTERY_LOW_MV) {
     setChip("systemVoltage", `${v} V`, "ok");
-  } else if (info.voltage > 2800) {
-    setChip("systemVoltage", `${v} V`, "warn");
+  } else if (info.voltage >= DEVICE_LIMITS.batteryOffMv) {
+    setChip("systemVoltage", `${v} V · schwach`, "warn", `${v} V`);
   } else {
-    setChip("systemVoltage", `${v} V · schwach`, "err", `${v} V`);
+    // Without USB power the device would not be awake at this voltage.
+    setChip("systemVoltage", `${v} V · leer`, "err", `${v} V`);
   }
 
   if (info.usb) {
@@ -1057,12 +1062,18 @@ $("btnApplyJson").addEventListener("click", async () => {
   if (tempJsonSettings.httpAuthUser !== undefined) settingHttpAuthUser.value = tempJsonSettings.httpAuthUser;
   if (tempJsonSettings.httpAuthPassword !== undefined) settingHttpAuthPassword.value = tempJsonSettings.httpAuthPassword;
   if (tempJsonSettings.motionWakeup !== undefined) settingMotionWakeup.checked = Boolean(tempJsonSettings.motionWakeup);
-  if (tempJsonSettings.chargerMode !== undefined) settingChargerMode.checked = Boolean(tempJsonSettings.chargerMode);
+  // Like the device: the file can switch the charger off, never on. Switching it on needs the
+  // confirmation that rechargeable batteries are inserted (the switch on this page).
+  const chargerIgnored = Boolean(tempJsonSettings.chargerMode) && !settingChargerMode.checked;
+  if (tempJsonSettings.chargerMode === false) settingChargerMode.checked = false;
   if (tempJsonSettings.autoRotation !== undefined) settingAutoRotation.checked = Boolean(tempJsonSettings.autoRotation);
   updateTimeoutHint();
   markSettingsDirty(true);
 
-  await saveDeviceSettings();
+  const saved = await saveDeviceSettings();
+  if (saved && chargerIgnored) {
+    setStatus("Einstellungen gespeichert. „chargerMode: true“ aus der Datei wurde nicht übernommen: Der Charger Mode lässt sich nur mit dem Schalter einschalten.", "warn");
+  }
 });
 
 // --- Switches that are stored immediately ---

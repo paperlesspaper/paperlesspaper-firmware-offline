@@ -106,6 +106,7 @@
 
 #define MAX_DOWNLOAD_SIZE 0x600000UL // largest picture file that is downloaded (6 MB), less if the flash is smaller
 #define WIFI_CONNECT_TIMEOUT 20      // seconds to wait for the WiFi connection
+#define MAX_SETTINGS_JSON_SIZE 4096  // largest settings JSON that is read
 
 // Results of downloadAndSaveFile() and loadImageFromWeb()
 #define DL_OK 0
@@ -121,6 +122,9 @@
 #define DISPLAY_PICTURE 0    // a picture, or unknown
 #define DISPLAY_SETUP_HINT 1 // "not set up yet"
 #define DISPLAY_ERROR_TEXT 2 // "picture download failed"
+#define DISPLAY_BATTERY_EMPTY 3
+
+#define BAT_OFF_VALUE 4000 // mV (4 cells): below this the frame only sleeps when it runs on batteries
 
 #if DEBUG
 const bool DEBUG_FLAG = true;
@@ -219,6 +223,9 @@ volatile bool wifiScanRequested = false;
 bool periodicLedIsOn = false;
 bool downloadStart = true;
 volatile bool applyPending = false;
+volatile bool applyInProgress = false; // the display is being refreshed from the picture slot
+bool bleDisplayBusy = false;           // an upload START was refused for that reason
+bool batteryEmpty = false;
 bool bleImageApplied = false;
 volatile bool forceExitSetup = false;
 volatile bool isBleClientConnected = false;
@@ -1401,7 +1408,28 @@ void addTelemetryHeaders(HTTPClient &http) {
       http.addHeader("X-OpenPaper-Orientation", String(systemData.deviceOrientation));
 }
 
-String getRedirect(String url) {
+// "https://nas.local:8080/dir/file" -> "https://nas.local:8080"
+static String urlOrigin(const String &url) {
+   const int schemeEnd = url.indexOf("://");
+   if (schemeEnd < 0)
+      return "";
+   int end = url.length();
+   for (const char *stop = "/?#"; *stop; stop++) {
+      const int i = url.indexOf(*stop, schemeEnd + 3);
+      if (i >= 0 && i < end)
+         end = i;
+   }
+   String origin = url.substring(0, end);
+   origin.toLowerCase();
+   return origin;
+}
+
+// sendAuth: send the HTTP login of the picture download with the request
+String getRedirect(String url, bool sendAuth = true) {
+   // Redirects within one protocol are followed by the download itself. Only the change from
+   // http:// to https:// needs this extra request.
+   if (!url.startsWith("http://"))
+      return url;
    WiFiClientSecure secureClient;
    secureClient.setInsecure();
    HTTPClient http;
@@ -1413,7 +1441,7 @@ String getRedirect(String url) {
       http.begin(url);
    }
 
-   if (settings.httpAuthUser.length() > 0) {
+   if (sendAuth && settings.httpAuthUser.length() > 0) {
       http.setAuthorization(settings.httpAuthUser.c_str(), settings.httpAuthPassword.c_str());
    }
 
@@ -1483,6 +1511,7 @@ class ServerCallbacks : public NimBLEServerCallbacks
       bleExpectedFwBytes = 0;
       bleSeqError = false;
       bleUploadError = false;
+      bleDisplayBusy = false;
       bleProtocolV2 = false;
       if (wifiSettings.bleInitOk) {
          Serial.printf("\n[BLE] restart advertising...\n[");
@@ -1511,7 +1540,7 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
       std::string uuidStr = pCharacteristic->getUUID().toString();
       if (uuidStr == "10000004-0000-0000-0000-000000000001") {
          uint16_t currentPos = bleWriteBufferPos;
-         uint16_t statusPos = bleUploadError ? 0xFFFF : (bleSeqError ? 0xFFFE : currentPos);
+         uint16_t statusPos = bleDisplayBusy ? 0xFFFD : (bleUploadError ? 0xFFFF : (bleSeqError ? 0xFFFE : currentPos));
          uint32_t respCrc = 0;
          if (!bleUploadError && !bleSeqError) {
             if (bleWriteBuffer != nullptr && currentPos > 0) {
@@ -1649,6 +1678,13 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
             Serial.println("[BLE] Protocol V2 negotiated.");
          }
          else if (cmd == "START") {
+            // The display is being refreshed from the picture slot: it must not be erased now.
+            if (applyPending || applyInProgress) {
+               Serial.println("[BLE] Upload START refused: display refresh in progress.");
+               bleDisplayBusy = true;
+               return;
+            }
+            bleDisplayBusy = false;
             if (fwUpdateInProgress) {
                Update.abort();
                fwUpdateInProgress = false;
@@ -1820,6 +1856,7 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
                fwUpdateInProgress = false;
             }
             fwRebootPending = false;
+            bleDisplayBusy = false;
             bleUploadError = false;
             bleSeqError = false;
             bleExpectedSeq = 0;
@@ -3109,12 +3146,13 @@ void runSetupMode() {
          else {
             Serial.printf("[NETWORK] %d networks found\n", n);
             for (int i = 0; i < n; ++i) {
-               wifiSsidScan = wifiSsidScan + WiFi.SSID(i) + "´";
-               wifiSsidScan = wifiSsidScan + WiFi.RSSI(i) + "´´";
-               if (wifiSsidScan.length() > 460) {
+               String entry = WiFi.SSID(i) + "´" + String(WiFi.RSSI(i)) + "´´";
+               // a characteristic holds at most 512 bytes: a longer value would not be set at all
+               if (wifiSsidScan.length() + entry.length() > 490) {
                   wifiSsidScan = wifiSsidScan + "´...´...´";
                   break;
                }
+               wifiSsidScan = wifiSsidScan + entry;
             }
          }
          if (wifiScanCharacteristic) {
@@ -3182,6 +3220,7 @@ void runSetupMode() {
       }
 
       if (applyPending) {
+         applyInProgress = true;
          applyPending = false;
          bleImageApplied = true;
          Serial.println("[MAIN] Applying new image within setup mode...");
@@ -3191,6 +3230,7 @@ void runSetupMode() {
          }
          logImageSlotCrc("tmp.bmp");
          showStoredImage("tmp.bmp");
+         applyInProgress = false;
       }
 
       if (fwRebootPending && (millis() - fwRebootScheduledAt >= 1200)) {
@@ -3313,6 +3353,30 @@ void initFirstBoot(void) {
    }
 }
 
+// Collects an HTTP body up to a size limit (target of HTTPClient::writeToStream()).
+class LimitedBody : public Stream
+{
+ public:
+   explicit LimitedBody(size_t maxLength) : limit(maxLength) {}
+   size_t write(uint8_t c) override { return write(&c, 1); }
+   size_t write(const uint8_t *data, size_t len) override {
+      if (text.length() + len > limit) {
+         overflow = true;
+         return 0;
+      }
+      return text.concat((const char *)data, len) ? len : 0;
+   }
+   int available() override { return 0; }
+   int read() override { return -1; }
+   int peek() override { return -1; }
+
+   String text;
+   bool overflow = false;
+
+ private:
+   size_t limit;
+};
+
 void fetchRemoteSettings() {
    if (settings.settingsUrl.length() == 0)
       return;
@@ -3320,21 +3384,55 @@ void fetchRemoteSettings() {
       return;
 
    Serial.println("[HTTP] Fetching remote JSON settings...");
+   // The login belongs to the server of the picture: it is only sent if the settings file is
+   // on that server as well (same protocol, host and port).
+   const String settingsOrigin = urlOrigin(settings.settingsUrl);
+   const bool sendAuth = settings.httpAuthUser.length() > 0 && settingsOrigin.length() > 0 &&
+                         settingsOrigin == urlOrigin(settings.downloadUrl);
+   const String url = getRedirect(settings.settingsUrl, sendAuth);
+
+   WiFiClientSecure secureClient;
+   secureClient.setInsecure();
    HTTPClient http;
-   http.begin(settings.settingsUrl);
+   http.setTimeout(10000);
+   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+   if (url.startsWith("https:")) {
+      http.begin(secureClient, url);
+   }
+   else {
+      http.begin(url);
+   }
+   if (sendAuth) {
+      http.setAuthorization(settings.httpAuthUser.c_str(), settings.httpAuthPassword.c_str());
+   }
    if (settings.settingsLastModified.length() > 0) {
-      http.addHeader("If-Modified-Since", settings.settingsLastModified);
+      if (settings.settingsLastModified.startsWith("etag:"))
+         http.addHeader("If-None-Match", settings.settingsLastModified.substring(5));
+      else
+         http.addHeader("If-Modified-Since", settings.settingsLastModified);
    }
 
-   const char *headerKeys[] = {"Last-Modified"};
-   http.collectHeaders(headerKeys, 1);
+   const char *headerKeys[] = {"Last-Modified", "ETag"};
+   http.collectHeaders(headerKeys, 2);
    addTelemetryHeaders(http);
 
    int httpCode = http.GET();
    if (httpCode == HTTP_CODE_OK) {
-      String payload = http.getString();
+      LimitedBody body(MAX_SETTINGS_JSON_SIZE);
+      const bool tooLarge = http.getSize() > MAX_SETTINGS_JSON_SIZE;
+      const int received = tooLarge ? 0 : http.writeToStream(&body);
+      if (tooLarge || body.overflow) {
+         Serial.printf("[HTTP] Settings JSON is larger than %d bytes, ignored.\n", MAX_SETTINGS_JSON_SIZE);
+         http.end();
+         return;
+      }
+      if (received < 0) {
+         Serial.printf("[HTTP] Reading the settings JSON failed: %s\n", http.errorToString(received).c_str());
+         http.end();
+         return;
+      }
       JsonDocument doc;
-      DeserializationError error = deserializeJson(doc, payload);
+      DeserializationError error = deserializeJson(doc, body.text);
       if (!error) {
          bool changed = false;
 
@@ -3355,8 +3453,15 @@ void fetchRemoteSettings() {
             changed = true;
          }
          if (doc["chargerMode"].is<bool>()) {
-            settings.chargerMode = doc["chargerMode"];
-            changed = true;
+            // Only switched off from here. Switching it on needs the confirmation in the web UI
+            // that rechargeable batteries are inserted.
+            if (!doc["chargerMode"].as<bool>()) {
+               settings.chargerMode = false;
+               changed = true;
+            }
+            else if (!settings.chargerMode) {
+               Serial.println("[HTTP] chargerMode: true ignored, switch it on over Bluetooth.");
+            }
          }
          if (doc["autoRotation"].is<bool>()) {
             settings.autoRotation = doc["autoRotation"];
@@ -3394,9 +3499,17 @@ void fetchRemoteSettings() {
             }
          }
 
-         if (http.hasHeader("Last-Modified")) {
-            String v = http.header("Last-Modified");
-            settings.settingsLastModified = (v.length() <= MAX_SETTING_STRING_LEN) ? v : String("");
+         // validator for the next request, ETag preferred (as for the picture)
+         String etag = http.header("ETag");
+         etag.trim();
+         String lastMod = http.header("Last-Modified");
+         lastMod.trim();
+         String validator = (etag.length() > 0) ? ("etag:" + etag) : lastMod;
+         if (validator.length() > MAX_SETTING_STRING_LEN) {
+            validator = (lastMod.length() <= MAX_SETTING_STRING_LEN) ? lastMod : String("");
+         }
+         if (validator != settings.settingsLastModified) {
+            settings.settingsLastModified = validator;
             changed = true;
          }
 
@@ -3483,15 +3596,23 @@ void setup() {
    delay(80);
 
    systemData.vddValue = readVDD(false);
-   if (!systemData.usbConnected && systemData.vddValue < 4000) {
+   if (!systemData.usbConnected && systemData.vddValue < BAT_OFF_VALUE) {
       if (DEBUG_FLAG)
          Serial.printf("[MAIN] Bat low protection: %dmV\n", systemData.vddValue);
       analogWrite(LED_PIN, LED_DIM_VALUE);
       // Empty rechargeable batteries must be able to charge when USB is plugged in while the
       // frame sleeps: take the charger setting from the memory (off unless the user switched it on).
-      if (EepromInit(EEPROM_SIZE))
+      bool drawNotice = false;
+      if (EepromInit(EEPROM_SIZE)) {
          settings.chargerMode = storedChargerMode();
-      gotToDeepSleep(86000, false, false);
+         // The display says once that the batteries are empty (see loop()). After that, and
+         // with an empty memory, the frame only sleeps.
+         drawNotice = EEPROM.read(499) == 42 && readIntFromFlash(EEPROM_SETTINGS_ADR + 5) != 0 &&
+                      displayContent() != DISPLAY_BATTERY_EMPTY;
+      }
+      if (!drawNotice)
+         gotToDeepSleep(86000, false, false);
+      batteryEmpty = true;
    }
    systemData.wakeupCause = getWakeupReason();
    tickerFailsave.once_ms(FAILSAVE_TIMER * 1000, timeoutFailsafe, 0);
@@ -3569,7 +3690,7 @@ void setup() {
    // test(); //-----------------test---------please remove
 #endif
 
-   if (buttonWake && !settings.skipSetupMode) {
+   if (buttonWake && !settings.skipSetupMode && !batteryEmpty) {
       tickerFailsave.detach();
       BleInit(CLIENT_ID, true);
       // updateDisplayAsync("connect_bt");
@@ -3626,6 +3747,18 @@ void loop() {
       }
       else {
          systemData.deviceOrientation = accInit(); // only reported to the server, the picture is not rotated
+      }
+
+      if (batteryEmpty) {
+         // Remembered before it is drawn: if the voltage breaks down during the refresh, the
+         // frame must not try again and again.
+         setDisplayContent(DISPLAY_BATTERY_EMPTY);
+         if (settings.lastModified.length() > 0) {
+            settings.lastModified = ""; // with new batteries the picture is drawn again, also if it has not changed
+            saveSettingsToFlash(EEPROM_SETTINGS_ADR);
+         }
+         displaySetText("Battery empty - please replace or recharge", false);
+         gotToDeepSleep(86000, false, false);
       }
 
       delay(200);

@@ -98,7 +98,7 @@ Details:
 - **Errors:** if the download fails, the frame shows an error message once and tries again after 5 minutes, then 15 minutes, then 1 hour, and from then on at the update interval (at least 1 hour). A press of the reset button starts over.
 - **Not set up:** without WiFi credentials or a download URL, and without a picture sent over Bluetooth, the frame shows a setup hint once and sleeps until the reset button is pressed.
 - **Motion wake-up (optional):** the frame also updates when it is moved.
-- **Low battery:** below 4.0 V without USB power the frame skips updates to protect the batteries.
+- **Low battery:** below 4.0 V (4 AA cells) without USB power the frame skips updates to protect the batteries. It says so once on the display.
 
 ### Device status headers
 
@@ -115,11 +115,15 @@ The frame sends its status as request headers with every request to the image UR
 | `X-OpenPaper-WiFi-RSSI` | `-67` | WiFi signal strength in dBm |
 | `X-OpenPaper-Orientation` | `0` | Side the frame stands on, `0`–`3`. `0` and `2` are opposite sides, `1` and `3` as well; between the two pairs the frame is turned by 90°. Missing if the sensor gave no reading. |
 
-If the server answers with a redirect, the headers are not sent to the redirect target.
+If the server answers with a redirect, the headers are not sent to the redirect target. Exception: a permanent redirect (301) from `http://` to `https://`.
 
 ## Remote settings (JSON)
 
-Enter a **Settings-JSON-URL** in the Web UI to manage the frame from your server without Bluetooth. The frame loads the file on every wake-up, before the image. If the server sends `Last-Modified`, an unchanged file is skipped.
+Enter a **Settings-JSON-URL** in the Web UI to manage the frame from your server without Bluetooth. The frame loads the file on every wake-up, before the image. If the server sends an `ETag` (preferred) or `Last-Modified` header, an unchanged file is skipped.
+
+- **URL:** `http://` or `https://`, up to 128 characters. Redirects are followed as for the image.
+- **Size:** up to 4 KB. A larger file is ignored.
+- **Login:** the HTTP Basic Auth of the image download is sent with this request only if the settings file is on the same server as the image (same protocol, host and port). Otherwise the file must be readable without a login.
 
 ```json
 {
@@ -140,7 +144,7 @@ Enter a **Settings-JSON-URL** in the Web UI to manage the frame from your server
 | `httpAuthUser`, `httpAuthPassword` | HTTP Basic Auth for the image download |
 | `motionWakeup` | Update when the frame is moved |
 | `autoRotation` | Rotate the image according to the orientation sensor |
-| `chargerMode` | Charge the batteries over USB-C, also while the frame sleeps. Off by default and after a reset. **Only with NiMH batteries!** |
+| `chargerMode` | `false` switches charging over USB-C off. `true` is ignored: charging normal batteries is dangerous, so it can only be switched on in the Web UI (**Gerät**), which asks whether NiMH batteries are inserted. |
 
 All keys are optional. The button **Prüfen** in the Web UI shows the file and applies it directly.
 
@@ -211,7 +215,7 @@ All characteristics: read, notify. UUID suffix: `-7b0e-11ed-a1eb-0242ac120002`.
 | :--- | :--- | :--- |
 | `4c578d4c` | WiFi connected | One byte: `1` connected, `0` not connected |
 | `4c578d4d` | WiFi info | JSON, e.g. `{"ip": "192.168.1.20", "rssi": -65, "ssid": "MyWiFi"}`; `{}` when not connected |
-| `5131a3fc` | WiFi scan | `SSID´RSSI´´SSID2´RSSI2´´…`, filled after the command `SCAN_WIFI` |
+| `5131a3fc` | WiFi scan | `SSID´RSSI´´SSID2´RSSI2´´…`, filled after the command `SCAN_WIFI`. Up to about 500 bytes: read the value after the notification, a notification carries only MTU − 3 bytes. |
 | `60000001` | System info | JSON with `voltage` (mV), `usb`, `charging`, `version`, `fw` (`offline`), `display` (`7` or `13`). Updated every 10 seconds. `setupTimeout: true` announces that the frame ends the setup mode (client idle for 10 minutes on battery power). |
 
 #### WiFi: `0515c086-7b0c-11ed-a1eb-0242ac120002`
@@ -263,7 +267,7 @@ Commands are written as text to the upload command characteristic (`10000004`).
 
 | Bytes | Content |
 | :--- | :--- |
-| 0–1 | Bytes in the RAM buffer. `0xFFFF` = upload error, `0xFFFE` = sequence error. |
+| 0–1 | Bytes in the RAM buffer. `0xFFFF` = upload error, `0xFFFE` = sequence error, `0xFFFD` = `START` refused because the display is still being refreshed (try again a few seconds later). |
 | 2–5 | CRC32 of the RAM buffer. After `END` / `END_FW`: CRC32 of the stored image or firmware. |
 | 6–7 | Maximum payload per packet |
 

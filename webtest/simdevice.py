@@ -60,6 +60,8 @@ MAX_OTA_FW_SIZE = 0x1D0000
 
 STATUS_UPLOAD_ERROR = 0xFFFF
 STATUS_SEQ_ERROR = 0xFFFE
+STATUS_DISPLAY_BUSY = 0xFFFD  # START refused: the display is being refreshed from the picture slot
+BAT_OFF_VALUE = 4000  # mV
 
 DISPLAYS = {"epd7": ("7", 800, 480), "epd13": ("13", 1200, 1600)}
 
@@ -114,6 +116,9 @@ class SimulatedDevice:
         self.voltage = 4100
         self.usb = True
         self.setup_timeout = False  # the device announced the end of its setup mode
+        self.display_busy_starts = 0  # number of START commands refused because the display is refreshing
+        self.notify_limit = None  # bytes a notification carries (MTU - 3), None = unlimited
+        self._display_busy = False
 
         # Records for the assertions of a test
         self.commands = []
@@ -165,7 +170,7 @@ class SimulatedDevice:
 
     async def _notify(self, uuid):
         if self.connected and uuid in self._subscribed and self.emit:
-            await self.emit({"type": "notify", "uuid": uuid, "data": self._value(uuid)})
+            await self.emit({"type": "notify", "uuid": uuid, "data": self._value(uuid)[:self.notify_limit]})
 
     async def drop_link(self):
         """The device closes the connection (reboot, reset, out of range)."""
@@ -222,6 +227,8 @@ class SimulatedDevice:
 
     def _status(self):
         position = STATUS_UPLOAD_ERROR if self._upload_error else STATUS_SEQ_ERROR if self._seq_error else len(self._buffer)
+        if self._display_busy:
+            position = STATUS_DISPLAY_BUSY
         if self.legacy:
             return struct.pack("<H", position)
         crc = 0
@@ -371,6 +378,11 @@ class SimulatedDevice:
         elif cmd == "V2":
             self._v2 = not self.legacy
         elif cmd == "START":
+            if self.display_busy_starts > 0:
+                self.display_busy_starts -= 1
+                self._display_busy = True
+                return
+            self._display_busy = False
             self._reset_upload()
             self._image_open = True
         elif cmd == "START_FW" or cmd.startswith("START_FW:"):
