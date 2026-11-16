@@ -19,6 +19,7 @@ on:
           - epd7
           - epd13
   # Called by deploy.yml: main and dev are only deployed after the hardware test passed.
+  # Not called for main if a dev deployment already tested the same files.
   # deploy.yml publishes the firmware built here (artifacts hil_firmware_epd7 / hil_firmware_epd13),
   # so the files that are tested are the files that are released.
   workflow_call:

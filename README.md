@@ -305,6 +305,8 @@ The Web UI uses `esptool-js` over Web Serial at 921600 baud. The firmware is wri
 
 Every push to `main` and `dev` is tested on real hardware before it is published. [`deploy.yml`](.github/workflows/deploy.yml) calls [`hil-test.yml`](.github/workflows/hil-test.yml) and deploys only if the risk analysis and the hardware test pass. The test can also be started manually.
 
+A merge of `dev` into `main` is not tested twice: if `main` has exactly the files of a `dev` deployment that passed, the firmware of that deployment is published with its version and the hardware test is skipped. If `main` differs (a direct commit, a merge with other changes), the test runs. A manual run of `deploy.yml` with **force_hil** runs it in any case.
+
 <details>
 <summary><b>Details</b></summary>
 
