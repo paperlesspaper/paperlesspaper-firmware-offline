@@ -417,7 +417,9 @@ def test_15_web_ui_over_usb(device, target, run_state):
     assert "Galerie synchronisiert" in found["status"]
     local = [tile for tile in found["tiles"] if tile["key"]]
     assert [tile["status"] for tile in local] == ["synced"]
-    assert local[0]["shown"], "The device does not report the new picture as the one on its display."
+    # A sync does not change the display: the device keeps showing the picture of test_12.
+    shown = [tile for tile in found["tiles"] if tile["shown"]]
+    assert len(shown) == 1 and shown[0]["remote"], f"The page does not mark the picture on the display: {found['tiles']}"
     assert found["bluetooth"] == 0, "The page used Bluetooth."
 
 
@@ -446,7 +448,8 @@ def test_99_restore_cloud_firmware(device, target):
 
     ble_run(reset_settings())
     device.wait_for(r"\[MAIN\] Reset - WIFI 1", timeout=15)
-    device.wait_for_reboot(since, timeout=30)
+    # The press may have started the next gallery picture: the restart follows after that refresh.
+    device.wait_for_reboot(since, timeout=30 + settings.REFRESH_TIMEOUT)
 
     device.enter_setup_mode()
     booted = _flash_over_ble(device, bin_path)
