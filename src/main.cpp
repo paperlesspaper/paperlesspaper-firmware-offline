@@ -409,6 +409,7 @@ struct RawDownload
 {
    uint32_t written = 0;
    uint32_t limit = 0;
+   uint32_t crc = 0;      // CRC32 of the bytes written
    bool overflow = false; // the file is larger than the limit
 };
 RawDownload rawDownload;
@@ -436,6 +437,7 @@ static bool rawSlotWrite(const uint8_t *data, uint32_t len) {
    }
    if (saveFile.write(data, len) != len)
       return false;
+   rawDownload.crc = crc32_le(rawDownload.crc, data, len);
    rawDownload.written += len;
    return true;
 }
@@ -2317,7 +2319,7 @@ int downloadAndSaveFile(String fileName, String url) {
    if (canSkipIfUnchanged && settings.lastModified.length() > 0) {
       if (settings.lastModified.startsWith("etag:"))
          http.addHeader("If-None-Match", settings.lastModified.substring(5));
-      else
+      else if (!settings.lastModified.startsWith("crc:"))
          http.addHeader("If-Modified-Since", settings.lastModified);
    }
 
@@ -2469,6 +2471,23 @@ int downloadAndSaveFile(String fileName, String url) {
             discardFile(saveFile, fileName.c_str());
             http.end();
             return DL_INCOMPLETE;
+         }
+
+         // Server without ETag and Last-Modified: the file itself tells if the picture changed
+         if (validator.length() == 0) {
+            char sum[32];
+            snprintf(sum, sizeof(sum), "crc:%08x:%u", (unsigned)rawDownload.crc, (unsigned)lastDownloadedBytes);
+            validator = sum;
+            if (canSkipIfUnchanged && validator == settings.lastModified) {
+               Serial.println("[DL] Same file as last time, picture unchanged.");
+               Storage::remove(fileName.c_str());
+               if (srvSleep >= 60 && srvSleep <= 86400) {
+                  serverSleepSeconds = srvSleep;
+                  serverSleepReceivedMs = srvSleepAtMs;
+               }
+               http.end();
+               return 1;
+            }
          }
 
          tempLastModified = validator;

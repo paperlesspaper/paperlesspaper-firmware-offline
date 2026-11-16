@@ -101,7 +101,7 @@ Details:
 - **URL:** `http://` or `https://`, up to 128 characters. HTTPS certificates are not verified.
 - **File size:** up to 6 MB (less if the flash of the frame is smaller). The server does not have to send `Content-Length`: responses with `Transfer-Encoding: chunked` are supported.
 - **Login:** optional HTTP Basic Auth for the image download.
-- **Caching:** if the server sends an `ETag` (preferred) or `Last-Modified` header, an unchanged image is neither written to flash nor refreshed on the display.
+- **Caching:** if the server sends an `ETag` (preferred) or `Last-Modified` header, an unchanged image is neither written to flash nor refreshed on the display. Without these headers the frame downloads the file every time and compares it with the last one (checksum): an unchanged image is not refreshed.
 - **Server-controlled interval:** the response header `X-OpenPaper-Sleep-Seconds` (60–86400) sets the time until the next wake-up.
 - **Errors:** if the download fails, the frame shows an error message once and tries again after 5 minutes, then 15 minutes, then 1 hour, and from then on at the update interval (at least 1 hour). A press of the reset button starts over.
 - **Not set up:** without WiFi credentials or a download URL, and without a picture in the gallery, the frame shows a setup hint once and sleeps until the reset button is pressed.
