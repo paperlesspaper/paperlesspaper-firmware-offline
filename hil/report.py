@@ -33,7 +33,7 @@ TEST_TITLES = {
     "test_01": "Werksreset (5x Taster)",
     "test_02": "BLE-Schnittstelle (GATT)",
     "test_03": "Galerie: speichern, anzeigen, nächstes Bild",
-    "test_04": "USB-Verbindung: Einstellungen und Galerie",
+    "test_04": "USB-Verbindung: Einstellungen, Galerie, Bildwechsel während der Sitzung",
     "test_10": "Web-UI: Verbindung und Geräteanzeige",
     "test_11": "Web-UI: Einstellungen speichern",
     "test_12": "Web-UI: Galerie synchronisieren und anzeigen",

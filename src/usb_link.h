@@ -16,6 +16,7 @@ void addService(NimBLEService *service); // characteristics a client may use
 void begin();                            // setup mode: listen on the serial line
 void end();
 bool active(); // a client has opened a session
+uint32_t baudRate(); // speed of the serial line now
 void notify(NimBLECharacteristic *characteristic);
 
 } // namespace UsbLink

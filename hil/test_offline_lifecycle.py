@@ -192,7 +192,8 @@ def test_03_gallery(device, target, run_state):
 
 
 def test_04_usb_link(device, target, run_state):
-    """The USB serial line offers what Bluetooth offers: settings, uploads and downloads."""
+    """The USB serial line offers what Bluetooth offers: settings, uploads and downloads. The session
+    survives a display refresh."""
     _require_candidate(run_state)
     from webtest import assets
 
@@ -211,10 +212,15 @@ def test_04_usb_link(device, target, run_state):
             link.write(settings.CHR_TIMEOUT, "1800")
             found["timeout"] = link.read(settings.CHR_TIMEOUT).decode()
             link.write(settings.CHR_TIMEOUT, settings.DEFAULT_TIMEOUT)
-            picture_id = link.gallery_put(container)
-            found["picture"] = link.read_stream(f"pic:{picture_id}")
-            found["list"] = [entry[0] for entry in json.loads(link.read_stream("list"))["items"]]
-            link.command("GAL_CLEAR")
+            try:
+                # The press shows the next of the two pictures: the session goes on after that refresh.
+                shown = link.wait_notification(settings.CHR_GALLERY_STATE, settings.REFRESH_TIMEOUT)
+                found["shown"] = json.loads(shown.decode("utf-8"))
+                picture_id = link.gallery_put(container)
+                found["picture"] = link.read_stream(f"pic:{picture_id}")
+                found["list"] = [entry[0] for entry in json.loads(link.read_stream("list"))["items"]]
+            finally:
+                link.command("GAL_CLEAR")  # the tests of the web UI start with an empty gallery
             found["after"] = link.read_json(settings.CHR_GALLERY_STATE)
     finally:
         device.ctrl.connect(retries=20, retry_delay=0.5)
@@ -223,6 +229,7 @@ def test_04_usb_link(device, target, run_state):
     assert found["system"]["fw"] == "offline" and found["system"]["version"] == run_state["candidate_version"]
     assert found["before"]["count"] == 2, "The pictures of the Bluetooth test are missing."
     assert found["timeout"] == "1800"
+    assert found["shown"]["count"] == 2 and found["shown"]["current"], "The device did not show the next picture."
     assert found["picture"] == container, "The picture file read back over USB differs from the one sent."
     assert picture_id in found["list"] and len(found["list"]) == 3
     assert found["after"]["count"] == 0

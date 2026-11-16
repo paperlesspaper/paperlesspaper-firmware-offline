@@ -140,6 +140,20 @@ class UsbLink:
     def write_without_response(self, uuid, data):
         self.ser.write(encode_frame(WRITE_NR, 0, key_of(uuid), data))
 
+    def wait_notification(self, uuid, timeout):
+        """Waits for a notification of this characteristic and returns its value."""
+        key = key_of(uuid)
+        end = time.time() + timeout
+        while True:
+            for index, (found, payload) in enumerate(self.notifications):
+                if found == key:
+                    del self.notifications[:index + 1]
+                    return payload
+            if time.time() > end:
+                raise UsbLinkError(f"No notification of {uuid} within {timeout} s.")
+            self._request(PING, timeout=10)  # keeps the session open and collects the notifications
+            time.sleep(0.5)
+
     # --- commands and uploads ---------------------------------------------
 
     def status(self):

@@ -285,6 +285,10 @@ bool active() {
    return sessionActive;
 }
 
+uint32_t baudRate() {
+   return sessionActive ? USB_LINK_BAUD : 115200;
+}
+
 void notify(NimBLECharacteristic *characteristic) {
    if (!sessionActive || characteristic == nullptr)
       return;

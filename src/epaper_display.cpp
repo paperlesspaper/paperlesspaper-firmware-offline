@@ -1,6 +1,7 @@
 #include "epaper_display.h"
 #include <Arduino.h>
 #include "storage.h"
+#include "usb_link.h"
 #include <WiFi.h>
 #include <qrcode.h>
 
@@ -47,6 +48,11 @@ DisplayType display(GxEPD2_730c_GDEP073E01(/*CS=*/CS_EPD_PIN, /*DC=*/DC_PIN, /*R
 #endif
 
 U8G2_FOR_ADAFRUIT_GFX u8g2_for_adafruit_gfx;
+
+// init() sets the speed of the serial line: a USB session keeps its own
+static void displayInit() {
+   display.init(UsbLink::baudRate());
+}
 
 void setDisplayData(const char *clientId, int vddValue) {
    if (clientId) {
@@ -100,7 +106,7 @@ void displayTypeDetect() {
    uint8_t patternOKRA2[2] = {0x33, 0x00}; // Das zweite Byte wird bei OKRA 2 manchmal nicht gesendet, wir prüfen primär das erste
 
    display.enableQuickRefresh(displaySettings.displayQuickRefreshTime, false);
-   display.init(115200);
+   displayInit();
 
    epd_spi_bus->endTransaction();
 
@@ -318,7 +324,7 @@ int setImageFromRows(ImageRowRewind rewind, ImageRowReader readRow, void *contex
    }
 
    display.enableQuickRefresh(displaySettings.displayQuickRefreshTime, false);
-   display.init(115200);
+   displayInit();
    display.setRotation(displaySettings.rotationPicture);
    display.setFullWindow();
    Serial.print("[EPD] Update Display... \n");
@@ -407,7 +413,7 @@ int setImageFromFS_13inch(String fileName, bool doRefresh) {
    Serial.printf("[BMP] Loading Image H: %d W: %d\n", height, width);
 
    display.enableQuickRefresh(displaySettings.displayQuickRefreshTime, false);
-   display.init(115200);
+   displayInit();
    display.clearScreen(0x01); // Clear screen memory
 
    // EPD physical resolution is 1200x1600 (2 controllers of 600x1600 each)
@@ -569,10 +575,10 @@ int setImageFromFS(String fileName, bool doRefresh) {
 void displayWipe(bool quick) {
    if (quick) {
       display.enableQuickRefresh(displaySettings.displayQuickRefreshTime, true);
-      display.init(115200);
+      displayInit();
    }
    else {
-      display.init(115200);
+      displayInit();
    }
 
    display.clearScreen(0x01);
@@ -591,7 +597,7 @@ void displaySetText(String info, bool isBlackboard, bool quickRefresh, String in
          backGround = GxEPD_BLACK;
       }
       display.enableQuickRefresh(displaySettings.displayQuickRefreshTime, true);
-      display.init(115200);
+      displayInit();
    }
    else {
       if (isBlackboard) {
@@ -600,7 +606,7 @@ void displaySetText(String info, bool isBlackboard, bool quickRefresh, String in
          backGround = GxEPD_BLACK_I;
       }
       display.enableQuickRefresh(displaySettings.displayQuickRefreshTime, false);
-      display.init(115200);
+      displayInit();
    }
 
    display.setRotation(displaySettings.rotationText);
@@ -678,12 +684,12 @@ void displayTurnOn() {
 
    Serial.print(F("\n[EPD] Press to turn on Screen Loading - "));
    if (displaySettings.quickRefresh) {
-      display.init(115200);
+      displayInit();
       display.enableQuickRefresh(displaySettings.displayQuickRefreshTime, true);
    }
    else {
       display.enableQuickRefresh(0, false);
-      display.init(115200);
+      displayInit();
       foreGround = GxEPD_WHITE;
       backGround = GxEPD_BLACK;
       fullColor = true;
