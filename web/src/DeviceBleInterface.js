@@ -89,6 +89,7 @@ export class DeviceBleInterface {
     this.reconnectInterval = null;
     this.manualDisconnect = false;
     this.otaRebooting = false;
+    this.otaNextStep = "";
     this.resetRebooting = false;
     this.setupTimedOut = false;
     this.reconnectAttempts = 0;
@@ -322,7 +323,7 @@ export class DeviceBleInterface {
     } else if (this.otaRebooting) {
       this.otaRebooting = false;
       this._setState("disconnected");
-      this.onStatusChange("Firmware erfolgreich installiert! Gerät startet neu... 🚀", "ok");
+      this.onStatusChange(`Firmware erfolgreich installiert! Das Gerät startet neu. ${this.otaNextStep}`.trim(), "ok");
     } else if (this.resetRebooting) {
       this.resetRebooting = false;
       this._setState("disconnected");
@@ -959,7 +960,7 @@ export class DeviceBleInterface {
         this.manualDisconnect = true;
         this.otaRebooting = true;
         if (this.reconnectInterval) clearTimeout(this.reconnectInterval);
-        this.onStatusChange("Firmware erfolgreich verifiziert! Gerät startet neu... 🚀", "ok");
+        this.onStatusChange(`Firmware erfolgreich verifiziert! Das Gerät startet neu. ${this.otaNextStep}`.trim(), "ok");
 
         setTimeout(() => {
           if (this.bleDevice && this.bleDevice.gatt.connected) {
@@ -994,7 +995,9 @@ export class DeviceBleInterface {
     return this.uploadData(buffer, false);
   }
 
-  async uploadFirmware(buffer) {
+  /** nextStep: what the user does after the restart, appended to the success message. */
+  async uploadFirmware(buffer, nextStep = "") {
+    this.otaNextStep = nextStep;
     return this.uploadData(buffer, true);
   }
 }

@@ -710,6 +710,7 @@ def test_offline_firmware_update(app_session, target):
             title, message = await app.transfer(lambda: app.click("#btnConfirmOfflineOta"))
 
             assert title == "Firmware installiert", message
+            assert "Reset-Taste" in message and "Bluetooth" in message, "The result must say how to connect again."
             assert device.firmware == firmware
             assert device.commands[:3] == ["START_FW", "V2", f"FW_SIZE:{len(firmware)}"]
             assert device.commands[-1] == f"END_FW:{crc32(firmware):08x}"
@@ -738,6 +739,7 @@ def test_cloud_firmware_update(app_session):
             title, message = await app.transfer(lambda: app.click("#btnConfirmOta"))
 
             assert title == "Firmware installiert", message
+            assert "paperlesspaper-App" in message
             assert device.firmware == firmware
 
     run(body())

@@ -1779,7 +1779,13 @@ const loaderTerminal = {
   write: (data) => console.log(data),
 };
 
-const BOOTLOADER_HELP = "Der Bootloader des E-Paper antwortet nicht. Starte den Vorgang erneut und drücke kurz die Reset-Taste, sobald die Seite dazu auffordert. Bei älterer Firmware: kleinen Knopf halten, Reset kurz drücken, kleinen Knopf loslassen – dann erneut starten.";
+// What to do after a firmware update (shown with the result)
+const RECONNECT_NEXT_STEP = "Drücke danach die Reset-Taste am E-Paper und verbinde dich wieder per Bluetooth.";
+const CLOUD_NEXT_STEP = "Mit der Cloud-Firmware ist das E-Paper über die paperlesspaper-App erreichbar.";
+
+const BOOT_BUTTON_STEPS ="kleinen Knopf halten, Reset (großer Knopf) kurz drücken, kleinen Knopf loslassen";
+const BOOTLOADER_HELP = `Der Bootloader des E-Paper antwortet nicht. Bringe das Gerät von Hand in den Bootloader (${BOOT_BUTTON_STEPS}) und starte den Vorgang erneut.`;
+const AUTO_BOOTLOADER_MS = 4000;
 
 /** Brings the device into the bootloader (see serialBoot.js) and connects to it. */
 async function openEspLoader(port) {
@@ -1789,8 +1795,15 @@ async function openEspLoader(port) {
   if (await bootloaderAnswers(port, loaderTerminal)) {
     mode = "no_reset";
   } else {
-    setStatus("Drücke jetzt kurz die Reset-Taste (großer Knopf) am E-Paper…", "busy");
-    if ((await requestBootloader(port)) === "entered") {
+    setStatus("Prüfe, ob das E-Paper von selbst in den Bootloader wechselt…", "busy");
+    let entered = await requestBootloader(port, { timeoutMs: AUTO_BOOTLOADER_MS });
+    if (!entered) {
+      setStatus(`Das E-Paper wechselt nicht von selbst in den Bootloader. Drücke jetzt kurz die Reset-Taste (großer Knopf). Passiert danach nichts: ${BOOT_BUTTON_STEPS}.`, "busy");
+      entered = await requestBootloader(port, {
+        onUnsupported: () => setStatus(`Diese Firmware wechselt nicht von selbst in den Bootloader. Bitte von Hand: ${BOOT_BUTTON_STEPS}.`, "busy"),
+      });
+    }
+    if (entered) {
       mode = "no_reset";
       await new Promise((r) => setTimeout(r, 500));
     }
@@ -1844,7 +1857,8 @@ async function confirmFirmwareStart(port, label, expected) {
   if (!rightSlot || !rightFirmware) {
     throw new Error(`Auf dem E-Paper startet die ${running}${boot.slot ? ` (${boot.slot})` : ""}, nicht die eben geflashte Firmware. Bitte erneut flashen.`);
   }
-  setStatus(`✅ Die ${running} läuft auf dem E-Paper.`, "ok");
+  const next = boot.offline ? "Verbinde dich jetzt per Bluetooth. Wird das E-Paper nicht gefunden, drücke vorher noch einmal die Reset-Taste." : CLOUD_NEXT_STEP;
+  setStatus(`✅ Die ${running} läuft auf dem E-Paper. ${next}`, "ok");
   return undefined;
 }
 
@@ -2017,7 +2031,7 @@ btnConfirmOta.addEventListener("click", async () => {
     const buffer = await downloadFirmware(await fetchWithProxy(url), "Die Cloud-Firmware");
 
     if (method === "ble") {
-      await bleInterface.uploadFirmware(buffer);
+      await bleInterface.uploadFirmware(buffer, CLOUD_NEXT_STEP);
     } else {
       return flashSerial(buffer, APP_ADDRESS, "Original Cloud Firmware", port, { offline: false });
     }
@@ -2061,7 +2075,7 @@ btnConfirmOfflineOta.addEventListener("click", async () => {
     const buffer = await downloadFirmware(res, "Die Offline-Firmware");
 
     if (method === "ble") {
-      await bleInterface.uploadFirmware(buffer);
+      await bleInterface.uploadFirmware(buffer, RECONNECT_NEXT_STEP);
     } else {
       // a local build may load the firmware of the published site: its version is not known here
       return flashSerial(buffer, APP_ADDRESS, "Offline Firmware", port, { offline: true, version: RELEASE_CHANNEL === "local" ? null : EXPECTED_FW_VERSION });
@@ -2106,7 +2120,7 @@ fwInput.addEventListener("change", async (e) => {
       okVariant: "signal",
     });
     if (!confirmed) return;
-    await runTransfer({ title: "Firmware wird installiert", abortable: true, successTitle: "Firmware installiert", failTitle: "Firmware-Update fehlgeschlagen", stickySuccess: true }, () => bleInterface.uploadFirmware(buffer));
+    await runTransfer({ title: "Firmware wird installiert", abortable: true, successTitle: "Firmware installiert", failTitle: "Firmware-Update fehlgeschlagen", stickySuccess: true }, () => bleInterface.uploadFirmware(buffer, RECONNECT_NEXT_STEP));
   } else {
     openUsbFlashDialog(buffer, file.name, (file.size / 1024).toFixed(1) + " KB", APP_ADDRESS, "Firmware");
   }

@@ -58,25 +58,31 @@ export async function bootloaderAnswers(port, terminal) {
 }
 
 /**
- * Asks the firmware to restart into the bootloader. The user presses reset once.
- * Resolves to "entered", "unsupported" (a firmware started that does not know the command)
- * or "silent" (nothing was heard).
+ * Asks the firmware to restart into the bootloader and waits until the bootloader is there.
+ * Works at once while the device is awake (setup mode), otherwise after a press of reset.
+ * onUnsupported: called once if a firmware started that does not know the command;
+ * the bootloader is then still awaited (boot button).
+ * Resolves to true if the device is in the bootloader.
  */
-export async function requestBootloader(port, timeoutMs = 60000) {
+export async function requestBootloader(port, { timeoutMs = 60000, onUnsupported = null } = {}) {
   let bootSeenAt = 0;
+  let unsupported = false;
   const result = await listen(port, {
     timeoutMs,
     send: new TextEncoder().encode("B"),
     evaluate: (log) => {
-      if (/ROM Download Bootloader|waiting for download/.test(log)) return "entered";
-      if (log.includes("[MAIN] INIT Device V:")) {
+      if (/ROM Download Bootloader|waiting for download/.test(log)) return true;
+      if (!unsupported && log.includes("[MAIN] INIT Device V:")) {
         bootSeenAt = bootSeenAt || Date.now();
-        if (Date.now() - bootSeenAt > 8000) return "unsupported";
+        if (Date.now() - bootSeenAt > 8000) {
+          unsupported = true;
+          if (onUnsupported) onUnsupported();
+        }
       }
       return undefined;
     },
   });
-  return result || "silent";
+  return result === true;
 }
 
 /**

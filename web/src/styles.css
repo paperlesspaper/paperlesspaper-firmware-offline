@@ -2165,21 +2165,13 @@ dialog.transfer::backdrop {
   background-size: 45px 45px;
   animation: move-stripes 1.1s linear infinite;
 }
-/* a white field in the middle of the bar, so the number stays readable while the fill passes behind it */
 .hero-progress-pct {
   position: absolute;
-  top: 3px;
-  bottom: 3px;
-  left: 0;
-  right: 0;
-  width: 76px;
-  margin: 0 auto;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #ffffff;
-  border-left: 3px solid var(--border);
-  border-right: 3px solid var(--border);
+  color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: 17px;
   font-weight: 800;
