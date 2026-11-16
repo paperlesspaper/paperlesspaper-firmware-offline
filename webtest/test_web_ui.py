@@ -119,6 +119,48 @@ def test_button_stays_under_the_pointer(app_session, edge):
 # --- connection -----------------------------------------------------------
 
 
+@pytest.mark.parametrize("width", [320, 390, 768])
+def test_device_info_fits_on_a_narrow_screen(app_session, width):
+    """Device, battery, USB and firmware are all visible at once, shortened, without scrolling."""
+
+    async def body():
+        device = SimulatedDevice("epd13")
+        async with app_session(device) as (app, site):
+            device.version = await expected_version(app)
+            await app.page.set_viewport_size({"width": width, "height": 800})
+            await app.connect()
+            await app.page.wait_for_function("() => document.getElementById('systemVoltage').textContent.includes('V')")
+
+            strip = await app.page.evaluate(
+                """() => {
+                    const inner = document.querySelector('.device-strip-inner');
+                    const chips = [...inner.querySelectorAll('.chip')].map((chip) => {
+                        const box = chip.getBoundingClientRect();
+                        const value = chip.querySelector('span[id]');
+                        return {
+                            id: chip.id, left: box.left, right: box.right, top: box.top,
+                            shown: value.dataset.short || value.textContent,
+                            cut: value.scrollWidth > value.clientWidth + 1,
+                        };
+                    });
+                    return { chips, scrolls: inner.scrollWidth > inner.clientWidth + 1, width: innerWidth };
+                }"""
+            )
+            assert not strip["scrolls"], "The device strip must not scroll sideways."
+            assert len(strip["chips"]) == 4
+            for chip in strip["chips"]:
+                assert chip["left"] >= 0 and chip["right"] <= strip["width"], f"{chip['id']} is outside the screen"
+                assert chip["top"] == strip["chips"][0]["top"], "All values belong in one row."
+                assert not chip["cut"], f"{chip['id']} is cut off: {chip['shown']}"
+            shown = {chip["id"]: chip["shown"] for chip in strip["chips"]}
+            assert shown["chipDevice"] == f"epd13-…{device.name[-4:]}"
+            assert shown["chipFw"] == f"v{device.version} ✓"
+            # the complete text stays in the document
+            assert device.name in await app.text("#systemDeviceName")
+
+    run(body())
+
+
 @pytest.mark.parametrize("target", TARGETS)
 def test_connect_shows_device_and_loads_its_settings(app_session, target):
     async def body():
@@ -156,6 +198,25 @@ def test_connect_shows_device_and_loads_its_settings(app_session, target):
             await app.disconnect()
             assert "EXIT_SETUP" in device.commands, "Disconnecting must end the setup mode of the device."
             assert (await app.ble_stats())["maxParallel"] == 1, "Two GATT operations ran at the same time."
+
+    run(body())
+
+
+def test_device_ends_an_idle_setup_mode(app_session):
+    """The device leaves the setup mode on its own: the page says why and does not try to reconnect."""
+
+    async def body():
+        device = SimulatedDevice()
+        async with app_session(device) as (app, site):
+            await app.connect()
+            await device.end_setup_mode()
+            await app.wait_status("ohne Eingabe beendet")
+            assert not await app.is_connected()
+            assert await app.locator("#btnConnect").is_visible()
+
+            await asyncio.sleep(6)  # an unexpected disconnect is followed by a reconnect after 5 s
+            assert device.connections == 1, "The page must not reconnect to a device that went to sleep."
+            assert "ohne Eingabe beendet" in await app.status()
 
     run(body())
 
@@ -289,6 +350,45 @@ def test_switches_are_stored_immediately(app_session):
     run(body())
 
 
+def test_settings_json_cannot_switch_the_charger_on(app_session):
+    """Charging normal batteries is dangerous: a settings file may switch the charger off, not on."""
+
+    async def body():
+        device = SimulatedDevice()
+        files = {"settings.json": json.dumps({"timeout": 900, "chargerMode": True}).encode()}
+        async with app_session(device, files=files) as (app, site):
+            await app.connect()
+            await app.view("geraet")
+            await app.page.fill("#settingSettingsUrl", site.url + "settings.json")
+            await app.click("#btnPreviewJson")
+            await app.click("#btnApplyJson")
+            await app.wait_status("nicht übernommen")
+            assert device.saved_settings["timeout"] == 900
+            assert device.saved_settings["charger_mode"] is False
+            assert not await app.page.is_checked("#settingChargerMode")
+
+    run(body())
+
+
+@pytest.mark.parametrize("voltage, tone, text", [
+    (5200, "ok", "5.20 V"),
+    (4300, "warn", "schwach"),
+    (3900, "err", "leer"),
+])
+def test_battery_level_matches_the_firmware(app_session, voltage, tone, text):
+    """4 AA cells: the device stops below 4.0 V, so that is empty and not 'fine'."""
+
+    async def body():
+        device = SimulatedDevice()
+        device.voltage = voltage
+        async with app_session(device) as (app, site):
+            await app.connect()
+            assert text in await app.text("#systemVoltage")
+            assert await app.page.evaluate("document.getElementById('systemVoltage').parentElement.dataset.tone") == tone
+
+    run(body())
+
+
 def test_factory_reset_needs_confirmation(app_session):
     async def body():
         device = SimulatedDevice()
@@ -338,6 +438,25 @@ def test_wifi_scan_and_join(app_session):
             assert await app.text("#infoSsid") == "Werkstatt"
             assert await app.text("#infoIp") == "192.168.4.23"
             assert device.settings["image_mode"] == 1, "After joining a network the device must load from the URL."
+
+    run(body())
+
+
+def test_wifi_list_is_complete_with_a_small_mtu(app_session):
+    """A notification carries at most MTU - 3 bytes. The page must read the whole list."""
+
+    async def body():
+        device = SimulatedDevice()
+        device.networks = {f"Netzwerk-Nummer-{i:02d}": ("pw", -40 - i) for i in range(20)}
+        device.notify_limit = 182  # macOS
+        async with app_session(device) as (app, site):
+            await app.connect()
+            await app.view("geraet")
+            await app.click("#btnScanWifi")
+            await app.page.wait_for_selector("#wifiList .wifi-item")
+            names = await app.page.locator("#wifiList .wifi-ssid").all_inner_texts()
+            assert names == list(device.networks), "Networks are missing or cut off."
+            assert (await app.ble_stats())["maxParallel"] == 1
 
     run(body())
 
@@ -410,6 +529,25 @@ def test_picture_upload(app_session, target):
             # black, white, blue, green, red, yellow in the colour codes of the display
             assert bar_codes(device.image, device.width, device.height) == [0, 6, 1, 2, 3, 5]
             assert (await app.ble_stats())["maxParallel"] == 1
+
+    run(body(), timeout=240)
+
+
+def test_upload_waits_for_the_display_refresh(app_session):
+    """While the device draws the previous picture it refuses START. The page waits and tries again."""
+
+    async def body():
+        device = SimulatedDevice()
+        device.display_busy_starts = 2
+        async with app_session(device) as (app, site):
+            await app.connect()
+            await app.load_image(assets.test_picture(device.width // 2, device.height // 2))
+            result = await app.transfer(lambda: app.click("#btnUploadImage"), timeout=180000)
+
+            assert result is None, f"Upload ended with an error screen: {result}"
+            assert device.commands.count("START") == 3
+            assert "aktualisiert noch das Display" in await app.status_log()
+            assert device.displayed == device.image and device.image is not None
 
     run(body(), timeout=240)
 
@@ -572,6 +710,7 @@ def test_offline_firmware_update(app_session, target):
             title, message = await app.transfer(lambda: app.click("#btnConfirmOfflineOta"))
 
             assert title == "Firmware installiert", message
+            assert "Reset-Taste" in message and "Bluetooth" in message, "The result must say how to connect again."
             assert device.firmware == firmware
             assert device.commands[:3] == ["START_FW", "V2", f"FW_SIZE:{len(firmware)}"]
             assert device.commands[-1] == f"END_FW:{crc32(firmware):08x}"
@@ -600,6 +739,7 @@ def test_cloud_firmware_update(app_session):
             title, message = await app.transfer(lambda: app.click("#btnConfirmOta"))
 
             assert title == "Firmware installiert", message
+            assert "paperlesspaper-App" in message
             assert device.firmware == firmware
 
     run(body())
@@ -697,6 +837,55 @@ def test_firmware_update_without_connection_offers_to_connect(app_session):
             assert "Nicht verbunden" in await app.text("#messageTitle")
             await app.click("#messageCancel")
             assert device.connections == 0
+
+    run(body())
+
+
+USB_STUBS = """usbDevice => {
+    const notFound = () => Promise.reject(new DOMException("No device selected.", "NotFoundError"));
+    navigator.serial.requestPort = notFound;
+    navigator.usb.requestDevice = usbDevice ? () => Promise.resolve({ productName: usbDevice }) : notFound;
+}"""
+
+
+@pytest.mark.parametrize("usb_device, title", [
+    ("CP2102N USB to UART Bridge Controller", "Treiber fehlt"),
+    (None, "Kein E-Paper am USB gefunden"),
+])
+def test_missing_serial_port_is_explained(app_session, usb_device, title):
+    """Without its driver the device is not offered as a serial port. The page says so and tells
+    a missing driver from a device that is not connected."""
+
+    async def body():
+        async with app_session(SimulatedDevice(), files={"firmware_offline_epd7.bin": assets.firmware_image()}) as (app, site):
+            await app.page.evaluate(USB_STUBS, usb_device)
+            await app.view("firmware")
+            await app.click("#btnOtaSerial")
+            await app.click("#btnUpdateOfflineFw")
+            await app.click("#btnConfirmOfflineOta")
+
+            await app.page.wait_for_selector("#messageDialog[open]")
+            assert "nicht in der Liste" in await app.text("#messageTitle")
+            assert "silabs.com" in await app.page.get_attribute("#messageLink a", "href")
+            await app.click("#messageOk")
+
+            await app.page.wait_for_function("title => document.getElementById('messageTitle').textContent.includes(title)", arg=title)
+            if usb_device:
+                assert usb_device in await app.text("#messageDetail")
+            await app.click("#messageOk")
+            assert not await app.page.evaluate("document.getElementById('transferDialog').open")
+
+    run(body())
+
+
+def test_help_link_opens_the_usb_section(app_session):
+    async def body():
+        async with app_session(SimulatedDevice()) as (app, site):
+            await app.view("firmware")
+            await app.click("#btnOtaSerial")
+            await app.click('[data-help-target="helpUsb"]')
+            await app.page.wait_for_selector("#viewHelp:not([hidden])")
+            assert await app.page.get_attribute('[aria-controls="helpUsb"]', "aria-expanded") == "true"
 
     run(body())
 

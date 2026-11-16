@@ -1,5 +1,6 @@
 export const MAX_OTA_FW_SIZE = 0x1d0000; // 1.900.544 Bytes (app0/app1 in part.csv)
 export const MIN_OTA_FW_SIZE = 65536;
+const DISPLAY_BUSY_WAIT_S = 90; // a display refresh takes up to about 45 s
 
 export async function validateEsp32FirmwareBinary(buffer) {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
@@ -88,6 +89,9 @@ export class DeviceBleInterface {
     this.reconnectInterval = null;
     this.manualDisconnect = false;
     this.otaRebooting = false;
+    this.otaNextStep = "";
+    this.resetRebooting = false;
+    this.setupTimedOut = false;
     this.reconnectAttempts = 0;
     this.isScanningWifi = false;
     this.isWritingDirectSettings = false;
@@ -165,6 +169,9 @@ export class DeviceBleInterface {
     }
     try {
       this.manualDisconnect = false;
+      this.otaRebooting = false;
+      this.resetRebooting = false;
+      this.setupTimedOut = false;
       this.reconnectAttempts = 0;
       this._clearReconnect();
       if (this.bleDevice) {
@@ -316,7 +323,15 @@ export class DeviceBleInterface {
     } else if (this.otaRebooting) {
       this.otaRebooting = false;
       this._setState("disconnected");
-      this.onStatusChange("Firmware erfolgreich installiert! Gerät startet neu... 🚀", "ok");
+      this.onStatusChange(`Firmware erfolgreich installiert! Das Gerät startet neu. ${this.otaNextStep}`.trim(), "ok");
+    } else if (this.resetRebooting) {
+      this.resetRebooting = false;
+      this._setState("disconnected");
+      this.onStatusChange("Gerät wurde zurückgesetzt und startet neu.", "ok");
+    } else if (this.setupTimedOut) {
+      this.setupTimedOut = false;
+      this._setState("disconnected");
+      this.onStatusChange("Das E-Paper hat die Verbindung nach 10 Minuten ohne Eingabe beendet, um die Batterien zu schonen. Zum Weitermachen die Reset-Taste drücken und neu verbinden.", "warn");
     } else {
       this._setState("disconnected");
       this.onStatusChange("Gerät getrennt.", "warn");
@@ -471,10 +486,21 @@ export class DeviceBleInterface {
         }
       };
       await scanChar.startNotifications();
+      // A notification carries at most MTU - 3 bytes (182 on macOS), a long list arrives cut off.
+      // So the notification only says that the list is ready, the list itself is read.
+      let readingScan = true; // readValue() fires this event as well
       scanChar.addEventListener("characteristicvaluechanged", (event) => {
-        processScanData(event.target.value);
+        if (readingScan) return;
+        readingScan = true;
+        const notified = event.target.value;
+        this._enqueue(() => scanChar.readValue())
+          .then(processScanData, () => processScanData(notified))
+          .finally(() => {
+            readingScan = false;
+          });
       });
       const initialScanData = await scanChar.readValue();
+      readingScan = false;
       if (initialScanData.byteLength > 0) {
         processScanData(initialScanData);
       }
@@ -491,6 +517,15 @@ export class DeviceBleInterface {
         if (jsonStr.length > 2) {
           try {
             const parsed = JSON.parse(jsonStr);
+            if (parsed && parsed.setupTimeout === true) {
+              // On battery power the device ends its setup mode when the client is idle for too
+              // long. It is on its way to sleep: reconnecting would only fail.
+              this.manualDisconnect = true;
+              this.setupTimedOut = true;
+              this._clearReconnect();
+              if (this.bleDevice?.gatt?.connected) this.bleDevice.gatt.disconnect();
+              return;
+            }
             if (parsed && typeof parsed.version === "string" && parsed.version.trim()) {
               this.deviceFirmwareVersion = parsed.version.trim();
             }
@@ -584,7 +619,8 @@ export class DeviceBleInterface {
         return true;
       } else {
         this.onWifiStatusChange(false);
-        this.onStatusChange("WLAN gespeichert, aber Verbindung fehlgeschlagen (Passwort falsch?)", "err");
+        // The device stores the credentials only after a successful connection test.
+        this.onStatusChange("WLAN-Verbindung fehlgeschlagen – Zugangsdaten wurden nicht gespeichert (Passwort falsch?)", "err");
         return false;
       }
     } catch (e) {
@@ -687,8 +723,23 @@ export class DeviceBleInterface {
     try {
       this.onStatusChange("Führe Factory Reset aus...", "busy");
       const cmdChar = await this.settingsService.getCharacteristic(this.UPLOAD_CMD_UUID);
-      await cmdChar.writeValue(this.encodeText("RESET"));
-      this.onStatusChange("Gerät wird zurückgesetzt und neugestartet.", "ok");
+      // The device restarts after the reset and is then no longer in setup mode: the dropped
+      // link is expected and reconnecting would only fail twelve times.
+      this.manualDisconnect = true;
+      this.resetRebooting = true;
+      this._clearReconnect();
+      try {
+        await cmdChar.writeValue(this.encodeText("RESET"));
+      } catch (writeErr) {
+        // Firmware before the deferred restart resets inside the write: the answer never
+        // arrives, the link drops instead. Only a failed write on a live link is an error.
+        if (this.bleDevice?.gatt?.connected) throw writeErr;
+        console.warn("RESET was not answered, the device restarted:", writeErr);
+      }
+      if (this.resetRebooting) {
+        // still connected (otherwise handleDisconnect() has already reported the restart)
+        this.onStatusChange("Gerät wird zurückgesetzt und neugestartet.", "ok");
+      }
 
       setTimeout(() => {
         if (this.bleDevice && this.bleDevice.gatt.connected) {
@@ -697,6 +748,8 @@ export class DeviceBleInterface {
       }, 1500);
     } catch (e) {
       console.error(e);
+      this.manualDisconnect = false;
+      this.resetRebooting = false;
       this.onStatusChange("Fehler beim Factory Reset.", "err");
     }
   }
@@ -729,8 +782,19 @@ export class DeviceBleInterface {
       this.onStatusChange(isFirmware ? "Starte Firmware Update..." : "Öffne Flash Puffer...", "busy");
       await cmdChar.writeValue(this.encodeText(isFirmware ? "START_FW" : "START"));
 
-      const initView = await cmdChar.readValue();
-      const initStatus = initView.getUint16(0, true);
+      let initView = await cmdChar.readValue();
+      let initStatus = initView.getUint16(0, true);
+      // 0xFFFD: the device still draws the previous picture and cannot take a new one yet.
+      for (let waited = 0; initStatus === 0xfffd; waited += 2) {
+        if (waited >= DISPLAY_BUSY_WAIT_S) {
+          throw new Error("Das E-Paper aktualisiert noch das Display. Bitte in einer Minute erneut senden.");
+        }
+        this.onStatusChange("Das E-Paper aktualisiert noch das Display – der Upload startet danach…", "busy");
+        await new Promise((r) => setTimeout(r, 2000));
+        await cmdChar.writeValue(this.encodeText("START"));
+        initView = await cmdChar.readValue();
+        initStatus = initView.getUint16(0, true);
+      }
       if (initStatus === 0xffff) {
         throw new Error(isFirmware ? "OTA-Partition auf dem Gerät konnte nicht geöffnet werden (Flash/RAM Fehler)." : "Geräte-Puffer konnte nicht initialisiert werden (Flash/RAM Fehler).");
       }
@@ -896,7 +960,7 @@ export class DeviceBleInterface {
         this.manualDisconnect = true;
         this.otaRebooting = true;
         if (this.reconnectInterval) clearTimeout(this.reconnectInterval);
-        this.onStatusChange("Firmware erfolgreich verifiziert! Gerät startet neu... 🚀", "ok");
+        this.onStatusChange(`Firmware erfolgreich verifiziert! Das Gerät startet neu. ${this.otaNextStep}`.trim(), "ok");
 
         setTimeout(() => {
           if (this.bleDevice && this.bleDevice.gatt.connected) {
@@ -931,7 +995,9 @@ export class DeviceBleInterface {
     return this.uploadData(buffer, false);
   }
 
-  async uploadFirmware(buffer) {
+  /** nextStep: what the user does after the restart, appended to the success message. */
+  async uploadFirmware(buffer, nextStep = "") {
+    this.otaNextStep = nextStep;
     return this.uploadData(buffer, true);
   }
 }

@@ -13,6 +13,7 @@ Exits with 1 if a test failed, no result file was found or the risk analysis blo
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -35,16 +36,48 @@ TEST_TITLES = {
     "test_11": "Web-UI: Einstellungen speichern",
     "test_12": "Web-UI: Bild senden und anzeigen",
     "test_13": "Web-UI: Firmware-Update",
+    "test_14": "USB-Flash ohne Boot-Taste, Start aus app0",
     "test_99": "Cloud-Firmware wiederherstellen",
 }
 
 WEB_RESULT = "WEB"  # result of the browser tests against the simulated device (webtest/)
+
+# Areas of the web UI tests: the `# --- area ---` headings of webtest/test_web_ui.py
+WEB_AREA_TITLES = {
+    "start page": "Startseite",
+    "connection": "Verbindung",
+    "settings": "Einstellungen",
+    "Wi-Fi": "WLAN",
+    "picture upload": "Bild senden",
+    "firmware update": "Firmware-Update und USB",
+    "check of the download URL": "Prüfung der Download-URL",
+}
+CONSISTENCY_AREA = "Konsistenz Firmware / Web-UI / Tests"
+OTHER_AREA = "Weitere"
 
 MAX_AI_DIAGNOSES = 4  # later failures are usually consequences of the first ones
 
 
 def title_of(test_name):
     return next((title for key, title in TEST_TITLES.items() if test_name.startswith(key)), test_name)
+
+
+def web_areas():
+    """Maps each test function of webtest/ to its area."""
+    areas = {}
+    folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "webtest")
+    for filename, area in (("test_web_ui.py", OTHER_AREA), ("test_consistency.py", CONSISTENCY_AREA)):
+        try:
+            with open(os.path.join(folder, filename), "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except OSError:
+            continue
+        for line in lines:
+            if (m := re.match(r"# --- (.+?) -+\s*$", line)):
+                area = WEB_AREA_TITLES.get(m.group(1), m.group(1))
+            elif (m := re.match(r"def (test_\w+)", line)):
+                areas[m.group(1)] = area
+    return areas
 
 
 def read_result(path):
@@ -115,26 +148,6 @@ def build(targets, risk, fw_version, commit):
         out.append("| **KI-Risikoanalyse** | ⚪ Nicht verfügbar | Kein Bericht vorhanden |")
     out.append("")
 
-    if failed:
-        out += ["---", "", "## 🚨 Fehlgeschlagene Tests", ""]
-        for index, (name, case) in enumerate(failed):
-            out += [f"### ❌ [{name}] {case['title']}", f"`{case['name']}` · {case['seconds']:.0f} s", ""]
-            excerpt = sanitize(case["details"], max_chars=600) or "Keine Fehlermeldung vorhanden."
-            out += ["```text", excerpt, "```", ""]
-            if index < MAX_AI_DIAGNOSES:
-                print(f"KI-Fehlerdiagnose für [{name}] {case['name']}...", file=sys.stderr)
-                case["ai_diagnosis"] = analyze_failure(case["name"], name, case["details"])
-            if case.get("ai_diagnosis"):
-                out += ["**🤖 KI-Fehlerdiagnose**", "", case["ai_diagnosis"], ""]
-            elif index < MAX_AI_DIAGNOSES:
-                out += ["*KI-Fehlerdiagnose nicht verfügbar (kein `GEMINI_API_KEY` oder API nicht erreichbar).*", ""]
-
-    for name, cases in targets.items():
-        out += ["---", "", f"## 📺 Detailergebnisse: {name}", "", "| Test | Ergebnis | Dauer |", "| :--- | :--- | ---: |"]
-        for c in cases:
-            out.append(f"| {c['title']} (`{c['name']}`) | {ICONS[c['outcome']]} {LABELS[c['outcome']]} | {c['seconds']:.0f} s |")
-        out.append("")
-
     if risk:
         out += [
             "---",
@@ -148,6 +161,54 @@ def build(targets, risk, fw_version, commit):
         if risk["diff_summary"]:
             out += ["**Kernaussage zu den Code-Änderungen:**", "", risk["diff_summary"], ""]
         out += ["<details>", "<summary><b>Vollständigen Bericht anzeigen</b></summary>", "", risk["text"], "", "</details>", ""]
+
+    diagnoses = [0]  # AI diagnoses written so far; hardware failures come first
+
+    def failures_of(name):
+        lines = []
+        for case in (c for c in targets[name] if c["outcome"] == "failed"):
+            lines += [f"#### ❌ {case['title']}", f"`{case['name']}` · {case['seconds']:.0f} s", ""] if case["title"] != case["name"] else [f"#### ❌ `{case['name']}`", ""]
+            excerpt = sanitize(case["details"], max_chars=600) or "Keine Fehlermeldung vorhanden."
+            lines += ["```text", excerpt, "```", ""]
+            if diagnoses[0] >= MAX_AI_DIAGNOSES:
+                continue
+            diagnoses[0] += 1
+            print(f"KI-Fehlerdiagnose für [{name}] {case['name']}...", file=sys.stderr)
+            case["ai_diagnosis"] = analyze_failure(case["name"], name, case["details"])
+            if case["ai_diagnosis"]:
+                lines += ["**🤖 KI-Fehlerdiagnose**", "", case["ai_diagnosis"], ""]
+            else:
+                lines += ["*KI-Fehlerdiagnose nicht verfügbar (kein `GEMINI_API_KEY` oder API nicht erreichbar).*", ""]
+        return lines
+
+    def case_table(cases):
+        lines = ["| Test | Ergebnis | Dauer |", "| :--- | :--- | ---: |"]
+        for c in cases:
+            test = f"`{c['name']}`" if c["title"] == c["name"] else f"{c['title']} (`{c['name']}`)"
+            lines.append(f"| {test} | {ICONS[c['outcome']]} {LABELS[c['outcome']]} | {c['seconds']:.0f} s |")
+        return lines + [""]
+
+    out += ["---", "", "## 📺 HIL-Testergebnisse", ""]
+    if not hardware:
+        out += ["Keine Ergebnisse der Hardware-Tests vorhanden.", ""]
+    for name in hardware:
+        out += [f"### {name}", ""] + case_table(targets[name]) + failures_of(name)
+
+    if WEB_RESULT in targets:
+        cases = targets[WEB_RESULT]
+        areas = web_areas()
+        grouped = {}
+        for c in cases:
+            grouped.setdefault(areas.get(c["name"].split("[")[0], OTHER_AREA), []).append(c)
+        out += ["---", "", "## 🌐 Web-UI-Tests (simuliertes Gerät)", "", "| Bereich | Ergebnis | Tests | Dauer |", "| :--- | :--- | ---: | ---: |"]
+        for area, group in sorted(grouped.items(), key=lambda item: item[0] == CONSISTENCY_AREA):  # browser tests first
+            passed = sum(1 for c in group if c["outcome"] == "passed")
+            n_failed = sum(1 for c in group if c["outcome"] == "failed")
+            status = f"{ICONS['failed']} {n_failed} fehlgeschlagen" if n_failed else f"{ICONS['passed']} bestanden"
+            out.append(f"| {area} | {status} | {passed}/{len(group)} | {sum(c['seconds'] for c in group):.0f} s |")
+        out.append("")
+        out += failures_of(WEB_RESULT)
+        out += ["<details>", f"<summary><b>Alle {len(cases)} Web-UI-Tests anzeigen</b></summary>", ""] + case_table(cases) + ["</details>", ""]
 
     return "\n".join(out), ok
 

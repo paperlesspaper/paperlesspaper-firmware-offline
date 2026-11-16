@@ -72,6 +72,7 @@ LIMITS = {
     "MAX_SETTING_STRING_LEN": "settingStringBytes",
     "MIN_SLEEP_TIMEOUT": "timeoutMin",
     "MAX_SLEEP_TIMEOUT": "timeoutMax",
+    "BAT_OFF_VALUE": "batteryOffMv",
 }
 
 
@@ -116,6 +117,26 @@ def test_firmware_fits_the_ota_partitions():
     assert set(sizes) == {"app0", "app1"}, f"app0 and app1 were not both found in part.csv: {sizes}"
     limit = firmware_define("MAX_OTA_FW_SIZE")
     assert limit <= min(sizes.values()), f"MAX_OTA_FW_SIZE ({limit:#x}) is larger than an OTA partition in part.csv ({sizes})."
+
+
+def test_usb_flash_addresses_match_the_partition_table():
+    """Flashing over USB writes to fixed addresses. A firmware that is written to app0 only starts
+    if otadata is reset as well: after an update over the air the device starts app1."""
+    partitions = {}
+    for line in read("part.csv").splitlines():
+        fields = [field.strip() for field in line.split(",")]
+        if len(fields) >= 5 and not fields[0].startswith("#"):
+            partitions[fields[0]] = (number(fields[3]), number(fields[4]))
+    js_constant = r"^const {name} = (0[xX][0-9a-fA-F]+|\d+)"
+    web = {name: assignment("web/src/app.js", name, js_constant)
+           for name in ("APP_ADDRESS", "OTADATA_ADDRESS", "OTADATA_SIZE", "SPIFFS_ADDRESS", "SPIFFS_SIZE")}
+    assert web["APP_ADDRESS"] == partitions["app0"][0]
+    assert (web["OTADATA_ADDRESS"], web["OTADATA_SIZE"]) == partitions["otadata"]
+    assert (web["SPIFFS_ADDRESS"], web["SPIFFS_SIZE"]) == partitions["spiffs"]
+    assert "address: OTADATA_ADDRESS" in read("web/src/app.js"), "flashSerial() no longer resets otadata."
+    # the hardware test flashes over USB with the same addresses
+    for name in ("APP_ADDRESS", "OTADATA_ADDRESS", "OTADATA_SIZE"):
+        assert assignment("hil/settings.py", name) == web[name], f"{name} differs between hil/settings.py and web/src/app.js."
 
 
 def test_picture_sizes():

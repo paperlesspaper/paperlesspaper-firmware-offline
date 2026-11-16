@@ -11,6 +11,8 @@ name: Build and Deploy
 #     test are the files that get published - there is no second, untested build.
 #   * Every run has its own firmware version (0.1.<run number>). The web UI of the run expects
 #     exactly that version.
+#   * main with the same files as a tested dev deployment (a merge of dev) does not run the
+#     hardware test again: the firmware of that dev run is published, with its version.
 #   * GitHub Pages holds one site per repository and every deployment replaces all of it, so the
 #     other channel is taken over unchanged from the last deployment (its "site_<channel>"
 #     artifact). A channel therefore only changes through its own run and its own hardware test.
@@ -26,6 +28,11 @@ on:
       - main
       - dev
   workflow_dispatch:
+    inputs:
+      force_hil:
+        description: "main: run the hardware test even if dev already tested the same files"
+        type: boolean
+        default: false
   repository_dispatch:
     types: [trigger-web-build]
 
@@ -51,6 +58,7 @@ jobs:
       rebuild_firmware: ${{ steps.resolve.outputs.rebuild_firmware }} # fallback only, otherwise []
       reuse_run: ${{ steps.resolve.outputs.reuse_run }} # run id that holds the other channel, or empty
       other_channel: ${{ steps.resolve.outputs.other_channel }}
+      tested_run: ${{ steps.resolve.outputs.tested_run }} # main only: dev run that tested these files, or empty
     steps:
       - name: Resolve version and channels
         id: resolve
@@ -59,6 +67,7 @@ jobs:
           THIS_BRANCH: ${{ github.ref_name }}
           THIS_SHA: ${{ github.sha }}
           RUN_NUMBER: ${{ github.run_number }}
+          FORCE_HIL: ${{ inputs.force_hil }}
         run: |
           set -euo pipefail
 
@@ -73,6 +82,31 @@ jobs:
 
           # One version per run, shared by main and dev: it grows with every deployment.
           fw_version="0.1.$RUN_NUMBER"
+
+          # main with exactly the files of a dev deployment (a merge of dev): that deployment passed
+          # the hardware test, so its firmware is published as it is, with its version.
+          tested_run=""
+          if [ "$THIS_BRANCH" = "main" ] && [ "$FORCE_HIL" != "true" ]; then
+            this_tree=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$THIS_SHA" --jq .tree.sha || true)
+            while read -r run_id run_number run_sha; do
+              run_tree=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$run_sha" --jq .tree.sha || true)
+              if [ -z "$this_tree" ] || [ "$run_tree" != "$this_tree" ]; then continue; fi
+              firmware_count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts?per_page=100" \
+                --jq '[.artifacts[] | select((.name == "hil_firmware_epd7" or .name == "hil_firmware_epd13") and (.expired | not))] | length' || true)
+              if [ "$firmware_count" = "2" ]; then
+                tested_run=$run_id
+                fw_version="0.1.$run_number"
+                echo "::notice::Same files as dev run $run_id, which passed the hardware test: its firmware v$fw_version is published, the test does not run again."
+              else
+                echo "::notice::Dev run $run_id has the same files, but its firmware artifacts are gone: the hardware test runs."
+              fi
+              break
+            done < <(gh run list --repo "$GITHUB_REPOSITORY" --workflow deploy.yml --branch dev --status success --limit 10 \
+              --json databaseId,number,headSha --jq '.[] | "\(.databaseId) \(.number) \(.headSha)"')
+            if [ -z "$tested_run" ]; then
+              echo "::notice::No tested dev deployment with the same files: the hardware test runs."
+            fi
+          fi
 
           # Preferred: take the other channel over from the last deployment. Every successful run
           # keeps both channels as artifacts (site_main, site_dev), whatever branch it ran on.
@@ -129,10 +163,15 @@ jobs:
             echo "rebuild_firmware=$rebuild_firmware"
             echo "reuse_run=$reuse_run"
             echo "other_channel=$other"
+            echo "tested_run=$tested_run"
           } >> "$GITHUB_OUTPUT"
           {
             echo "### Channels in this deployment"
-            echo "- **$THIS_BRANCH**: built from \`$THIS_SHA\`, firmware **v$fw_version** (the files the hardware test ran with)"
+            if [ -n "$tested_run" ]; then
+              echo "- **$THIS_BRANCH**: built from \`$THIS_SHA\`, firmware **v$fw_version** taken over from dev run $tested_run (same files, hardware test passed there)"
+            else
+              echo "- **$THIS_BRANCH**: built from \`$THIS_SHA\`, firmware **v$fw_version** (the files the hardware test ran with)"
+            fi
             if [ -n "$reuse_run" ]; then
               echo "- **$other**: taken over unchanged from run $reuse_run"
             elif [ -n "$other_sha" ]; then
@@ -144,9 +183,11 @@ jobs:
 
   # Gate: nothing is published unless risk analysis and hardware test pass for this commit.
   # It also builds the firmware of this run (artifacts hil_firmware_epd7 / hil_firmware_epd13).
+  # Skipped on main if a dev deployment already tested the same files (see "plan").
   hil:
     name: "HIL gate"
     needs: plan
+    if: needs.plan.outputs.tested_run == ''
     uses: ./.github/workflows/hil-test.yml
     with:
       fw_version: ${{ needs.plan.outputs.fw_version }}
@@ -294,11 +335,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: [plan, hil, build_web, build_firmware]
     # Explicit conditions: build_firmware is normally skipped, and a skipped dependency would
-    # otherwise skip this job as well. The hardware test must have passed.
+    # otherwise skip this job as well. The hardware test must have passed, here or on dev.
     if: >-
       ${{ !cancelled()
       && needs.plan.result == 'success'
-      && needs.hil.result == 'success'
+      && (needs.hil.result == 'success' || (needs.hil.result == 'skipped' && needs.plan.outputs.tested_run != ''))
       && needs.build_web.result == 'success'
       && (needs.build_firmware.result == 'success' || needs.build_firmware.result == 'skipped') }}
     permissions:
@@ -313,10 +354,23 @@ jobs:
 
       # -> fw/hil_firmware_epd7/firmware.bin, fw/hil_firmware_epd13/firmware.bin
       - name: Download the firmware the hardware test ran with
+        if: needs.plan.outputs.tested_run == ''
         uses: actions/download-artifact@v8
         with:
           pattern: hil_firmware_*
           path: fw
+
+      # Same layout as above, from the dev run that tested these files.
+      - name: Download the firmware the hardware test on dev ran with
+        if: needs.plan.outputs.tested_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ needs.plan.outputs.tested_run }}
+        run: |
+          set -euo pipefail
+          for target in epd7 epd13; do
+            gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name "hil_firmware_$target" --dir "fw/hil_firmware_$target"
+          done
 
       # -> fw/offline_firmware_<channel>_<target>/firmware.bin
       - name: Download the rebuilt firmware of the other channel (fallback)

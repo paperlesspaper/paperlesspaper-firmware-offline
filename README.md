@@ -33,7 +33,9 @@ Requires Chrome, Edge or Opera (Web Bluetooth / Web Serial). The Web UI is in Ge
 4. Open **Firmware** and flash the **Offline Firmware**.
 5. Send an image in **Bild**, or set up WiFi and a download URL in **Gerät**.
 
-Still running the cloud firmware? It only offers Bluetooth after a factory reset: press the reset button 5 times in quick succession and wait for the WiFi setup screen. Alternatively, flash over USB (**Firmware → USB-Kabel**).
+Still running the cloud firmware? It only offers Bluetooth after a factory reset: press the reset button 5 times in quick succession and wait for the WiFi setup screen. Alternatively, flash over USB (**Firmware → USB-Kabel**). The wooden cover can stay on: only the reset button is needed.
+
+The frame is not offered as a serial port? On Windows the driver of its USB bridge may be missing: the frame is then listed in the Device Manager under "Other devices" as "CP2102N USB to UART Bridge Controller". Install the [CP210x Universal Windows Driver](https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers?tab=downloads) (right-click `silabser.inf` → Install). The Web UI explains this when no port is selected and can check whether the frame is connected at all (**USB prüfen**).
 
 ## Cloud vs. offline firmware
 
@@ -53,10 +55,10 @@ You can switch between both firmwares at any time in the Web UI.
 
 | Action | Result |
 | :--- | :--- |
-| Press reset **once** | Setup mode: Bluetooth is active for 30 seconds. Without a connection the frame continues with a normal update. |
+| Press reset **once** | Setup mode: Bluetooth is active for 30 seconds. Without a connection the frame continues with a normal update. On battery power the frame ends a connection after 10 minutes without input. |
 | Press reset **twice** | Skips setup mode and downloads the image again, even if it has not changed. |
 | Press reset **5 times** | Factory reset: deletes settings, WiFi credentials and the stored image. |
-| Hold the small button, press reset, release the small button | Bootloader mode for USB flashing. |
+| Hold the small button, press reset, release the small button | Bootloader mode by hand. The small button sits under the wooden cover. Only needed if USB flashing does not start otherwise (older firmware, or a firmware that no longer starts): the Web UI switches the frame to the bootloader itself, a sleeping frame after one press of reset. |
 
 Multiple presses count when each press follows the previous one within 3 seconds.
 
@@ -90,17 +92,40 @@ Display resolution: 800×480 (7.3", landscape) or 1200×1600 (13.3", portrait). 
 Details:
 
 - **URL:** `http://` or `https://`, up to 128 characters. HTTPS certificates are not verified.
+- **File size:** up to 6 MB (less if the flash of the frame is smaller). The server does not have to send `Content-Length`: responses with `Transfer-Encoding: chunked` are supported.
 - **Check:** the button **Prüfen** next to the download URL in the Web UI tells you whether the frame can show the picture and how it will be placed.
 - **Login:** optional HTTP Basic Auth for the image download.
 - **Caching:** if the server sends an `ETag` (preferred) or `Last-Modified` header, an unchanged image is neither written to flash nor refreshed on the display.
 - **Server-controlled interval:** the response header `X-OpenPaper-Sleep-Seconds` (60–86400) sets the time until the next wake-up.
-- **Errors:** if the download fails, the frame shows an error message and tries again after 1 to 5 minutes.
+- **Errors:** if the download fails, the frame shows an error message once and tries again after 5 minutes, then 15 minutes, then 1 hour, and from then on at the update interval (at least 1 hour). A press of the reset button starts over.
+- **Not set up:** without WiFi credentials or a download URL, and without a picture sent over Bluetooth, the frame shows a setup hint once and sleeps until the reset button is pressed.
 - **Motion wake-up (optional):** the frame also updates when it is moved.
-- **Low battery:** below 4.0 V without USB power the frame skips updates to protect the batteries.
+- **Low battery:** below 4.0 V (4 AA cells) without USB power the frame skips updates to protect the batteries. It says so once on the display.
+
+### Device status headers
+
+The frame sends its status as request headers with every request to the image URL and to the Settings-JSON-URL. A server can record them without waking the frame an extra time.
+
+| Header | Example | Meaning |
+| :--- | :--- | :--- |
+| `X-OpenPaper-Battery-Millivolts` | `5120` | Battery voltage in mV, measured at wake-up before WiFi is switched on |
+| `X-OpenPaper-USB-Connected` | `0` | `1` if USB power is connected |
+| `X-OpenPaper-Charging` | `0` | `1` if the batteries are being charged (only with charger mode switched on) |
+| `X-OpenPaper-Firmware-Version` | `0.1.35` | Firmware version |
+| `X-OpenPaper-Display` | `epd7` | `epd7` (7.3") or `epd13` (13.3") |
+| `X-OpenPaper-Wakeup` | `timer` | Why the frame woke up: `timer`, `button`, `motion` or `reset` |
+| `X-OpenPaper-WiFi-RSSI` | `-67` | WiFi signal strength in dBm |
+| `X-OpenPaper-Orientation` | `0` | Side the frame stands on, `0`–`3`. `0` and `2` are opposite sides, `1` and `3` as well; between the two pairs the frame is turned by 90°. Missing if the sensor gave no reading. |
+
+If the server answers with a redirect, the headers are not sent to the redirect target. Exception: a permanent redirect (301) from `http://` to `https://`.
 
 ## Remote settings (JSON)
 
-Enter a **Settings-JSON-URL** in the Web UI to manage the frame from your server without Bluetooth. The frame loads the file on every wake-up, before the image. If the server sends `Last-Modified`, an unchanged file is skipped.
+Enter a **Settings-JSON-URL** in the Web UI to manage the frame from your server without Bluetooth. The frame loads the file on every wake-up, before the image. If the server sends an `ETag` (preferred) or `Last-Modified` header, an unchanged file is skipped.
+
+- **URL:** `http://` or `https://`, up to 128 characters. Redirects are followed as for the image.
+- **Size:** up to 4 KB. A larger file is ignored.
+- **Login:** the HTTP Basic Auth of the image download is sent with this request only if the settings file is on the same server as the image (same protocol, host and port). Otherwise the file must be readable without a login.
 
 ```json
 {
@@ -121,7 +146,7 @@ Enter a **Settings-JSON-URL** in the Web UI to manage the frame from your server
 | `httpAuthUser`, `httpAuthPassword` | HTTP Basic Auth for the image download |
 | `motionWakeup` | Update when the frame is moved |
 | `autoRotation` | Rotate the image according to the orientation sensor |
-| `chargerMode` | Charge the batteries over USB-C. **Only with NiMH batteries!** |
+| `chargerMode` | `false` switches charging over USB-C off. `true` is ignored: charging normal batteries is dangerous, so it can only be switched on in the Web UI (**Gerät**), which asks whether NiMH batteries are inserted. |
 
 All keys are optional. The button **Prüfen** in the Web UI shows the file and applies it directly.
 
@@ -154,7 +179,7 @@ The cloud firmware authenticates with device-specific AWS IoT certificates in th
 - **Restore:** **Zertifikate wiederherstellen** writes a backup, or a file from customer support, back to the frame.
 - **Back to the cloud firmware:** **Firmware → Original Cloud Firmware → Flashen**.
 
-Backup and restore need a USB cable and bootloader mode (see [Buttons](#buttons)).
+Backup and restore need a USB cable. The wooden cover can stay on: if needed, the Web UI asks for a press of reset.
 
 ## Build from source
 
@@ -169,7 +194,7 @@ pio run -e epd7 -t upload     # 7.3" display
 pio run -e epd13 -t upload    # 13.3" display
 ```
 
-Put the frame into bootloader mode before uploading. You can also flash `.pio/build/<env>/firmware.bin` in the Web UI (**Firmware → Eigene Firmware**).
+Put the frame into bootloader mode before uploading (see [Buttons](#buttons)). You can also flash `.pio/build/<env>/firmware.bin` in the Web UI (**Firmware → Eigene Firmware**).
 
 > [!CAUTION]
 > Do not erase the whole flash and do not upload a filesystem image. Both delete the certificates.
@@ -191,9 +216,9 @@ All characteristics: read, notify. UUID suffix: `-7b0e-11ed-a1eb-0242ac120002`.
 | UUID | Name | Value |
 | :--- | :--- | :--- |
 | `4c578d4c` | WiFi connected | One byte: `1` connected, `0` not connected |
-| `4c578d4d` | WiFi info | JSON, e.g. `{"ip": "192.168.1.20", "rssi": -65}`; `{}` when not connected |
-| `5131a3fc` | WiFi scan | `SSID´RSSI´´SSID2´RSSI2´´…`, filled after the command `SCAN_WIFI` |
-| `60000001` | System info | JSON with `voltage` (mV), `usb`, `charging`, `version`, `fw` (`offline`), `display` (`7` or `13`). Updated every 10 seconds. |
+| `4c578d4d` | WiFi info | JSON, e.g. `{"ip": "192.168.1.20", "rssi": -65, "ssid": "MyWiFi"}`; `{}` when not connected |
+| `5131a3fc` | WiFi scan | `SSID´RSSI´´SSID2´RSSI2´´…`, filled after the command `SCAN_WIFI`. Up to about 500 bytes: read the value after the notification, a notification carries only MTU − 3 bytes. |
+| `60000001` | System info | JSON with `voltage` (mV), `usb`, `charging`, `version`, `fw` (`offline`), `display` (`7` or `13`). Updated every 10 seconds. `setupTimeout: true` announces that the frame ends the setup mode (client idle for 10 minutes on battery power). |
 
 #### WiFi: `0515c086-7b0c-11ed-a1eb-0242ac120002`
 
@@ -244,7 +269,7 @@ Commands are written as text to the upload command characteristic (`10000004`).
 
 | Bytes | Content |
 | :--- | :--- |
-| 0–1 | Bytes in the RAM buffer. `0xFFFF` = upload error, `0xFFFE` = sequence error. |
+| 0–1 | Bytes in the RAM buffer. `0xFFFF` = upload error, `0xFFFE` = sequence error, `0xFFFD` = `START` refused because the display is still being refreshed (try again a few seconds later). |
 | 2–5 | CRC32 of the RAM buffer. After `END` / `END_FW`: CRC32 of the stored image or firmware. |
 | 6–7 | Maximum payload per packet |
 
@@ -270,7 +295,9 @@ A disconnect during an upload discards it.
 
 **USB flashing**
 
-The Web UI uses `esptool-js` over Web Serial at 921600 baud. The firmware is written to `0x10000`, the certificates to `0x3B0000`.
+The board has no auto reset. While the frame starts (it prints `[MAIN] test mode check...`) and while it is in setup mode, the character `B` on the serial line (115200 baud) restarts it into the ROM bootloader, if USB power is connected. The cloud firmware has the same command. The Web UI sends it, so the boot button is not needed: a frame in setup mode switches at once, a sleeping frame after one press of reset. The Web UI tries the first for 4 seconds and then asks for a press of reset. The boot button (under the wooden cover) is only the fallback for a firmware without this command or one that no longer starts.
+
+The Web UI uses `esptool-js` over Web Serial at 921600 baud. The firmware is written to `0x10000` (app slot `app0`), the certificates to `0x3B0000`. With a firmware, `otadata` (`0xE000`) is erased as well, so that the bootloader starts `app0`: after an update over the air or over Bluetooth the frame may start `app1`.
 
 </details>
 
@@ -278,16 +305,18 @@ The Web UI uses `esptool-js` over Web Serial at 921600 baud. The firmware is wri
 
 Every push to `main` and `dev` is tested on real hardware before it is published. [`deploy.yml`](.github/workflows/deploy.yml) calls [`hil-test.yml`](.github/workflows/hil-test.yml) and deploys only if the risk analysis and the hardware test pass. The test can also be started manually.
 
+A merge of `dev` into `main` is not tested twice: if `main` has exactly the files of a `dev` deployment that passed, the firmware of that deployment is published with its version and the hardware test is skipped. If `main` differs (a direct commit, a merge with other changes), the test runs. A manual run of `deploy.yml` with **force_hil** runs it in any case.
+
 <details>
 <summary><b>Details</b></summary>
 
 - **Hardware:** the tests (`hil/`) run on the same self-hosted Windows runner and devices as the [cloud firmware](https://github.com/paperlesspaper/paperlesspaper-firmware). Relays, serial ports and log masking come from its `testbench/` folder. The workflow checks that repository out to `_cloud/`. Locally, a checkout next to this repository is found automatically, or set `CLOUD_TESTBENCH_ROOT`.
-- **Steps per device:** flash the candidate over BLE (from cloud or offline firmware) → factory reset with 5 power cycles → check the BLE interface → use the device through the web UI (see below) → flash the cloud production firmware back. The last step always runs because the cloud tests depend on it.
+- **Steps per device:** flash the candidate over BLE (from cloud or offline firmware) → factory reset with 5 power cycles → check the BLE interface → use the device through the web UI (see below) → flash over USB without the boot button and check that the flashed firmware starts from `app0` → flash the cloud production firmware back. The last step always runs because the cloud tests depend on it.
 - **Web UI test** (`webtest/`): the built page (`web/dist`) runs in a headless Chromium and is used like a person would use it. `navigator.bluetooth` is replaced by `webtest/shim.js`, which forwards every Bluetooth operation to the test.
   - *Without hardware* (job "Web UI test", before anything is flashed): the page talks to a simulated device (`webtest/simdevice.py`, the BLE protocol of `src/main.cpp`). Covered: connection, settings and their validation, Wi-Fi, picture upload for both displays including packet loss, errors and abort, firmware update and refused firmware files, the check of the download URL.
   - *With hardware* (`test_10` to `test_13` in `hil/`): the same page reaches the real device over the PC's Bluetooth (`hil/web_bridge.py`): settings survive a power cycle, a picture prepared in the browser arrives in the flash unchanged (CRC from the serial log) and is displayed, the firmware update of the page installs the candidate.
   - *Consistency* (`webtest/test_consistency.py`, same job): the limits and BLE identifiers written down in the firmware, the web UI, the simulated device and the hardware tests must agree. Change them in all places together.
-  - Not covered: Chrome's own Bluetooth stack and device chooser, and flashing over USB.
+  - Not covered: Chrome's own Bluetooth stack and device chooser, and the USB code of the page (Web Serial, `esptool-js`). Flashing over USB is tested with `esptool` and the same steps (`test_14`).
   ```powershell
   pip install -r webtest/requirements.txt
   python -m playwright install chromium

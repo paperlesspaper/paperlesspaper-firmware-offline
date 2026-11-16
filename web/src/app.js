@@ -2,7 +2,8 @@ import { GeneratePicture } from "./GeneratePicture.js";
 import { DeviceBleInterface, validateEsp32FirmwareBinary } from "./DeviceBleInterface.js";
 import { ESPLoader, Transport } from "esptool-js";
 import { checkImageForDevice, imageHeaderComplete } from "./imageCheck.js";
-import { $, setStatus, onStatus, currentStatus, setProgress, onProgress, setLed, initNavigation, navigate, getCurrentView, initDialogs, openDialog, closeDialog, showMessage, initCollapsibles, nextFrame, byteLength, setFieldError, formatDuration, downloadBlob } from "./ui.js";
+import { bootloaderAnswers, requestBootloader, readBootLog } from "./serialBoot.js";
+import { $, setStatus, onStatus, currentStatus, setProgress, onProgress, setLed, initNavigation, navigate, getCurrentView, initDialogs, openDialog, closeDialog, showMessage, initCollapsibles, setCollapsible, nextFrame, byteLength, setFieldError, formatDuration, downloadBlob } from "./ui.js";
 
 const EXPECTED_FW_VERSION = typeof __EXPECTED_FW_VERSION__ !== "undefined" ? __EXPECTED_FW_VERSION__ : "0.1.0";
 
@@ -21,10 +22,16 @@ const DEVICE_LIMITS = {
   settingStringBytes: 128, // MAX_SETTING_STRING_LEN
   timeoutMin: 60, // MIN_SLEEP_TIMEOUT
   timeoutMax: 2592000, // MAX_SLEEP_TIMEOUT (30 days)
+  batteryOffMv: 4000, // BAT_OFF_VALUE: below this the device only sleeps when it runs on batteries
 };
 
+// 4 AA cells (alkaline or NiMH): about 1.1 V per cell is nearly empty for both.
+const BATTERY_LOW_MV = 4400;
+
 // Flash layout (part.csv)
-const APP_ADDRESS = 0x10000;
+const APP_ADDRESS = 0x10000; // app0, the first of the two app slots
+const OTADATA_ADDRESS = 0xe000; // selects the app slot the bootloader starts
+const OTADATA_SIZE = 0x2000;
 const SPIFFS_ADDRESS = 0x3b0000;
 const SPIFFS_SIZE = 0x40000; // 256 KB
 
@@ -254,6 +261,7 @@ function syncUi() {
 
   systemStatusBar.hidden = !connected;
   notConnectedState.hidden = connected;
+  $("deviceFoot").classList.toggle("view-narrow", !connected); // as wide as the box above it
   controls.hidden = !connected;
 
   // Editor
@@ -377,9 +385,9 @@ async function runTransfer({ title, abortable = false, successTitle = "Fertig", 
   let ok = false;
   try {
     await nextFrame();
-    await task();
+    const outcome = await task();
     ok = true;
-    finishTransfer({ ok: true, title: successTitle, message: currentStatus.text, sticky: stickySuccess });
+    finishTransfer({ ok: true, title: outcome?.title || successTitle, message: currentStatus.text, sticky: stickySuccess });
   } catch (err) {
     console.error(err);
     if (transfer.aborted) {
@@ -409,11 +417,23 @@ window.addEventListener("beforeunload", (e) => {
 // Connection
 // ---------------------------------------------------------------------------
 
-function setChip(valueId, text, tone = "neutral") {
+/**
+ * Sets one value of the device strip. `short` is the form for narrow screens, where all four
+ * values share one row (shown by CSS in place of the text).
+ */
+function setChip(valueId, text, tone = "neutral", short = "") {
   const valueEl = $(valueId);
   if (!valueEl) return;
   valueEl.textContent = text;
+  if (short && short !== text) valueEl.dataset.short = short;
+  else delete valueEl.dataset.short;
   valueEl.parentElement.dataset.tone = tone;
+}
+
+/** "epd13-9c139ecf61a8" -> "epd13-…61a8": the type and the end of the id tell the frames apart. */
+function shortDeviceName(name) {
+  const match = /^([a-z]+\d+)-([0-9a-f]{6,})$/i.exec(name);
+  return match ? `${match[1]}-…${match[2].slice(-4)}` : name;
 }
 
 bleInterface.onStatusChange = (text, level) => {
@@ -432,7 +452,8 @@ bleInterface.onConnected = (isPaperL) => {
   applyDisplayProfile(is13Inch, true);
 
   document.title = is13Inch ? 'paper L Setup (13.3")' : 'paper 7 Setup (7.3")';
-  setChip("systemDeviceName", `${bleInterface.bleDevice?.name || "E-Paper"} · ${is13Inch ? '13.3"' : '7.3"'}`);
+  const deviceName = bleInterface.bleDevice?.name || "E-Paper";
+  setChip("systemDeviceName", `${deviceName} · ${is13Inch ? '13.3"' : '7.3"'}`, "neutral", shortDeviceName(deviceName));
 
   state.conn = "connected";
   syncUi();
@@ -457,7 +478,7 @@ bleInterface.onDisconnected = () => {
   firmwareVersionWarning.hidden = true;
   setChip("systemFwVersion", "--");
   setChip("systemVoltage", "-- V");
-  setChip("systemChargerStatus", "Prüfe…");
+  setChip("systemChargerStatus", "Prüfe…", "neutral", "…");
 
   finishWifiScan();
   wifiList.replaceChildren();
@@ -501,7 +522,7 @@ function updateFirmwareVersionUI(versionInfo) {
   } else {
     firmwareVersionWarningTitle.textContent = "⚠️ Veraltete oder abweichende Firmware erkannt";
     firmwareVersionWarningText.textContent = `Auf deinem E-Paper ist nicht die aktuelle Offline-Firmware v${EXPECTED_FW_VERSION} installiert. Ein Update wird empfohlen.`;
-    setChip("systemFwVersion", "Veraltet ⚠", "warn");
+    setChip("systemFwVersion", "Veraltet ⚠", "warn", "alt ⚠");
   }
 }
 
@@ -524,21 +545,22 @@ bleInterface.onSystemStatusChange = (info) => {
   const v = hasVoltage ? (info.voltage / 1000).toFixed(2) : null;
 
   if (!hasVoltage) {
-    setChip("systemVoltage", "Keine Batterie", "warn");
+    setChip("systemVoltage", "Keine Batterie", "warn", "keine");
   } else if (info.charging) {
-    setChip("systemVoltage", `${v} V · lädt`, "ok");
-  } else if (info.voltage > 3300) {
+    setChip("systemVoltage", `${v} V · lädt`, "ok", `${v} V`);
+  } else if (info.voltage >= BATTERY_LOW_MV) {
     setChip("systemVoltage", `${v} V`, "ok");
-  } else if (info.voltage > 2800) {
-    setChip("systemVoltage", `${v} V`, "warn");
+  } else if (info.voltage >= DEVICE_LIMITS.batteryOffMv) {
+    setChip("systemVoltage", `${v} V · schwach`, "warn", `${v} V`);
   } else {
-    setChip("systemVoltage", `${v} V · schwach`, "err");
+    // Without USB power the device would not be awake at this voltage.
+    setChip("systemVoltage", `${v} V · leer`, "err", `${v} V`);
   }
 
   if (info.usb) {
-    setChip("systemChargerStatus", info.charging ? "Verbunden · lädt" : "Verbunden", info.charging ? "ok" : "info");
+    setChip("systemChargerStatus", info.charging ? "Verbunden · lädt" : "Verbunden", info.charging ? "ok" : "info", info.charging ? "lädt" : "an");
   } else {
-    setChip("systemChargerStatus", "Nicht verbunden");
+    setChip("systemChargerStatus", "Nicht verbunden", "neutral", "aus");
   }
 
   if (info.display === "13" || info.display === 13 || info.display === "epd13") {
@@ -568,7 +590,8 @@ bleInterface.onWifiInfoChange = (info) => {
   if (!info.ip) return;
   infoIp.textContent = info.ip;
   infoRssi.textContent = info.rssi + " dBm";
-  infoSsid.textContent = info.ssid || "Netzwerk";
+  // Older firmware does not report the network name: the device then joined the one in the field.
+  infoSsid.textContent = info.ssid || wifiSsid.value.trim() || "Netzwerk";
   if (info.rssi > -60) infoQuality.textContent = "Ausgezeichnet";
   else if (info.rssi > -75) infoQuality.textContent = "Gut";
   else infoQuality.textContent = "Schwach";
@@ -1042,12 +1065,18 @@ $("btnApplyJson").addEventListener("click", async () => {
   if (tempJsonSettings.httpAuthUser !== undefined) settingHttpAuthUser.value = tempJsonSettings.httpAuthUser;
   if (tempJsonSettings.httpAuthPassword !== undefined) settingHttpAuthPassword.value = tempJsonSettings.httpAuthPassword;
   if (tempJsonSettings.motionWakeup !== undefined) settingMotionWakeup.checked = Boolean(tempJsonSettings.motionWakeup);
-  if (tempJsonSettings.chargerMode !== undefined) settingChargerMode.checked = Boolean(tempJsonSettings.chargerMode);
+  // Like the device: the file can switch the charger off, never on. Switching it on needs the
+  // confirmation that rechargeable batteries are inserted (the switch on this page).
+  const chargerIgnored = Boolean(tempJsonSettings.chargerMode) && !settingChargerMode.checked;
+  if (tempJsonSettings.chargerMode === false) settingChargerMode.checked = false;
   if (tempJsonSettings.autoRotation !== undefined) settingAutoRotation.checked = Boolean(tempJsonSettings.autoRotation);
   updateTimeoutHint();
   markSettingsDirty(true);
 
-  await saveDeviceSettings();
+  const saved = await saveDeviceSettings();
+  if (saved && chargerIgnored) {
+    setStatus("Einstellungen gespeichert. „chargerMode: true“ aus der Datei wurde nicht übernommen: Der Charger Mode lässt sich nur mit dem Schalter einschalten.", "warn");
+  }
 });
 
 // --- Switches that are stored immediately ---
@@ -1079,7 +1108,7 @@ settingChargerMode.addEventListener("change", async () => {
       tone: "warn",
       text: "Der Charger Mode lädt die eingelegten Zellen über USB-C. Aktiviere ihn nur, wenn NiMH-Akkus eingelegt sind.",
       detail: "Normale Batterien (z. B. Alkaline) dürfen nicht geladen werden – sie können auslaufen oder überhitzen.",
-      okLabel: "Ja, NiMH-Akkus eingelegt",
+      okLabel: "Ja, NiMH eingelegt",
       cancelLabel: "Abbrechen",
       okVariant: "danger",
     });
@@ -1723,6 +1752,47 @@ async function requestSerialPort() {
   return await navigator.serial.requestPort({ filters: SERIAL_FILTERS });
 }
 
+const DRIVER_LINK = { href: "https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers?tab=downloads", label: "Treiber von Silicon Labs ↗" };
+
+/** No port was picked: without its driver the device is missing in the list of the chooser. */
+async function explainMissingPort() {
+  const canCheck = "usb" in navigator;
+  const check = await showMessage({
+    title: "E-Paper nicht in der Liste?",
+    text: "Dann erkennt dein PC den USB-Anschluss des E-Paper nicht. Unter Windows fehlt meist der Treiber „CP210x Universal Windows Driver“: Im Geräte-Manager steht das E-Paper dann unter „Andere Geräte“. Auch ein USB-Kabel ohne Datenleitungen kommt in Frage.",
+    link: DRIVER_LINK,
+    okLabel: canCheck ? "USB prüfen" : "OK",
+    cancelLabel: canCheck ? "Schließen" : null,
+  });
+  if (!check || !canCheck) return;
+
+  // WebUSB lists the device also without a driver.
+  let device = null;
+  try {
+    device = await navigator.usb.requestDevice({ filters: SERIAL_FILTERS.map((f) => ({ vendorId: f.usbVendorId, productId: f.usbProductId })) });
+  } catch (e) {
+    if (e?.name !== "NotFoundError") {
+      setStatus("USB-Prüfung nicht möglich: " + e.message, "warn");
+      return;
+    }
+  }
+  if (device) {
+    await showMessage({
+      title: "Treiber fehlt",
+      tone: "warn",
+      text: "Das E-Paper ist per USB angeschlossen. Fehlte es eben in der Liste der seriellen Anschlüsse, ist sein Treiber nicht installiert. Installiere ihn und starte den Vorgang erneut.",
+      detail: device.productName || "",
+      link: DRIVER_LINK,
+    });
+  } else {
+    await showMessage({
+      title: "Kein E-Paper am USB gefunden",
+      tone: "warn",
+      text: "Dein PC sieht das E-Paper nicht. Nimm ein USB-C-Kabel mit Datenleitungen, stecke es direkt am PC an und prüfe, ob es am E-Paper ganz eingesteckt ist.",
+    });
+  }
+}
+
 /** Must run directly inside a click handler (the port chooser needs a user gesture). */
 async function pickSerialPort() {
   try {
@@ -1730,6 +1800,7 @@ async function pickSerialPort() {
   } catch (e) {
     if (e?.name === "NotFoundError" || e?.name === "AbortError") {
       setStatus("Kein COM-Port ausgewählt – Vorgang abgebrochen.", "warn");
+      await explainMissingPort();
     } else {
       setStatus("USB-Verbindung fehlgeschlagen: " + e.message, "err");
     }
@@ -1750,12 +1821,48 @@ const loaderTerminal = {
   write: (data) => console.log(data),
 };
 
+// What to do after a firmware update (shown with the result)
+const RECONNECT_NEXT_STEP = "Drücke danach die Reset-Taste am E-Paper und verbinde dich wieder per Bluetooth.";
+const CLOUD_NEXT_STEP = "Mit der Cloud-Firmware ist das E-Paper über die paperlesspaper-App erreichbar.";
+
+const BOOT_BUTTON_STEPS = "Holzabdeckung abnehmen, kleinen Knopf halten, Reset kurz drücken, kleinen Knopf loslassen";
+const BOOTLOADER_HELP = `Der Bootloader des E-Paper antwortet nicht. Starte den Vorgang erneut und drücke nach der Aufforderung kurz Reset. Klappt es weiter nicht, bringe das Gerät von Hand in den Bootloader: ${BOOT_BUTTON_STEPS} (Hilfe: „USB: Probleme beheben“).`;
+const AUTO_BOOTLOADER_MS = 4000;
+
+/** Brings the device into the bootloader (see serialBoot.js) and connects to it. */
 async function openEspLoader(port) {
   await disconnectSerialMonitor();
   setStatus("Verbindung mit USB-Gerät wird hergestellt…", "busy");
+  let mode = "default_reset"; // boards with auto reset
+  if (await bootloaderAnswers(port, loaderTerminal)) {
+    mode = "no_reset";
+  } else {
+    setStatus("Prüfe, ob das E-Paper von selbst in den Bootloader wechselt…", "busy");
+    let entered = await requestBootloader(port, { timeoutMs: AUTO_BOOTLOADER_MS });
+    if (!entered) {
+      setStatus(`Das E-Paper wechselt nicht von selbst in den Bootloader. Drücke jetzt kurz die Reset-Taste (großer Knopf).`, "busy");
+      entered = await requestBootloader(port, {
+        onUnsupported: () => setStatus(`Diese Firmware wechselt nicht von selbst in den Bootloader. Jetzt von Hand: ${BOOT_BUTTON_STEPS}.`, "busy"),
+      });
+    }
+    if (entered) {
+      mode = "no_reset";
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+
+  setStatus("Lade Bootloader…", "busy");
   // tracing off: it hex-dumps every packet to the console and into memory
   const transport = new Transport(port, false);
   const esploader = new ESPLoader({ transport, baudrate: 921600, terminal: loaderTerminal });
+  try {
+    await esploader.main(mode);
+  } catch (err) {
+    await closeTransport(transport);
+    if (err?.name === "InvalidStateError" || err?.message?.includes("already open")) throw err;
+    console.error(err);
+    throw new Error(BOOTLOADER_HELP);
+  }
   return { transport, esploader };
 }
 
@@ -1768,25 +1875,57 @@ async function closeTransport(transport) {
   }
 }
 
-async function flashSerial(buffer, address, label, port) {
+/**
+ * Waits for the start of a firmware that was just flashed and tells whether it is the one that runs.
+ * expected: { offline, version } of the flashed firmware, null if unknown (own file).
+ */
+async function confirmFirmwareStart(port, label, expected) {
+  setProgress(null);
+  setStatus(`${label} ist geschrieben. Drücke jetzt kurz die Reset-Taste am E-Paper, damit sie startet…`, "busy");
+  let boot = null;
+  try {
+    boot = await readBootLog(port);
+  } catch (err) {
+    console.warn("Boot log:", err);
+  }
+  if (!boot) {
+    setStatus(`${label} ist geschrieben, der Start wurde aber nicht erkannt. Drücke die Reset-Taste und verbinde dich per Bluetooth: Die Geräteleiste zeigt dann die laufende Firmware.`, "warn");
+    return { title: "Geschrieben, Start nicht geprüft" };
+  }
+
+  const running = `${boot.offline ? "Offline" : "Cloud"}-Firmware v${boot.version}`;
+  const rightSlot = boot.slot === null || boot.slot === "app0";
+  const rightFirmware = !expected || (expected.offline === boot.offline && (!expected.version || expected.version === boot.version));
+  if (!rightSlot || !rightFirmware) {
+    throw new Error(`Auf dem E-Paper startet die ${running}${boot.slot ? ` (${boot.slot})` : ""}, nicht die eben geflashte Firmware. Bitte erneut flashen.`);
+  }
+  const next = boot.offline ? "Verbinde dich jetzt per Bluetooth. Wird das E-Paper nicht gefunden, drücke vorher noch einmal die Reset-Taste." : CLOUD_NEXT_STEP;
+  setStatus(`✅ Die ${running} läuft auf dem E-Paper. ${next}`, "ok");
+  return undefined;
+}
+
+async function flashSerial(buffer, address, label, port, expected = null) {
   let transport = null;
   try {
     const loader = await openEspLoader(port);
     transport = loader.transport;
     const esploader = loader.esploader;
 
-    setStatus("Lade Bootloader…", "busy");
-    await esploader.main();
+    const fileArray = [{ data: buffer, address }];
+    if (address === APP_ADDRESS) {
+      fileArray.push({ data: new Uint8Array(OTADATA_SIZE).fill(0xff), address: OTADATA_ADDRESS });
+    }
 
     setStatus(`Flashe ${label}…`, "busy");
     await esploader.writeFlash({
-      fileArray: [{ data: buffer, address }],
+      fileArray,
       flashMode: "keep",
       flashFreq: "keep",
       flashSize: "keep",
       eraseAll: false,
       compress: true,
       reportProgress: (fileIndex, written, total) => {
+        if (fileIndex !== 0) return; // otadata: a few bytes
         const percent = Math.round((written / total) * 100);
         setProgress(percent);
         setStatus(`Flashe ${label} per USB: ${percent}%...`, "busy");
@@ -1800,13 +1939,16 @@ async function flashSerial(buffer, address, label, port) {
     }
 
     setProgress(100);
-    setStatus(`✅ ${label} erfolgreich geflasht! Drücke jetzt den Reset-Knopf am E-Paper, um zu starten.`, "ok");
   } catch (err) {
     console.error(err);
     throw new Error(describeSerialError(err));
   } finally {
     await closeTransport(transport);
   }
+
+  if (address === APP_ADDRESS) return confirmFirmwareStart(port, label, expected);
+  setStatus(`✅ ${label} erfolgreich geflasht! Drücke jetzt den Reset-Knopf am E-Paper, um zu starten.`, "ok");
+  return undefined;
 }
 
 // --- USB flash confirmation dialog (custom firmware / SPIFFS restore) ---
@@ -1931,9 +2073,9 @@ btnConfirmOta.addEventListener("click", async () => {
     const buffer = await downloadFirmware(await fetchWithProxy(url), "Die Cloud-Firmware");
 
     if (method === "ble") {
-      await bleInterface.uploadFirmware(buffer);
+      await bleInterface.uploadFirmware(buffer, CLOUD_NEXT_STEP);
     } else {
-      await flashSerial(buffer, APP_ADDRESS, "Original Cloud Firmware", port);
+      return flashSerial(buffer, APP_ADDRESS, "Original Cloud Firmware", port, { offline: false });
     }
   });
 });
@@ -1975,9 +2117,10 @@ btnConfirmOfflineOta.addEventListener("click", async () => {
     const buffer = await downloadFirmware(res, "Die Offline-Firmware");
 
     if (method === "ble") {
-      await bleInterface.uploadFirmware(buffer);
+      await bleInterface.uploadFirmware(buffer, RECONNECT_NEXT_STEP);
     } else {
-      await flashSerial(buffer, APP_ADDRESS, "Offline Firmware", port);
+      // a local build may load the firmware of the published site: its version is not known here
+      return flashSerial(buffer, APP_ADDRESS, "Offline Firmware", port, { offline: true, version: RELEASE_CHANNEL === "local" ? null : EXPECTED_FW_VERSION });
     }
   });
 });
@@ -2019,7 +2162,7 @@ fwInput.addEventListener("change", async (e) => {
       okVariant: "signal",
     });
     if (!confirmed) return;
-    await runTransfer({ title: "Firmware wird installiert", abortable: true, successTitle: "Firmware installiert", failTitle: "Firmware-Update fehlgeschlagen", stickySuccess: true }, () => bleInterface.uploadFirmware(buffer));
+    await runTransfer({ title: "Firmware wird installiert", abortable: true, successTitle: "Firmware installiert", failTitle: "Firmware-Update fehlgeschlagen", stickySuccess: true }, () => bleInterface.uploadFirmware(buffer, RECONNECT_NEXT_STEP));
   } else {
     openUsbFlashDialog(buffer, file.name, (file.size / 1024).toFixed(1) + " KB", APP_ADDRESS, "Firmware");
   }
@@ -2057,9 +2200,6 @@ async function backupSpiffsSerial(port) {
     const loader = await openEspLoader(port);
     transport = loader.transport;
     const esploader = loader.esploader;
-
-    setStatus("Lade Bootloader…", "busy");
-    await esploader.main();
 
     setStatus("Lese SPIFFS Zertifikat-Partition aus…", "busy");
     const spiffsData = await esploader.readFlash(SPIFFS_ADDRESS, SPIFFS_SIZE, (packet, current, total) => {
@@ -2153,7 +2293,7 @@ function appendSerialLog(text) {
 
 function updateSerialMonitorUi() {
   const active = Boolean(serialMonitor);
-  btnToggleSerialMonitor.textContent = active ? "Monitor trennen" : "Monitor verbinden";
+  btnToggleSerialMonitor.textContent = active ? "Stoppen" : "Starten";
   btnToggleSerialMonitor.classList.toggle("btn-neu-danger-text", active);
 }
 
@@ -2314,7 +2454,7 @@ async function initReleaseChannel() {
 
   const btnVersion = $("btnVersion");
   $("versionLabel").textContent = IS_DEV_CHANNEL ? "Dev" : "Main";
-  btnVersion.dataset.channel = RELEASE_CHANNEL;
+  btnVersion.dataset.channel = RELEASE_CHANNEL; // dev: amber
   btnVersion.setAttribute("aria-label", `Version: ${CHANNEL_LABEL[RELEASE_CHANNEL]} (${RELEASE_CHANNEL}). Version wechseln`);
   btnVersion.hidden = false;
   btnVersion.addEventListener("click", openVersionDialog);
@@ -2397,6 +2537,20 @@ window.addEventListener("appinstalled", () => {
 initNavigation();
 initDialogs();
 initCollapsibles();
+// Links to one section of the help open that section.
+document.querySelectorAll("[data-help-target]").forEach((link) => {
+  link.addEventListener("click", (e) => {
+    e.preventDefault();
+    const section = $(link.dataset.helpTarget).closest("[data-collapsible]");
+    navigate("hilfe");
+    setCollapsible(section, true);
+    section.scrollIntoView({ block: "start" });
+  });
+});
+// With room for two columns the picture settings stand open next to the picture.
+if (window.matchMedia("(min-width: 900px)").matches) {
+  setCollapsible($("imageSettingsDetails"), true);
+}
 renderPaletteEditor();
 updateSliderOutputs();
 setOtaMode("ble");

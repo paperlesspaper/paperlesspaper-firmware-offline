@@ -1,4 +1,4 @@
-// Generic UI helpers: status dock, progress, navigation, dialogs, collapsibles.
+// Generic UI helpers: status toast and log, progress, navigation, dialogs, collapsibles.
 // No device logic in here – see app.js.
 
 export const $ = (id) => document.getElementById(id);
@@ -23,18 +23,17 @@ export function setLed(el, level) {
 }
 
 // ---------------------------------------------------------------------------
-// Status line + log
+// Status: toast + log
 // ---------------------------------------------------------------------------
 
 const statusEl = $("status");
 const statusLed = $("statusLed");
 const statusLogOutput = $("statusLogOutput");
-const statusDock = $("statusDock");
-const statusIcon = $("statusIcon");
 const statusLive = $("statusLive");
-const btnStatus = $("btnStatus");
-const dockLogToggle = $("dockLogToggle");
-const dockLog = $("dockLog");
+const toast = $("toast");
+const btnToastClose = $("btnToastClose");
+const btnLog = $("btnLog");
+const logPanel = $("logPanel");
 
 const MAX_LOG_LINES = 300;
 const LOG_PREFIX = { err: "✗", warn: "!", ok: "✓" };
@@ -64,7 +63,33 @@ function appendLog(text, level) {
 }
 
 /**
- * Sets the one persistent status line.
+ * How long a message stays on screen. A running task ("busy") stays until the next message
+ * replaces it, an error until it is closed.
+ */
+const TOAST_MS = { idle: 4000, ok: 4000, warn: 8000 };
+let toastTimer = 0;
+let toastsOn = false; // messages while the page starts only go to the log
+setTimeout(() => {
+  toastsOn = true;
+}, 0);
+
+function hideToast() {
+  clearTimeout(toastTimer);
+  if (toast) toast.hidden = true;
+}
+
+function showToast(level) {
+  if (!toast) return;
+  clearTimeout(toastTimer);
+  toast.dataset.level = level; // tints the toast in the status colour
+  toast.hidden = false;
+  if (TOAST_MS[level]) toastTimer = setTimeout(hideToast, TOAST_MS[level]);
+}
+
+if (btnToastClose) btnToastClose.addEventListener("click", hideToast);
+
+/**
+ * Reports the current state: one toast that always shows the latest message, plus a line in the log.
  * @param {string} text
  * @param {"idle"|"busy"|"ok"|"warn"|"err"} level
  */
@@ -74,10 +99,9 @@ export function setStatus(text, level = "idle") {
   currentStatus.level = level;
   if (statusEl) statusEl.textContent = message;
   setLed(statusLed, level);
-  setLed(statusIcon, level); // the button in the header always shows the current state
   if (statusLive) statusLive.textContent = message;
-  if (statusDock) statusDock.dataset.level = level; // tints the panel in the status colour
-  if (level === "err") setStatusPanel(true); // an error must not go unnoticed
+  if (!message) hideToast();
+  else if (toastsOn) showToast(level);
   appendLog(message, level);
   statusListeners.forEach((fn) => fn(message, level));
 }
@@ -87,19 +111,8 @@ export function onStatus(fn) {
   return () => statusListeners.delete(fn);
 }
 
-/** Shows or hides the status line below the header bar. */
-export function setStatusPanel(open) {
-  if (!statusDock) return;
-  statusDock.hidden = !open;
-  if (btnStatus) btnStatus.setAttribute("aria-expanded", String(open));
-}
-
-if (btnStatus) {
-  btnStatus.addEventListener("click", () => setStatusPanel(statusDock.hidden));
-}
-
-// The header changes its height (dev banner, status panel, log). Sticky elements and the
-// scroll padding follow the real height.
+// The header changes its height (dev banner). Sticky elements and the scroll padding follow
+// the real height.
 const appBar = document.querySelector(".app-bar");
 if (appBar && typeof ResizeObserver !== "undefined") {
   new ResizeObserver(() => {
@@ -107,12 +120,16 @@ if (appBar && typeof ResizeObserver !== "undefined") {
   }).observe(appBar);
 }
 
-if (dockLogToggle && dockLog) {
-  dockLogToggle.addEventListener("click", () => {
-    const open = dockLog.hidden;
-    dockLog.hidden = !open;
-    dockLogToggle.setAttribute("aria-expanded", String(open));
-    if (open) statusLogOutput.scrollTop = statusLogOutput.scrollHeight;
+// Log: small button at the end of the "Gerät" view
+if (btnLog && logPanel) {
+  btnLog.addEventListener("click", () => {
+    const open = logPanel.hidden;
+    logPanel.hidden = !open;
+    btnLog.setAttribute("aria-expanded", String(open));
+    if (open) {
+      statusLogOutput.scrollTop = statusLogOutput.scrollHeight;
+      logPanel.scrollIntoView({ block: "nearest" });
+    }
   });
 }
 
@@ -120,20 +137,20 @@ if (dockLogToggle && dockLog) {
 // Progress
 // ---------------------------------------------------------------------------
 
-const dockProgress = $("dockProgress");
-const dockProgressFill = $("dockProgressFill");
-const dockPercent = $("dockPercent");
+const toastProgress = $("toastProgress");
+const toastProgressFill = $("toastProgressFill");
+const toastPercent = $("toastPercent");
 const progressListeners = new Set();
 
 /** @param {number|null} percent 0-100, or null to hide the progress display */
 export function setProgress(percent) {
   const active = typeof percent === "number" && Number.isFinite(percent);
   const value = active ? Math.max(0, Math.min(100, Math.round(percent))) : null;
-  if (dockProgress) dockProgress.hidden = !active;
-  if (dockPercent) dockPercent.hidden = !active;
+  if (toastProgress) toastProgress.hidden = !active;
+  if (toastPercent) toastPercent.hidden = !active;
   if (active) {
-    dockProgressFill.style.width = value + "%";
-    dockPercent.textContent = value + "%";
+    toastProgressFill.style.width = value + "%";
+    toastPercent.textContent = value + "%";
   }
   progressListeners.forEach((fn) => fn(value));
 }
@@ -229,6 +246,7 @@ const messageDialog = $("messageDialog");
 const messageTitle = $("messageTitle");
 const messageText = $("messageText");
 const messageDetail = $("messageDetail");
+const messageLink = $("messageLink");
 const messageOk = $("messageOk");
 const messageCancel = $("messageCancel");
 let messageQueue = Promise.resolve();
@@ -245,8 +263,9 @@ let messageQueue = Promise.resolve();
  * @param {string} [opts.okLabel]
  * @param {string|null} [opts.cancelLabel]  null = plain alert with a single button
  * @param {"primary"|"signal"|"danger"} [opts.okVariant]
+ * @param {{href: string, label: string}|null} [opts.link]  opens in a new tab
  */
-export function showMessage({ title, text = "", detail = "", tone = "neutral", okLabel = "OK", cancelLabel = null, okVariant = "primary" }) {
+export function showMessage({ title, text = "", detail = "", tone = "neutral", okLabel = "OK", cancelLabel = null, okVariant = "primary", link = null }) {
   const run = () =>
     new Promise((resolve) => {
       messageTitle.textContent = (tone === "neutral" ? "" : "⚠️ ") + title;
@@ -256,6 +275,9 @@ export function showMessage({ title, text = "", detail = "", tone = "neutral", o
       messageDetail.textContent = detail;
       messageDetail.hidden = !detail;
       messageDetail.className = "message-box" + (tone === "err" ? " tint-err" : tone === "warn" ? " tint-warn" : "");
+      messageLink.hidden = !link;
+      messageLink.firstElementChild.textContent = link?.label || "";
+      messageLink.firstElementChild.href = link?.href || "#";
       messageOk.textContent = okLabel;
       messageOk.className = `btn-neu btn-grow btn-neu-${okVariant}`;
       messageCancel.textContent = cancelLabel || "";

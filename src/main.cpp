@@ -21,9 +21,12 @@
 #include <Update.h>
 #include <WiFiClientSecure.h>
 #include <Wire.h>
+#include <esp_ota_ops.h>
 #include <rom/crc.h>
 #include <rom/rtc.h>
+#include <soc/lp_aon_reg.h>
 
+#include "chunked_decoder.h"
 #include "epaper_display.h"
 #include "types.h"
 
@@ -99,8 +102,31 @@
 #define DEFAULT_SLEEP 3600 // Default time how long to sleep after update
 #define FAILSAVE_TIMER 180 // Time to shutdown the device if no reaction or hangup
 #define SLEEP_RECALCULATION_PERIOD_SECONDS 30
-#define SETUP_MODE_TIMEOUT 30 // seconds to wait in setup mode for BLE connection before switching to fetch/refresh mode
-#define LED_DIM_VALUE 5       // brightness of led in percent (0-100)
+#define SETUP_MODE_TIMEOUT 30  // seconds to wait in setup mode for BLE connection before switching to fetch/refresh mode
+#define SETUP_IDLE_TIMEOUT 600 // seconds a connected BLE client may stay idle on battery power before the setup mode ends
+#define LED_DIM_VALUE 5        // brightness of led in percent (0-100)
+
+#define MAX_DOWNLOAD_SIZE 0x600000UL // largest picture file that is downloaded (6 MB), less if the flash is smaller
+#define WIFI_CONNECT_TIMEOUT 20      // seconds to wait for the WiFi connection
+#define MAX_SETTINGS_JSON_SIZE 4096  // largest settings JSON that is read
+
+// Results of downloadAndSaveFile() and loadImageFromWeb()
+#define DL_OK 0
+#define DL_NOT_MODIFIED 1
+#define DL_NO_MEMORY -1
+#define DL_REQUEST_FAILED -2 // no answer from the server (connection, DNS, TLS, timeout)
+#define DL_HTTP_STATUS -3    // the server answered, but not with a picture (404, 401, 500, ...)
+#define DL_INCOMPLETE -4     // the connection was lost during the download
+#define DL_TOO_LARGE -5      // the file does not fit into the flash
+#define DL_FLASH_ERROR -8
+
+#define EEPROM_DISPLAY_CONTENT_ADR 230
+#define DISPLAY_PICTURE 0    // a picture, or unknown
+#define DISPLAY_SETUP_HINT 1 // "not set up yet"
+#define DISPLAY_ERROR_TEXT 2 // "picture download failed"
+#define DISPLAY_BATTERY_EMPTY 3
+
+#define BAT_OFF_VALUE 4000 // mV (4 cells): below this the frame only sleeps when it runs on batteries
 
 #if DEBUG
 const bool DEBUG_FLAG = true;
@@ -169,6 +195,7 @@ SerialFlashFile jpgInFile;
 SerialFlashFile bleFile;
 SdFs sd;
 RTC_DATA_ATTR timeval previousWakeup = timeval{.tv_sec = 0, .tv_usec = 0};
+RTC_DATA_ATTR uint8_t failedUpdates = 0;
 JPEGDEC jpeg;
 
 NimBLECharacteristic *wifiConnectedCharacteristic;
@@ -193,10 +220,14 @@ bool bleUploadError = false;
 bool bleProtocolV2 = false;
 uint16_t blePeerMtu = 247;
 unsigned long lastDisconnectTime = 0;
+volatile unsigned long bleLastActivity = 0;
 volatile bool wifiScanRequested = false;
 bool periodicLedIsOn = false;
 bool downloadStart = true;
 volatile bool applyPending = false;
+volatile bool applyInProgress = false; // the display is being refreshed from the picture slot
+bool bleDisplayBusy = false;           // an upload START was refused for that reason
+bool batteryEmpty = false;
 bool bleImageApplied = false;
 volatile bool forceExitSetup = false;
 volatile bool isBleClientConnected = false;
@@ -518,7 +549,7 @@ void discardFlashSlot(SerialFlashFile &file) {
    }
 }
 
-bool prepareFlashSlot(const char *name, uint32_t requiredSize, SerialFlashFile &outFile) {
+bool prepareFlashSlot(const char *name, uint32_t requiredSize, SerialFlashFile &outFile, bool eraseSlot = true) {
    prepareSpiBusForFlash();
    uint32_t targetSize = (requiredSize > IMAGE_SLOT_SIZE) ? requiredSize : IMAGE_SLOT_SIZE;
    if (!waitFlashReady())
@@ -534,8 +565,15 @@ bool prepareFlashSlot(const char *name, uint32_t requiredSize, SerialFlashFile &
          SerialFlash.eraseBlock(0);
          if (!waitFlashReady())
             return false;
-         if (strcmp(name, "tmp.bmp") != 0)
+         if (strcmp(name, "tmp.bmp") != 0) {
             SerialFlash.createErasable("tmp.bmp", IMAGE_SLOT_SIZE);
+            SerialFlashFile picture = SerialFlash.open("tmp.bmp");
+            if (picture) {
+               SerialFlash.eraseBlock(picture.getFlashAddress());
+               if (!waitFlashReady())
+                  return false;
+            }
+         }
          if (!SerialFlash.createErasable(name, targetSize)) {
             Serial.println("[FLASH] ERROR: Failed to allocate SerialFlash slot!");
             return false;
@@ -550,7 +588,7 @@ bool prepareFlashSlot(const char *name, uint32_t requiredSize, SerialFlashFile &
       bs = 65536;
    uint32_t baseAddr = outFile.getFlashAddress();
    uint32_t totalLen = outFile.size();
-   for (uint32_t off = 0; off < totalLen; off += bs) {
+   for (uint32_t off = 0; eraseSlot && off < totalLen; off += bs) {
       if (!waitFlashReady())
          return false;
       SerialFlash.eraseBlock(baseAddr + off);
@@ -558,6 +596,62 @@ bool prepareFlashSlot(const char *name, uint32_t requiredSize, SerialFlashFile &
          return false;
    }
    outFile.seek(0);
+   return true;
+}
+
+struct RawSlot
+{
+   uint32_t written = 0;       // bytes of the file stored so far
+   uint32_t erased = 0;        // bytes from the start of the slot that are erased
+   uint32_t blockSize = 65536; // erase unit of the flash
+   bool overflow = false;      // the file is larger than the slot
+};
+RawSlot rawSlot;
+
+static uint32_t downloadSlotSize() {
+   uint8_t id[5] = {0, 0, 0, 0, 0};
+   SerialFlash.readID(id);
+   const uint32_t capacity = SerialFlash.capacity(id);
+   uint32_t bs = SerialFlash.blockSize();
+   if (bs == 0)
+      bs = 65536;
+   // the flash also holds the directory (first block) and the picture slot (tmp.bmp)
+   const uint32_t reserved = bs + ((IMAGE_SLOT_SIZE + bs - 1) / bs) * bs;
+   uint32_t size = (capacity > reserved) ? ((capacity - reserved) / bs) * bs : 0;
+   if (size > MAX_DOWNLOAD_SIZE)
+      size = MAX_DOWNLOAD_SIZE;
+   if (size < IMAGE_SLOT_SIZE)
+      size = IMAGE_SLOT_SIZE;
+   return size;
+}
+
+static void rawSlotBegin() {
+   rawSlot = RawSlot();
+   const uint32_t bs = SerialFlash.blockSize();
+   if (bs != 0)
+      rawSlot.blockSize = bs;
+   saveFile.seek(0);
+}
+
+// Appends bytes of the downloaded file to the slot (saveFile).
+static bool rawSlotWrite(const uint8_t *data, uint32_t len) {
+   if (len == 0)
+      return true;
+   if (len > saveFile.size() - rawSlot.written) {
+      rawSlot.overflow = true;
+      return false;
+   }
+   while (rawSlot.erased < rawSlot.written + len) {
+      if (!waitFlashReady())
+         return false;
+      SerialFlash.eraseBlock(saveFile.getFlashAddress() + rawSlot.erased);
+      if (!waitFlashReady())
+         return false;
+      rawSlot.erased += rawSlot.blockSize;
+   }
+   if (saveFile.write(data, len) != len)
+      return false;
+   rawSlot.written += len;
    return true;
 }
 
@@ -855,9 +949,16 @@ static bool copyDisplayImage(SerialFlashFile &inFile, const char *outFileName) {
       return false;
    inFile.seek(0);
    uint8_t buf[2048];
-   int bytesRead;
-   while ((bytesRead = inFile.read(buf, sizeof(buf))) > 0) {
+
+   uint32_t remaining = (lastDownloadedBytes > 0 && lastDownloadedBytes <= inFile.size()) ? lastDownloadedBytes : inFile.size();
+   if (remaining > IMAGE_SLOT_SIZE)
+      remaining = IMAGE_SLOT_SIZE;
+   while (remaining > 0) {
+      const uint32_t bytesRead = inFile.read(buf, (remaining < sizeof(buf)) ? remaining : sizeof(buf));
+      if (bytesRead == 0)
+         break;
       rawOutFile.write(buf, bytesRead);
+      remaining -= bytesRead;
    }
    waitFlashReady();
    rawOutFile.close();
@@ -1057,6 +1158,7 @@ void WiFiEvent(WiFiEvent_t event) {
                JsonDocument doc;
                doc["ip"] = WiFi.localIP().toString();
                doc["rssi"] = WiFi.RSSI();
+               doc["ssid"] = WiFi.SSID(); // shown by the web UI next to the IP address
                String json;
                serializeJson(doc, json);
                wifiInfoCharacteristic->setValue(json.c_str());
@@ -1085,6 +1187,27 @@ void WiFiEvent(WiFiEvent_t event) {
       break;
    default:
       break;
+   }
+}
+
+// Restarts into the download mode of the ROM, as if the boot button was held during a reset.
+void rebootIntoRomBootloader() {
+   Serial.println("[SYSTEM] Rebooting into ROM Download Bootloader...");
+   Serial.flush();
+   delay(100);
+#ifdef LP_AON_SYS_CFG_REG
+   REG_WRITE(LP_AON_SYS_CFG_REG, REG_READ(LP_AON_SYS_CFG_REG) | LP_AON_FORCE_DOWNLOAD_BOOT);
+#endif
+   esp_restart();
+}
+
+void checkSerialBootloaderCommand() {
+   while (Serial.available()) {
+      const int received = Serial.read();
+      if ((received == 'B' || received == 'b') && systemData.usbConnected) {
+         Serial.println("[MAIN] Bootloader command 'B' received via Serial!");
+         rebootIntoRomBootloader();
+      }
    }
 }
 
@@ -1223,6 +1346,13 @@ int readIntFromFlash(int addr) {
    return data3.integer;
 }
 
+// The charger must never run unless the user switched "Charger Mode" on (normal batteries must
+// not be charged). So only a clean 1 in an initialised memory counts as on; an empty, older or
+// damaged memory means off.
+bool storedChargerMode() {
+   return EEPROM.read(499) == 42 && readIntFromFlash(EEPROM_SETTINGS_ADR + 550) == 1;
+}
+
 // Writes exactly the 4 bytes of the value. (Writing the whole 8 byte DataLayout
 // put 4 uninitialised bytes into the field that follows 5 bytes later.)
 void writeIntToFlash(int value, int startAddr, bool commit) {
@@ -1265,7 +1395,7 @@ void restoreSettingsToFlash(int startAddr) {
    settings.httpAuthUser = readStringFromFlash(startAddr + 285);
    settings.httpAuthPassword = readStringFromFlash(startAddr + 415);
    settings.motionWakeup = readIntFromFlash(startAddr + 545);
-   settings.chargerMode = readIntFromFlash(startAddr + 550);
+   settings.chargerMode = storedChargerMode();
    settings.settingsUrl = readStringFromFlash(startAddr + 555);
    settings.settingsLastModified = readStringFromFlash(startAddr + 685);
    int autoRot = readIntFromFlash(startAddr + 815);
@@ -1276,7 +1406,53 @@ void restoreSettingsToFlash(int startAddr) {
    }
 }
 
-String getRedirect(String url) {
+// Device status for the server, sent with every request to the image and settings URL.
+// The values are the ones taken at wake-up (battery voltage before WiFi was switched on).
+void addTelemetryHeaders(HTTPClient &http) {
+   http.addHeader("X-OpenPaper-Battery-Millivolts", String(systemData.vddValue));
+   http.addHeader("X-OpenPaper-USB-Connected", systemData.usbConnected ? "1" : "0");
+   http.addHeader("X-OpenPaper-Charging", systemData.charging ? "1" : "0");
+   http.addHeader("X-OpenPaper-Firmware-Version", SOFTWARE_VERSION);
+#ifdef EPD_TYPE_13INCH
+   http.addHeader("X-OpenPaper-Display", "epd13");
+#else
+   http.addHeader("X-OpenPaper-Display", "epd7");
+#endif
+   const char *wakeup = "reset";
+   if (systemData.wakeupCause == wakeup_reason_t::BUTTON)
+      wakeup = "button";
+   else if (systemData.wakeupCause == wakeup_reason_t::MOTION)
+      wakeup = "motion";
+   else if (systemData.wakeupCause == wakeup_reason_t::TIMER)
+      wakeup = "timer";
+   http.addHeader("X-OpenPaper-Wakeup", wakeup);
+   http.addHeader("X-OpenPaper-WiFi-RSSI", String(WiFi.RSSI()));
+   if (systemData.deviceOrientation >= 0) // -1: the sensor gave no valid reading
+      http.addHeader("X-OpenPaper-Orientation", String(systemData.deviceOrientation));
+}
+
+// "https://nas.local:8080/dir/file" -> "https://nas.local:8080"
+static String urlOrigin(const String &url) {
+   const int schemeEnd = url.indexOf("://");
+   if (schemeEnd < 0)
+      return "";
+   int end = url.length();
+   for (const char *stop = "/?#"; *stop; stop++) {
+      const int i = url.indexOf(*stop, schemeEnd + 3);
+      if (i >= 0 && i < end)
+         end = i;
+   }
+   String origin = url.substring(0, end);
+   origin.toLowerCase();
+   return origin;
+}
+
+// sendAuth: send the HTTP login of the picture download with the request
+String getRedirect(String url, bool sendAuth = true) {
+   // Redirects within one protocol are followed by the download itself. Only the change from
+   // http:// to https:// needs this extra request.
+   if (!url.startsWith("http://"))
+      return url;
    WiFiClientSecure secureClient;
    secureClient.setInsecure();
    HTTPClient http;
@@ -1288,13 +1464,14 @@ String getRedirect(String url) {
       http.begin(url);
    }
 
-   if (settings.httpAuthUser.length() > 0) {
+   if (sendAuth && settings.httpAuthUser.length() > 0) {
       http.setAuthorization(settings.httpAuthUser.c_str(), settings.httpAuthPassword.c_str());
    }
 
    const char *headerkeys[] = {"Location"};
    size_t headerkeyssize = sizeof(headerkeys) / sizeof(char *);
    http.collectHeaders(headerkeys, headerkeyssize);
+   addTelemetryHeaders(http);
    int httpCode = http.GET();
 
    if (httpCode > 0) {
@@ -1329,6 +1506,7 @@ class ServerCallbacks : public NimBLEServerCallbacks
       uint16_t peerMtu = pServer->getPeerMTU(connInfo.getConnHandle());
       if (peerMtu >= 23)
          blePeerMtu = peerMtu;
+      bleLastActivity = millis();
       isBleClientConnected = true;
       if (wifiSettings.bleInitOk) {
          Serial.printf("[BLE] restart advertising...\n[");
@@ -1356,6 +1534,7 @@ class ServerCallbacks : public NimBLEServerCallbacks
       bleExpectedFwBytes = 0;
       bleSeqError = false;
       bleUploadError = false;
+      bleDisplayBusy = false;
       bleProtocolV2 = false;
       if (wifiSettings.bleInitOk) {
          Serial.printf("\n[BLE] restart advertising...\n[");
@@ -1380,10 +1559,11 @@ static bool bleValueFits(const NimBLEAttValue &val, size_t maxLen, const char *n
 class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
 {
    void onRead(NimBLECharacteristic *pCharacteristic, NimBLEConnInfo &connInfo) override {
+      bleLastActivity = millis();
       std::string uuidStr = pCharacteristic->getUUID().toString();
       if (uuidStr == "10000004-0000-0000-0000-000000000001") {
          uint16_t currentPos = bleWriteBufferPos;
-         uint16_t statusPos = bleUploadError ? 0xFFFF : (bleSeqError ? 0xFFFE : currentPos);
+         uint16_t statusPos = bleDisplayBusy ? 0xFFFD : (bleUploadError ? 0xFFFF : (bleSeqError ? 0xFFFE : currentPos));
          uint32_t respCrc = 0;
          if (!bleUploadError && !bleSeqError) {
             if (bleWriteBuffer != nullptr && currentPos > 0) {
@@ -1413,6 +1593,7 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
    };
 
    void onWrite(NimBLECharacteristic *pCharacteristic, NimBLEConnInfo &connInfo) override {
+      bleLastActivity = millis();
       std::string uuidStr = pCharacteristic->getUUID().toString();
       NimBLEAttValue attrVal = pCharacteristic->getValue();
       const uint8_t *pData = attrVal.data();
@@ -1520,6 +1701,13 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
             Serial.println("[BLE] Protocol V2 negotiated.");
          }
          else if (cmd == "START") {
+            // The display is being refreshed from the picture slot: it must not be erased now.
+            if (applyPending || applyInProgress) {
+               Serial.println("[BLE] Upload START refused: display refresh in progress.");
+               bleDisplayBusy = true;
+               return;
+            }
+            bleDisplayBusy = false;
             if (fwUpdateInProgress) {
                Update.abort();
                fwUpdateInProgress = false;
@@ -1677,7 +1865,10 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
          else if (cmd == "RESET") {
             Serial.println("[BLE] Settings RESET received.");
             resetAll(true);
-            ESP.restart();
+            // Restart from the main loop (as after a firmware update), so that this write is still
+            // answered. A restart in here made the client report a failed reset.
+            fwRebootScheduledAt = millis();
+            fwRebootPending = true;
          }
          else if (cmd == "START_FW" || cmd.startsWith("START_FW:")) {
             if (bleFile) {
@@ -1688,6 +1879,7 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
                fwUpdateInProgress = false;
             }
             fwRebootPending = false;
+            bleDisplayBusy = false;
             bleUploadError = false;
             bleSeqError = false;
             bleExpectedSeq = 0;
@@ -1870,6 +2062,26 @@ class DescriptorCallbacks : public NimBLEDescriptorCallbacks
    }
 } dscCallbacks;
 
+// System info for the BLE client. setupTimeout: the frame ends the setup mode on its own.
+static String systemInfoJson(bool isCharging, bool setupTimeout = false) {
+   JsonDocument sysDoc;
+   sysDoc["voltage"] = systemData.vddValue;
+   sysDoc["usb"] = systemData.usbConnected;
+   sysDoc["charging"] = isCharging;
+   sysDoc["version"] = SOFTWARE_VERSION;
+   sysDoc["fw"] = "offline";
+#ifdef EPD_TYPE_13INCH
+   sysDoc["display"] = "13";
+#else
+   sysDoc["display"] = "7";
+#endif
+   if (setupTimeout)
+      sysDoc["setupTimeout"] = true;
+   String out;
+   serializeJson(sysDoc, out);
+   return out;
+}
+
 bool BleInit(String deviceId, bool enable) {
    if (!enable) {
       if (wifiSettings.bleInitOk) {
@@ -1982,24 +2194,11 @@ bool BleInit(String deviceId, bool enable) {
    wifiInfoCharacteristic->setValue("{}");
    wifiScanCharacteristic->setValue(wifiSsidScan);
 
-   JsonDocument sysDoc;
-   sysDoc["voltage"] = systemData.vddValue;
-   sysDoc["usb"] = systemData.usbConnected;
    bool isChargingInit = false;
    if (settings.chargerMode) {
       isChargingInit = chargeMode(settings.chargerMode);
    }
-   sysDoc["charging"] = isChargingInit;
-   sysDoc["version"] = SOFTWARE_VERSION;
-   sysDoc["fw"] = "offline";
-#ifdef EPD_TYPE_13INCH
-   sysDoc["display"] = "13";
-#else
-   sysDoc["display"] = "7";
-#endif
-   String sysOut;
-   serializeJson(sysDoc, sysOut);
-   systemInfoCharacteristic->setValue(sysOut.c_str());
+   systemInfoCharacteristic->setValue(systemInfoJson(isChargingInit).c_str());
 
    urlCharacteristic->setValue(settings.downloadUrl.c_str());
    char imgModeStr[16];
@@ -2064,8 +2263,9 @@ int downloadAndSaveFile(String fileName, String url) {
          http.addHeader("If-Modified-Since", settings.lastModified);
    }
 
-   const char *headerKeys[] = {"Last-Modified", "ETag", "X-OpenPaper-Sleep-Seconds"};
-   http.collectHeaders(headerKeys, 3);
+   const char *headerKeys[] = {"Last-Modified", "ETag", "X-OpenPaper-Sleep-Seconds", "Transfer-Encoding"};
+   http.collectHeaders(headerKeys, 4);
+   addTelemetryHeaders(http);
 
    int httpCode = http.GET();
    int srvSleep = http.header("X-OpenPaper-Sleep-Seconds").toInt();
@@ -2104,14 +2304,26 @@ int downloadAndSaveFile(String fileName, String url) {
             return 1; // 1 means not modified
          }
 
-         int len = http.getSize();
+         int len = http.getSize(); // -1: the server did not send the length
          httpFileSize = len;
-         if (!prepareFlashSlot(fileName.c_str(), (len > 0) ? (uint32_t)len : IMAGE_SLOT_SIZE, saveFile)) {
+         String transferEncoding = http.header("Transfer-Encoding");
+         transferEncoding.toLowerCase();
+         const bool chunked = transferEncoding.indexOf("chunked") >= 0;
+         if (chunked)
+            len = -1; // the end is marked by the last chunk
+
+         if (!prepareFlashSlot(fileName.c_str(), downloadSlotSize(), saveFile, false)) {
             http.end();
-            return -8;
+            return DL_FLASH_ERROR;
          }
-         Serial.print("[DL] Download Size: ");
-         Serial.println(len);
+         if (len > 0 && (uint32_t)len > saveFile.size()) {
+            Serial.printf("[DL] File too large (%d bytes, at most %u), not downloaded.\n", len, (unsigned)saveFile.size());
+            saveFile.close();
+            http.end();
+            return DL_TOO_LARGE;
+         }
+         rawSlotBegin();
+         Serial.printf("[DL] Download Size: %d%s\n", len, chunked ? " (chunked)" : "");
          int buff_size = 2048;
          unsigned char *buff = (unsigned char *)malloc(buff_size);
          if (buff == nullptr) {
@@ -2123,29 +2335,33 @@ int downloadAndSaveFile(String fileName, String url) {
             Serial.println("[DL] ERROR: Failed to allocate memory for download buffer!");
             discardFlashSlot(saveFile);
             http.end();
-            return -1;
+            return DL_NO_MEMORY;
          }
 
          WiFiClient *stream = http.getStreamPtr();
-         int write_buffer_pos = 0;
+         ChunkedDecoder chunkDecoder;
          unsigned long lastDataTime = millis();
          bool dlFailed = false;
 
-         while ((http.connected() || stream->available() > 0) && (len > 0 || len == -1)) {
+         // The body ends after Content-Length bytes, with the last chunk, or (neither given)
+         // when the server closes the connection.
+         while (!chunkDecoder.done() && (http.connected() || stream->available() > 0) && (len > 0 || len == -1)) {
             int available_bytes = stream->available();
             if (available_bytes > 0) {
-               int space_left = buff_size - write_buffer_pos;
-               int to_read = (available_bytes > space_left) ? space_left : available_bytes;
-               int c = stream->read(buff + write_buffer_pos, to_read);
+               int to_read = (available_bytes > buff_size) ? buff_size : available_bytes;
+               if (len > 0 && to_read > len)
+                  to_read = len;
+               int c = stream->read(buff, to_read);
                if (c > 0) {
                   lastDataTime = millis();
-                  write_buffer_pos += c;
                   if (len > 0) {
                      len -= c;
                   }
-                  if (write_buffer_pos >= buff_size) {
-                     saveFile.write(buff, buff_size);
-                     write_buffer_pos = 0;
+                  const bool stored = chunked ? chunkDecoder.feed(buff, c, rawSlotWrite) : rawSlotWrite(buff, c);
+                  if (!stored) {
+                     Serial.println(rawSlot.overflow ? "[DL] File does not fit into the flash" : "[DL] Body not readable or flash write failed");
+                     dlFailed = true;
+                     break;
                   }
                }
                else if (c < 0) {
@@ -2171,19 +2387,21 @@ int downloadAndSaveFile(String fileName, String url) {
             }
          }
 
-         // Flush any remaining data to flash
-         if (!dlFailed && write_buffer_pos > 0) {
-            saveFile.write(buff, write_buffer_pos);
-         }
          free(buff);
 
-         lastDownloadedBytes = saveFile.position();
-         if (dlFailed || WiFi.status() != WL_CONNECTED || lastDownloadedBytes == 0 ||
-             (httpFileSize > 0 && lastDownloadedBytes != (uint32_t)httpFileSize) || !waitFlashReady()) {
+         lastDownloadedBytes = rawSlot.written;
+         if (rawSlot.overflow) {
+            Serial.printf("[DL] File too large (more than %u bytes), discarding.\n", (unsigned)saveFile.size());
+            discardFlashSlot(saveFile);
+            http.end();
+            return DL_TOO_LARGE;
+         }
+         const bool complete = chunked ? chunkDecoder.done() : (httpFileSize <= 0 || lastDownloadedBytes == (uint32_t)httpFileSize);
+         if (dlFailed || WiFi.status() != WL_CONNECTED || lastDownloadedBytes == 0 || !complete || !waitFlashReady()) {
             Serial.printf("[DL] Download incomplete (%u / %d bytes), discarding.\n", lastDownloadedBytes, httpFileSize);
             discardFlashSlot(saveFile);
             http.end();
-            return -4;
+            return DL_INCOMPLETE;
          }
 
          tempLastModified = validator;
@@ -2194,12 +2412,13 @@ int downloadAndSaveFile(String fileName, String url) {
          saveFile.close();
       }
       else {
-         success = -2;
+         Serial.printf("[DL] Server answered with HTTP %d\n", httpCode);
+         success = DL_HTTP_STATUS;
       }
    }
    else {
-      Serial.println("[DL] Error on HTTP request");
-      success = -2;
+      Serial.printf("[DL] Error on HTTP request: %s\n", http.errorToString(httpCode).c_str());
+      success = DL_REQUEST_FAILED;
    }
    http.end();
    return success;
@@ -2350,23 +2569,29 @@ int loadImageFromWeb(String url, String fileName) {
    // int setImage = 0; // Trigger refresh
    int downloadOk = 0;
    String newUrl = getRedirect(url);
-   for (int i = 0; i <= 5; i++) {
+   const int maxAttempts = 3;
+   for (int attempt = 1; attempt <= maxAttempts; attempt++) {
       debugFS();
       downloadOk = downloadAndSaveFile(fileName, newUrl);
-      if (downloadOk == 0 || downloadOk == 1) {
+      if (downloadOk == DL_OK || downloadOk == DL_NOT_MODIFIED) {
          if (settings.forceDownload)
-            downloadOk = 0;
+            downloadOk = DL_OK;
          return downloadOk;
       }
+
+      if ((downloadOk != DL_REQUEST_FAILED && downloadOk != DL_INCOMPLETE) || attempt == maxAttempts)
+         break;
+      if (WiFi.status() != WL_CONNECTED) {
+         WiFi.disconnect(true);
+         WiFi.begin(wifiSettings.ssid.c_str(), wifiSettings.pss.c_str());
+         delay(3000);
+      }
       else {
-         if (WiFi.status() != WL_CONNECTED) {
-            WiFi.disconnect(true);
-            WiFi.begin(wifiSettings.ssid.c_str(), wifiSettings.pss.c_str());
-            delay(3000);
-         }
+         delay(1000);
       }
    }
-   return -1;
+   Serial.printf("[DL] Download failed (%d)\n", downloadOk);
+   return downloadOk;
 }
 
 String setLeadingZero(String input) {
@@ -2407,6 +2632,9 @@ void setDeviceUid() {
 // sleep x seconds
 void gotToDeepSleep(int wakeuptimeout, bool showScreen, bool motionWake) {
    Serial.printf("[MAIN] Going to Sleep for %d seconds (MotionWake: %d)\n", wakeuptimeout, motionWake);
+   // Standby: the charger is off and stays off (pin held low through deep sleep). Only if the
+   // user switched "Charger Mode" on, it keeps charging while the frame sleeps.
+   chargeMode(settings.chargerMode);
    checkOrientationInBackground(0, false);
    if (!settings.sleepDisabled)
       WiFi.disconnect(true);
@@ -2444,7 +2672,6 @@ void gotToDeepSleep(int wakeuptimeout, bool showScreen, bool motionWake) {
    pinMode(I2C_SDA_PIN, INPUT);
    pinMode(I2C_SCL_PIN, INPUT);
    pinMode(BAT_VOLT_EN_PIN, INPUT);
-   pinMode(CHG_EN_PIN, INPUT);
    pinMode(12, INPUT); // USB TEST PINS
    pinMode(13, INPUT); // USB TEST PINS
    if (settings.sleepDisabled) {
@@ -2733,38 +2960,35 @@ void checkOrientationInBackground(int setOrientValue, bool isRunning) {
 }
 
 bool chargeMode(bool enable) {
-   // charge pin high disables the charger (GND enabled)
+   // on  = enable pin released (input), the hold is lifted
+   // off = enable pin driven low and held, so it stays low through deep sleep
    bool chargeState = false;
    bool isCharging = false;
    pinMode(CHG_STAT_PIN, INPUT);
    delay(1);
    if (enable) {
       pinMode(CHG_EN_PIN, INPUT);
-      delay(2);
+      gpio_hold_dis((gpio_num_t)CHG_EN_PIN);
+      delay(5);
       chargeState = digitalRead(CHG_STAT_PIN);
       if (chargeState == LOW) {
-         Serial.println("[CHARGE] on - Charging");
+         Serial.println("[CHARGE] on - Charger ON");
          isCharging = true;
       }
       else {
-         Serial.println("[CHARGE] on - Charge Done");
-         digitalWrite(CHG_EN_PIN, LOW);
+         Serial.println("[CHARGE] on - Charger DONE");
+         isCharging = false;
       }
    }
    else {
+      digitalWrite(CHG_EN_PIN, LOW);
       pinMode(CHG_EN_PIN, OUTPUT);
-      digitalWrite(CHG_EN_PIN, HIGH);
-      delay(2);
-      chargeState = digitalRead(CHG_STAT_PIN);
-      if (chargeState == LOW) {
-         Serial.println("[CHARGE] off - Charging");
-         isCharging = true;
-      }
-      else {
-         Serial.println("[CHARGE] off - Charge Done");
-         digitalWrite(CHG_EN_PIN, LOW);
-      }
+      digitalWrite(CHG_EN_PIN, LOW);
+      gpio_hold_dis((gpio_num_t)CHG_EN_PIN); // renew an older hold
+      gpio_hold_en((gpio_num_t)CHG_EN_PIN);  // keeps the level while the chip sleeps
+      Serial.println("[CHARGE] off - Charge OFF");
    }
+   systemData.charging = isCharging;
    return isCharging;
 }
 
@@ -2784,6 +3008,8 @@ bool resetAll(bool resetWifi) {
    settings.timeout = DEFAULT_SLEEP;
    settings.httpAuthUser = "";
    settings.httpAuthPassword = "";
+   settings.chargerMode = false; // after a reset the charger is off until the user switches it on again
+   chargeMode(false);
    if (resetWifi) {
       writeStringToFlash("", 0);  // storing ssid at address 0
       writeStringToFlash("", 40); // storing pss at address 40
@@ -2890,6 +3116,33 @@ void logImageSlotCrc(const char *name) {
       f.close();
 }
 
+static uint8_t displayContent() {
+   return EEPROM.read(EEPROM_DISPLAY_CONTENT_ADR);
+}
+
+static void setDisplayContent(uint8_t content) {
+   if (EEPROM.read(EEPROM_DISPLAY_CONTENT_ADR) != content) {
+      EEPROM.write(EEPROM_DISPLAY_CONTENT_ADR, content);
+      EEPROM.commit();
+   }
+}
+
+int showStoredImage(const String &fileName) {
+   const int result = setImageFromFS(fileName);
+   if (result == 0)
+      setDisplayContent(DISPLAY_PICTURE);
+   return result;
+}
+
+static void showNotice(uint8_t content, const char *text, const char *text2 = "") {
+   if (displayContent() == content && !settings.forceDownload) {
+      Serial.println("[EPD] Notice is already on the display, not drawn again.");
+      return;
+   }
+   displaySetText(text, false, true, text2);
+   setDisplayContent(content);
+}
+
 void runSetupMode() {
    Serial.println("[MAIN] Setup Mode Triggered");
    prepareSpiBusForFlash();
@@ -2916,12 +3169,13 @@ void runSetupMode() {
          else {
             Serial.printf("[NETWORK] %d networks found\n", n);
             for (int i = 0; i < n; ++i) {
-               wifiSsidScan = wifiSsidScan + WiFi.SSID(i) + "´";
-               wifiSsidScan = wifiSsidScan + WiFi.RSSI(i) + "´´";
-               if (wifiSsidScan.length() > 460) {
+               String entry = WiFi.SSID(i) + "´" + String(WiFi.RSSI(i)) + "´´";
+               // a characteristic holds at most 512 bytes: a longer value would not be set at all
+               if (wifiSsidScan.length() + entry.length() > 490) {
                   wifiSsidScan = wifiSsidScan + "´...´...´";
                   break;
                }
+               wifiSsidScan = wifiSsidScan + entry;
             }
          }
          if (wifiScanCharacteristic) {
@@ -2989,6 +3243,7 @@ void runSetupMode() {
       }
 
       if (applyPending) {
+         applyInProgress = true;
          applyPending = false;
          bleImageApplied = true;
          Serial.println("[MAIN] Applying new image within setup mode...");
@@ -2997,16 +3252,20 @@ void runSetupMode() {
             accUpdateOrient();
          }
          logImageSlotCrc("tmp.bmp");
-         setImageFromFS("tmp.bmp");
+         showStoredImage("tmp.bmp");
+         applyInProgress = false;
       }
 
       if (fwRebootPending && (millis() - fwRebootScheduledAt >= 1200)) {
          fwRebootPending = false;
-         Serial.println("[BLE] Rebooting into updated firmware now...");
+         Serial.println("[BLE] Rebooting now (firmware update or factory reset)...");
          Serial.flush();
          delay(50);
          ESP.restart();
       }
+
+      if (!isBleTransferActive)
+         checkSerialBootloaderCommand();
 
       if (forceExitSetup) {
          Serial.println("[MAIN] Manual exit requested via Web UI. Switching to fetch/refresh mode.");
@@ -3023,6 +3282,18 @@ void runSetupMode() {
          lastDisconnectTime = millis(); // Reset timer while connected
       }
 
+      const unsigned long lastActivity = bleLastActivity; // read before millis(): it changes in the BLE task
+      if (isBleClientConnected && !isBleTransferActive && !fwRebootPending && !systemData.usbConnected &&
+          millis() - lastActivity > SETUP_IDLE_TIMEOUT * 1000UL) {
+         Serial.printf("[MAIN] BLE client idle for %d s on battery power. Leaving setup mode.\n", SETUP_IDLE_TIMEOUT);
+         if (systemInfoCharacteristic) {
+            systemInfoCharacteristic->setValue(systemInfoJson(systemData.charging, true).c_str());
+            systemInfoCharacteristic->notify();
+         }
+         delay(500);
+         break;
+      }
+
       static unsigned long lastTelemetryUpdate = 0;
       if (!isBleTransferActive && millis() - lastTelemetryUpdate > 10000) {
          lastTelemetryUpdate = millis();
@@ -3033,22 +3304,8 @@ void runSetupMode() {
             isCharging = chargeMode(settings.chargerMode);
          }
 
-         JsonDocument sysDoc;
-         sysDoc["voltage"] = systemData.vddValue;
-         sysDoc["usb"] = systemData.usbConnected;
-         sysDoc["charging"] = isCharging;
-         sysDoc["version"] = SOFTWARE_VERSION;
-         sysDoc["fw"] = "offline";
-#ifdef EPD_TYPE_13INCH
-         sysDoc["display"] = "13";
-#else
-         sysDoc["display"] = "7";
-#endif
-         String sysOut;
-         serializeJson(sysDoc, sysOut);
-
          if (systemInfoCharacteristic) {
-            systemInfoCharacteristic->setValue(sysOut.c_str());
+            systemInfoCharacteristic->setValue(systemInfoJson(isCharging).c_str());
             if (pServer->getConnectedCount() > 0) {
                systemInfoCharacteristic->notify();
             }
@@ -3059,18 +3316,24 @@ void runSetupMode() {
    }
 }
 
+// Connects to the stored WiFi. A failed attempt is not repeated in the same wake-up.
+bool ensureWifi() {
+   static bool failed = false;
+   if (WiFi.status() == WL_CONNECTED)
+      return true;
+   if (failed || wifiSettings.ssid.length() == 0)
+      return false;
+   WiFi.begin(wifiSettings.ssid.c_str(), wifiSettings.pss.c_str());
+   for (int i = 0; WiFi.status() != WL_CONNECTED && i < WIFI_CONNECT_TIMEOUT * 10; i++) {
+      delay(100);
+   }
+   failed = WiFi.status() != WL_CONNECTED;
+   return !failed;
+}
+
 int processHttpDownload(String fileName) {
    int dlSuccess = 0;
-   if (WiFi.status() != WL_CONNECTED) {
-      WiFi.begin(wifiSettings.ssid.c_str(), wifiSettings.pss.c_str());
-      int WLcount = 0;
-      while (WiFi.status() != WL_CONNECTED && WLcount < 200) {
-         delay(100);
-         ++WLcount;
-      }
-   }
-
-   if (WiFi.status() == WL_CONNECTED) {
+   if (ensureWifi()) {
       dlSuccess = loadImageFromWeb(settings.downloadUrl, "tmp_raw.bin");
       if (dlSuccess == 0) {
          if (processImageFile("tmp_raw.bin", fileName.c_str())) {
@@ -3116,6 +3379,30 @@ void initFirstBoot(void) {
    }
 }
 
+// Collects an HTTP body up to a size limit (target of HTTPClient::writeToStream()).
+class LimitedBody : public Stream
+{
+ public:
+   explicit LimitedBody(size_t maxLength) : limit(maxLength) {}
+   size_t write(uint8_t c) override { return write(&c, 1); }
+   size_t write(const uint8_t *data, size_t len) override {
+      if (text.length() + len > limit) {
+         overflow = true;
+         return 0;
+      }
+      return text.concat((const char *)data, len) ? len : 0;
+   }
+   int available() override { return 0; }
+   int read() override { return -1; }
+   int peek() override { return -1; }
+
+   String text;
+   bool overflow = false;
+
+ private:
+   size_t limit;
+};
+
 void fetchRemoteSettings() {
    if (settings.settingsUrl.length() == 0)
       return;
@@ -3123,20 +3410,55 @@ void fetchRemoteSettings() {
       return;
 
    Serial.println("[HTTP] Fetching remote JSON settings...");
+   // The login belongs to the server of the picture: it is only sent if the settings file is
+   // on that server as well (same protocol, host and port).
+   const String settingsOrigin = urlOrigin(settings.settingsUrl);
+   const bool sendAuth = settings.httpAuthUser.length() > 0 && settingsOrigin.length() > 0 &&
+                         settingsOrigin == urlOrigin(settings.downloadUrl);
+   const String url = getRedirect(settings.settingsUrl, sendAuth);
+
+   WiFiClientSecure secureClient;
+   secureClient.setInsecure();
    HTTPClient http;
-   http.begin(settings.settingsUrl);
+   http.setTimeout(10000);
+   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+   if (url.startsWith("https:")) {
+      http.begin(secureClient, url);
+   }
+   else {
+      http.begin(url);
+   }
+   if (sendAuth) {
+      http.setAuthorization(settings.httpAuthUser.c_str(), settings.httpAuthPassword.c_str());
+   }
    if (settings.settingsLastModified.length() > 0) {
-      http.addHeader("If-Modified-Since", settings.settingsLastModified);
+      if (settings.settingsLastModified.startsWith("etag:"))
+         http.addHeader("If-None-Match", settings.settingsLastModified.substring(5));
+      else
+         http.addHeader("If-Modified-Since", settings.settingsLastModified);
    }
 
-   const char *headerKeys[] = {"Last-Modified"};
-   http.collectHeaders(headerKeys, 1);
+   const char *headerKeys[] = {"Last-Modified", "ETag"};
+   http.collectHeaders(headerKeys, 2);
+   addTelemetryHeaders(http);
 
    int httpCode = http.GET();
    if (httpCode == HTTP_CODE_OK) {
-      String payload = http.getString();
+      LimitedBody body(MAX_SETTINGS_JSON_SIZE);
+      const bool tooLarge = http.getSize() > MAX_SETTINGS_JSON_SIZE;
+      const int received = tooLarge ? 0 : http.writeToStream(&body);
+      if (tooLarge || body.overflow) {
+         Serial.printf("[HTTP] Settings JSON is larger than %d bytes, ignored.\n", MAX_SETTINGS_JSON_SIZE);
+         http.end();
+         return;
+      }
+      if (received < 0) {
+         Serial.printf("[HTTP] Reading the settings JSON failed: %s\n", http.errorToString(received).c_str());
+         http.end();
+         return;
+      }
       JsonDocument doc;
-      DeserializationError error = deserializeJson(doc, payload);
+      DeserializationError error = deserializeJson(doc, body.text);
       if (!error) {
          bool changed = false;
 
@@ -3157,8 +3479,15 @@ void fetchRemoteSettings() {
             changed = true;
          }
          if (doc["chargerMode"].is<bool>()) {
-            settings.chargerMode = doc["chargerMode"];
-            changed = true;
+            // Only switched off from here. Switching it on needs the confirmation in the web UI
+            // that rechargeable batteries are inserted.
+            if (!doc["chargerMode"].as<bool>()) {
+               settings.chargerMode = false;
+               changed = true;
+            }
+            else if (!settings.chargerMode) {
+               Serial.println("[HTTP] chargerMode: true ignored, switch it on over Bluetooth.");
+            }
          }
          if (doc["autoRotation"].is<bool>()) {
             settings.autoRotation = doc["autoRotation"];
@@ -3175,7 +3504,10 @@ void fetchRemoteSettings() {
                   settings.lastModified = "";
                }
                changed = true;
-               settings.imageMode = 1;
+               // Same rule as for a URL written over BLE: an empty URL does not switch a frame
+               // that shows a picture sent over Bluetooth to the (then failing) download.
+               if (newDownloadUrl.length() > 0)
+                  settings.imageMode = 1;
             }
          }
          if (doc["httpAuthUser"].is<String>()) {
@@ -3193,9 +3525,17 @@ void fetchRemoteSettings() {
             }
          }
 
-         if (http.hasHeader("Last-Modified")) {
-            String v = http.header("Last-Modified");
-            settings.settingsLastModified = (v.length() <= MAX_SETTING_STRING_LEN) ? v : String("");
+         // validator for the next request, ETag preferred (as for the picture)
+         String etag = http.header("ETag");
+         etag.trim();
+         String lastMod = http.header("Last-Modified");
+         lastMod.trim();
+         String validator = (etag.length() > 0) ? ("etag:" + etag) : lastMod;
+         if (validator.length() > MAX_SETTING_STRING_LEN) {
+            validator = (lastMod.length() <= MAX_SETTING_STRING_LEN) ? lastMod : String("");
+         }
+         if (validator != settings.settingsLastModified) {
+            settings.settingsLastModified = validator;
             changed = true;
          }
 
@@ -3265,7 +3605,7 @@ void test() {
 }
 
 void setup() {
-   chargeMode(false); // enable charge mode
+   chargeMode(false); // charger off until the stored setting is known
    powerSupplyDisplay(false);
    pinMode(BAT_VOLT_EN_PIN, OUTPUT);
 #ifdef EPD_TYPE_13INCH
@@ -3277,16 +3617,30 @@ void setup() {
    pinMode(LED_PIN, OUTPUT);
    digitalWrite(LED_PIN, LOW);
    Serial.begin(115200);
+   Serial.println("[MAIN] test mode check..."); // flashers wait for this line, then send 'B'
    analogReadResolution(12);
    systemData.usbConnected = usbCheckConnect();
    delay(80);
 
    systemData.vddValue = readVDD(false);
-   if (!systemData.usbConnected && systemData.vddValue < 4000) {
+   checkSerialBootloaderCommand();
+   if (!systemData.usbConnected && systemData.vddValue < BAT_OFF_VALUE) {
       if (DEBUG_FLAG)
          Serial.printf("[MAIN] Bat low protection: %dmV\n", systemData.vddValue);
       analogWrite(LED_PIN, LED_DIM_VALUE);
-      gotToDeepSleep(86000, false, false);
+      // Empty rechargeable batteries must be able to charge when USB is plugged in while the
+      // frame sleeps: take the charger setting from the memory (off unless the user switched it on).
+      bool drawNotice = false;
+      if (EepromInit(EEPROM_SIZE)) {
+         settings.chargerMode = storedChargerMode();
+         // The display says once that the batteries are empty (see loop()). After that, and
+         // with an empty memory, the frame only sleeps.
+         drawNotice = EEPROM.read(499) == 42 && readIntFromFlash(EEPROM_SETTINGS_ADR + 5) != 0 &&
+                      displayContent() != DISPLAY_BATTERY_EMPTY;
+      }
+      if (!drawNotice)
+         gotToDeepSleep(86000, false, false);
+      batteryEmpty = true;
    }
    systemData.wakeupCause = getWakeupReason();
    tickerFailsave.once_ms(FAILSAVE_TIMER * 1000, timeoutFailsafe, 0);
@@ -3327,9 +3681,11 @@ void setup() {
 
    Serial.printf("[MAIN] INIT Device V: %s\n", firmwareVersion);
    Serial.println("[MAIN] FW: offline"); // lets tools tell this firmware apart from the cloud firmware
+   const esp_partition_t *runningApp = esp_ota_get_running_partition();
+   Serial.printf("[MAIN] App slot: %s\n", runningApp ? runningApp->label : "unknown"); // app0 or app1
    if (DEBUG_FLAG)
       Serial.printf("[MAIN] Current counter value: %u VDD: %d\n", StartCounter, systemData.vddValue);
-   if (!SPIFFS.begin(true)) {
+   if (!SPIFFS.begin(false)) {
       Serial.println("[MEM] SPIFFS initialisation failed!");
    }
    if (StartCounter >= 2) {
@@ -3364,11 +3720,16 @@ void setup() {
    // test(); //-----------------test---------please remove
 #endif
 
-   if (buttonWake && !settings.skipSetupMode) {
+   if (buttonWake && !settings.skipSetupMode && !batteryEmpty) {
       tickerFailsave.detach();
       BleInit(CLIENT_ID, true);
       // updateDisplayAsync("connect_bt");
       runSetupMode();
+      if (fwRebootPending) {
+         // a restart was requested just as the setup mode ended
+         Serial.flush();
+         ESP.restart();
+      }
 
       Serial.println("[MAIN] Setup Mode Completed or Timeout");
       BleInit(CLIENT_ID, false); // Stop BLE advertising to save memory
@@ -3394,6 +3755,16 @@ void setup() {
    delay(10);
 }
 
+static int retryDelaySeconds(uint8_t failures, int regularSleep) {
+   if (failures <= 1)
+      return constrain(regularSleep, 60, 300);
+   if (failures == 2)
+      return 900;
+   if (failures == 3)
+      return 3600;
+   return max(settings.timeout, 3600);
+}
+
 void loop() {
 
    if (downloadStart) {
@@ -3403,6 +3774,21 @@ void loop() {
       if (settings.autoRotation) {
          accUpdateOrient();
          checkOrientationInBackground(systemData.deviceOrientation, true);
+      }
+      else {
+         systemData.deviceOrientation = accInit(); // only reported to the server, the picture is not rotated
+      }
+
+      if (batteryEmpty) {
+         // Remembered before it is drawn: if the voltage breaks down during the refresh, the
+         // frame must not try again and again.
+         setDisplayContent(DISPLAY_BATTERY_EMPTY);
+         if (settings.lastModified.length() > 0) {
+            settings.lastModified = ""; // with new batteries the picture is drawn again, also if it has not changed
+            saveSettingsToFlash(EEPROM_SETTINGS_ADR);
+         }
+         displaySetText("Battery empty - please replace or recharge", false);
+         gotToDeepSleep(86000, false, false);
       }
 
       delay(200);
@@ -3416,20 +3802,22 @@ void loop() {
          saveSettingsToFlash(EEPROM_SETTINGS_ADR);
       }
 
-      // Ensure WiFi if we need it for Settings OR Image
-      if (settings.settingsUrl.length() > 0 || settings.imageMode == 1) {
-         if (WiFi.status() != WL_CONNECTED) {
-            WiFi.begin(wifiSettings.ssid.c_str(), wifiSettings.pss.c_str());
-            int WLcount = 0;
-            while (WiFi.status() != WL_CONNECTED && WLcount < 200) {
-               delay(100);
-               ++WLcount;
-            }
+      if (settings.settingsUrl.length() > 0 && ensureWifi()) {
+         fetchRemoteSettings(); // This might change imageMode or downloadUrl!
+      }
+
+      const bool canDownload = wifiSettings.ssid.length() > 0 && settings.downloadUrl.length() > 0;
+      const bool hasPicture = hasValidFlashImage(fileName.c_str());
+      if ((settings.imageMode == 1 && !canDownload) || (settings.imageMode == 0 && !hasPicture)) {
+         Serial.println("[MAIN] Not set up: nothing to download and no picture sent over Bluetooth.");
+         if (!hasPicture) { // a stored picture stays on the display
+            showNotice(DISPLAY_SETUP_HINT, "Not set up: press button, connect via Bluetooth",
+                       "paperlesspaper.github.io/paperlesspaper-firmware-offline");
          }
 
-         if (WiFi.status() == WL_CONNECTED) {
-            fetchRemoteSettings(); // This might change imageMode or downloadUrl!
-         }
+         const bool pollSettings = settings.imageMode == 1 && wifiSettings.ssid.length() > 0 && settings.settingsUrl.length() > 0;
+         const int regularSleep = (settings.timeout > 0) ? systemData.sleepPrediction : DEFAULT_SLEEP;
+         gotToDeepSleep(pollSettings ? max(60, regularSleep) : 0, false, false);
       }
 
       if (settings.imageMode == 1) { // URL Mode
@@ -3451,7 +3839,7 @@ void loop() {
          else if (dlSuccess == 0 || settings.imageMode == 0) {
             WiFi.disconnect(true);
             logImageSlotCrc(fileName.c_str());
-            setSuccess = setImageFromFS(fileName);
+            setSuccess = showStoredImage(fileName);
             if (setSuccess == 0 && dlSuccess == 0 && settings.imageMode == 1) {
                if (settings.lastModified != tempLastModified) {
                   settings.lastModified = tempLastModified;
@@ -3466,8 +3854,15 @@ void loop() {
          }
       }
       else {
-         displaySetText("Error: Picture download failed, please try again", false);
+         showNotice(DISPLAY_ERROR_TEXT, "Error: Picture download failed, please try again");
          setSuccess = -1;
+         // The error text has replaced the picture. Forget the validator of the stored picture:
+         // otherwise the next successful request is answered with "not modified" (HTTP 304),
+         // nothing is drawn and the error text stays on the display.
+         if (settings.lastModified.length() > 0) {
+            settings.lastModified = "";
+            saveSettingsToFlash(EEPROM_SETTINGS_ADR);
+         }
       }
 
       debugFS();
@@ -3478,13 +3873,18 @@ void loop() {
       bool doMotionWake = (settings.imageMode == 1) ? settings.motionWakeup : false;
       int nextSleep = (settings.timeout > 0) ? systemData.sleepPrediction : DEFAULT_SLEEP;
       if (settings.imageMode == 1 && (dlSuccess < 0 || setSuccess < 0)) {
-         nextSleep = constrain(nextSleep, 60, 300);
-         Serial.printf("[SLEEP] Update failed; retry in %d seconds\n", nextSleep);
+         if (failedUpdates < 255)
+            failedUpdates++;
+         nextSleep = retryDelaySeconds(failedUpdates, nextSleep);
+         Serial.printf("[SLEEP] Update failed %u time(s) in a row; retry in %d seconds\n", failedUpdates, nextSleep);
       }
-      else if (settings.imageMode == 1 && serverSleepSeconds > 0) {
-         int elapsed = (millis() - serverSleepReceivedMs) / 1000;
-         nextSleep = max(60, serverSleepSeconds - elapsed);
-         Serial.printf("[SLEEP] Server-directed wake in %d seconds\n", nextSleep);
+      else {
+         failedUpdates = 0;
+         if (settings.imageMode == 1 && serverSleepSeconds > 0) {
+            int elapsed = (millis() - serverSleepReceivedMs) / 1000;
+            nextSleep = max(60, serverSleepSeconds - elapsed);
+            Serial.printf("[SLEEP] Server-directed wake in %d seconds\n", nextSleep);
+         }
       }
       gotToDeepSleep(nextSleep, false, doMotionWake);
    }

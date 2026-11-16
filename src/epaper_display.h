@@ -71,7 +71,7 @@ int setImageFromFS_7inch(String fileName);
 int setImageFromFS_13inch(String fileName, bool doRefresh = true);
 int setImageFromFS(String fileName, bool doRefresh = true);
 void displayWipe(bool quick);
-void displaySetText(String info, bool isBlackboard, bool quickRefresh = true);
+void displaySetText(String info, bool isBlackboard, bool quickRefresh = true, String info2 = ""); // info2: second, smaller line
 bool waitDisplayComplete(bool quick);
 void displayTurnOn();
 uint16_t getColor(uint8_t color);
