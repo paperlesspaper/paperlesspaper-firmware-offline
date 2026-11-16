@@ -50,7 +50,7 @@ def test_page_starts_clean(app_session):
             assert await expected_version(app), "The page does not name the firmware version it expects."
             await app.view("geraet")
             assert not await hidden(app, "#notConnectedState")
-            assert await hidden(app, "#controls")
+            assert await hidden(app, "#wifiCard") and await hidden(app, "#deviceSettings")
 
     run(body())
 
@@ -498,6 +498,12 @@ def test_log_is_always_shown_in_the_device_view(app_session):
         async with app_session(device) as (app, site):
             await app.view("geraet")
             assert await app.locator("#statusLogOutput").is_visible(), "Also without a device: it says why connecting fails."
+            # the settings are on the right, with or without a device
+            boxes = await app.page.evaluate(
+                "() => Object.fromEntries(['notConnectedState', 'logCard', 'expertCard'].map(id => { const r = document.getElementById(id).getBoundingClientRect(); return [id, [r.left, r.top]]; }))"
+            )
+            assert boxes["logCard"][0] == boxes["notConnectedState"][0] and boxes["logCard"][1] > boxes["notConnectedState"][1]
+            assert boxes["expertCard"][0] > boxes["notConnectedState"][0] and boxes["expertCard"][1] == boxes["notConnectedState"][1]
             assert await app.page.locator("#btnLog").count() == 0
             await app.connect()
             assert await app.locator("#statusLogOutput").is_visible()
@@ -905,8 +911,8 @@ def test_connecting_asks_for_bluetooth_or_usb_unless_one_is_preferred(app_sessio
 
             # Bluetooth preferred: no question
             await app.view("geraet")
-            assert await app.page.get_attribute("#btnWayAsk", "aria-pressed") == "true"
-            await app.click("#btnWayBle")
+            assert await app.page.input_value("#connectWaySelect") == "ask"
+            await app.page.select_option("#connectWaySelect", "ble")
             await app.click("#btnConnect")
             await app.page.wait_for_function("() => !document.getElementById('systemStatusBar').hidden")
             assert not await app.page.evaluate("document.getElementById('connectDialog').open")
@@ -915,11 +921,11 @@ def test_connecting_asks_for_bluetooth_or_usb_unless_one_is_preferred(app_sessio
 
             # USB preferred, kept over a reload: the sync button connects over the cable
             await app.view("geraet")
-            await app.click("#btnWayUsb")
+            await app.page.select_option("#connectWaySelect", "usb")
             await app.page.reload()
             await app.page.wait_for_selector("#status", state="attached")
             await app.view("geraet")
-            assert await app.page.get_attribute("#btnWayUsb", "aria-pressed") == "true"
+            assert await app.page.input_value("#connectWaySelect") == "usb"
             await app.add_pictures(distinct_pictures(1))
             result = await app.transfer(lambda: app.click("#btnSyncGallery"), timeout=120000)
             assert result is None, f"Sync ended with an error screen: {result}"
@@ -1404,6 +1410,25 @@ def test_offline_firmware_update(app_session, target):
     run(body())
 
 
+def test_firmware_update_with_little_memory_on_the_device(app_session):
+    """A device that is short of memory (the 13.3" frame) takes the firmware in smaller windows."""
+
+    async def body():
+        firmware = assets.firmware_image(seed=8)
+        device = SimulatedDevice("epd13")
+        device.window_size = 4096
+        async with app_session(device, files={"firmware_offline_epd13.bin": firmware}) as (app, site):
+            await app.connect()
+            await app.view("firmware")
+            await app.click("#btnUpdateOfflineFw")
+            title, message = await app.transfer(lambda: app.click("#btnConfirmOfflineOta"), timeout=240000)
+            assert title == "Firmware installiert", message
+            assert device.firmware == firmware
+            assert device.commands.count("FLUSH") >= len(firmware) // 4096
+
+    run(body(), timeout=300)
+
+
 def test_cloud_firmware_update(app_session):
     """Way back to the cloud firmware: manifest and file come from ./factory/ of the site."""
 
@@ -1556,11 +1581,17 @@ def test_firmware_update_without_connection_offers_to_connect(app_session):
         device = SimulatedDevice()
         async with app_session(device, files={"firmware_offline_epd7.bin": assets.firmware_image()}) as (app, site):
             await app.view("firmware")
+            assert await app.locator("#bleCloudHint").is_visible()
             await app.click("#btnUpdateOfflineFw")
             await app.page.wait_for_selector("#messageDialog[open]")
             assert "Nicht verbunden" in await app.text("#messageTitle")
+            # the cloud firmware only offers Bluetooth after its factory reset
+            assert "Reset-Taste 5×" in await app.text("#messageDetail")
             await app.click("#messageCancel")
             assert device.connections == 0
+            await app.connect()
+            await app.view("firmware")
+            assert not await app.locator("#bleCloudHint").is_visible()
 
     run(body())
 

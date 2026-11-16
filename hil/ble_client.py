@@ -206,8 +206,8 @@ class BleSession:
                     raise BleError(f"Device rejected the firmware size of {len(data)} bytes.")
             negotiated = initial.max_payload if 20 <= initial.max_payload <= 508 else 240
             chunk_size = min(negotiated, self._max_write() - 1)
-            # an empty buffer of a gallery upload reports how much it takes
-            checkpoint = initial.crc if start and 1024 <= initial.crc <= 32768 else 32768
+            # an empty buffer of an upload reports how much it takes (other firmware: no size)
+            checkpoint = initial.crc if initial.crc in (4096, 8192, 16384, 32768) else 32768
             burst_size, burst_delay = 6, 0.001
         else:
             chunk_size = min(238, self._max_write() - 4)

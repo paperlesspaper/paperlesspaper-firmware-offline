@@ -1051,7 +1051,11 @@ export class DeviceBleInterface {
           throw new Error("OTA-Partition auf dem Gerät konnte nicht geöffnet werden (Flash/RAM Fehler).");
         }
         useV2 = initView.byteLength >= 8;
-        if (useV2) negotiatedPayload = initView.getUint16(6, true);
+        if (useV2) {
+          negotiatedPayload = initView.getUint16(6, true);
+          const taken = initView.getUint32(2, true);
+          if ([4096, 8192, 16384, 32768].includes(taken)) windowSize = taken; // firmware before the gallery: no size
+        }
       } else {
         const status = await this._galleryCommand(cmdChar, start);
         if (status.pos === STATUS_NO_SPACE) throw codedError("NO_SPACE", "Auf dem E-Paper ist nicht genug Speicher frei.");

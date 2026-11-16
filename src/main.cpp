@@ -95,7 +95,7 @@
 #define EEPROM_SIZE 2048          // EEPROM size
 #define EEPROM_SETTINGS_ADR 500   // start address to store settings
 #define BLE_BUFFER_SIZE 32768
-#define UPLOAD_MIN_WINDOW 4096    // smallest receive buffer of a gallery upload
+#define UPLOAD_MIN_WINDOW 4096    // smallest receive buffer of an upload
 #define UPLOAD_HEAP_RESERVE 24576 // heap that stays free next to the receive buffer
 #define UPDATE_MIN_FREE_HEAP 102400 // less than this after the setup mode: a download over TLS may fail
 #define MAX_SETTING_STRING_LEN 128 // max characters of a string setting (EEPROM slot is 130 bytes)
@@ -1479,8 +1479,8 @@ static bool bleValueFits(const NimBLEAttValue &val, size_t maxLen, const char *n
 }
 
 // State of a new upload. False: no memory for the receive buffer.
-// flexible: a smaller buffer will do, the client reads its size from the status (gallery uploads).
-static bool startUpload(bool flexible) {
+// With little memory the buffer is smaller: the client reads its size from the status.
+static bool startUpload() {
    bleUploadError = false;
    bleSeqError = false;
    bleNoSpace = false;
@@ -1496,10 +1496,9 @@ static bool startUpload(bool flexible) {
    const uint32_t largest = ESP.getMaxAllocHeap();
    for (bleWindowSize = BLE_BUFFER_SIZE; bleWindowSize >= UPLOAD_MIN_WINDOW; bleWindowSize /= 2) {
       // the file system, Bluetooth and WiFi need the rest
-      const bool fits = !flexible || (largest >= bleWindowSize && freeHeap >= bleWindowSize + UPLOAD_HEAP_RESERVE);
-      if (fits)
+      if (largest >= bleWindowSize && freeHeap >= bleWindowSize + UPLOAD_HEAP_RESERVE)
          bleWriteBuffer = (uint8_t *)malloc(bleWindowSize);
-      if (bleWriteBuffer != nullptr || !flexible)
+      if (bleWriteBuffer != nullptr)
          break;
    }
    Serial.printf("[BLE] Upload buffer: %u bytes (heap free %u, largest block %u)\n", bleWriteBuffer ? (unsigned)bleWindowSize : 0u,
@@ -1573,7 +1572,7 @@ static void handleGalleryCommand(const String &cmd) {
          fwUpdateInProgress = false;
       }
       abortGalleryUpload();
-      if (!startUpload(true))
+      if (!startUpload())
          return;
       const uint16_t status = Gallery::beginPut(id, size);
       if (status != 0) {
@@ -1596,7 +1595,7 @@ static void handleGalleryCommand(const String &cmd) {
          fwUpdateInProgress = false;
       }
       abortGalleryUpload();
-      if (!startUpload(true))
+      if (!startUpload())
          return;
       orderBuffer = (uint8_t *)malloc((size_t)n * 4 + 4);
       if (orderBuffer == nullptr) {
@@ -1940,7 +1939,7 @@ void gattWrite(NimBLECharacteristic *pCharacteristic) {
          const uint32_t declaredSize = (cmd.startsWith("START_FW:") && cmd.length() > 9)
                                            ? (uint32_t)strtoul(cmd.c_str() + 9, nullptr, 10)
                                            : 0;
-         if (!startUpload(false))
+         if (!startUpload())
             return;
          bleExpectedFwBytes = declaredSize;
 

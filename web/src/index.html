@@ -246,19 +246,19 @@
                             <h2>Bild-Abruf</h2>
                             <span id="syncBadgeSettings" class="badge badge-ok" hidden>✓ Vom Gerät geladen</span>
                         </div>
-                        <p class="card-desc">Das E-Paper lädt sein Bild selbst von einer Adresse im Netz und zeigt es an – im eingestellten Intervall immer wieder neu.</p>
+                        <p class="card-desc">Das E-Paper lädt sein Bild im eingestellten Intervall selbst von einer Adresse im Netz.</p>
                         <ul class="fact-list">
                             <li>
                                 <strong>WLAN:</strong>
-                                wird dafür gebraucht. Du trägst es unter „Gerät“ ein.
+                                unter „Gerät“ eintragen.
                             </li>
                             <li>
                                 <strong>Synchronisieren:</strong>
-                                speichert diese Angaben auf dem E-Paper. Ist keines verbunden, wird zuerst verbunden.
+                                speichert die Angaben auf dem E-Paper.
                             </li>
                             <li>
                                 <strong>Galerie oder URL:</strong>
-                                Das E-Paper zeigt nur eines von beiden. Beim Umstellen auf die URL werden die Bilder der Galerie vom Gerät gelöscht. In diesem Browser bleiben sie.
+                                nur eines von beiden. Die URL löscht die Galerie vom Gerät, im Browser bleibt sie.
                             </li>
                         </ul>
 
@@ -348,39 +348,40 @@
                 </div>
             </div>
 
-            <div id="notConnectedState" class="neu-card empty-state view-narrow" data-tone="warn">
-                <div class="card-head">
-                    <h2>Kein Gerät verbunden</h2>
+            <!-- left: how to connect, or the WLAN of the connected device; below it the log. Right: the settings -->
+            <div id="controls" class="grid-2">
+                <div id="notConnectedState" class="neu-card empty-state" data-tone="warn">
+                    <div class="card-head">
+                        <h2>Kein Gerät verbunden</h2>
+                    </div>
+                    <p class="card-desc">WLAN und Geräte-Optionen werden direkt auf dem E-Paper gespeichert. Verbinde es dazu per Bluetooth:</p>
+                    <ol class="step-list">
+                        <li class="step-item">
+                            <span class="step-num">1</span>
+                            <div>
+                                <strong>Reset-Taste drücken</strong>
+                                <span class="step-desc">Großer Knopf auf der Rückseite. Bluetooth ist danach 30 Sekunden aktiv.</span>
+                            </div>
+                        </li>
+                        <li class="step-item">
+                            <span class="step-num">2</span>
+                            <div>
+                                <strong>Verbinden und Gerät wählen</strong>
+                                <span class="step-desc">
+                                    In der Liste erscheint dein Display als
+                                    <code>epd7-…</code>
+                                    oder
+                                    <code>epd13-…</code>
+                                    .
+                                </span>
+                            </div>
+                        </li>
+                    </ol>
+                    <div class="btn-row">
+                        <button type="button" class="btn-neu btn-neu-signal btn-hero" data-action="connect">Mit E-Paper verbinden</button>
+                    </div>
                 </div>
-                <p class="card-desc">WLAN und Geräte-Optionen werden direkt auf dem E-Paper gespeichert. Verbinde es dazu per Bluetooth:</p>
-                <ol class="step-list">
-                    <li class="step-item">
-                        <span class="step-num">1</span>
-                        <div>
-                            <strong>Reset-Taste drücken</strong>
-                            <span class="step-desc">Großer Knopf auf der Rückseite. Bluetooth ist danach 30 Sekunden aktiv.</span>
-                        </div>
-                    </li>
-                    <li class="step-item">
-                        <span class="step-num">2</span>
-                        <div>
-                            <strong>Verbinden und Gerät wählen</strong>
-                            <span class="step-desc">
-                                In der Liste erscheint dein Display als
-                                <code>epd7-…</code>
-                                oder
-                                <code>epd13-…</code>
-                                .
-                            </span>
-                        </div>
-                    </li>
-                </ol>
-                <div class="btn-row">
-                    <button type="button" class="btn-neu btn-neu-signal btn-hero" data-action="connect">Mit E-Paper verbinden</button>
-                </div>
-            </div>
 
-            <div id="controls" class="grid-2" hidden>
                 <!-- WLAN -->
                 <div class="neu-card" data-tone="info" id="wifiCard">
                     <div class="card-head">
@@ -449,13 +450,23 @@
                     </form>
                 </div>
 
-                <!-- Experten-Einstellungen -->
+                <!-- Einstellungen: how to connect (shown without a device too), and the options of the device -->
                 <div class="neu-card" data-tone="warn" id="expertCard">
                     <div class="card-head">
-                        <h2>Experten-Einstellungen</h2>
+                        <h2>Einstellungen</h2>
                     </div>
                     <div class="stack" id="expertBody">
-                        <p class="field-hint">Diese Optionen werden beim Umschalten sofort auf dem Gerät gespeichert.</p>
+                        <div class="field">
+                            <label class="form-label" for="connectWaySelect">Verbinden per</label>
+                            <select id="connectWaySelect" class="neu-select" aria-describedby="connectWayHint">
+                                <option value="ask">Immer fragen</option>
+                                <option value="ble">Bluetooth</option>
+                                <option value="usb">USB-Kabel</option>
+                            </select>
+                            <p class="field-hint" id="connectWayHint"></p>
+                        </div>
+                        <div class="stack" id="deviceSettings">
+                        <p class="field-hint">Die folgenden Optionen werden beim Umschalten sofort auf dem Gerät gespeichert.</p>
                         <label class="form-check-neu">
                             <input type="checkbox" id="settingMotionWakeup" />
                             <span class="check-text">
@@ -487,26 +498,12 @@
                                 <button type="button" id="btnFactoryReset" class="btn-neu btn-neu-danger btn-sys">Gerät zurücksetzen</button>
                             </div>
                         </div>
+                        </div>
                     </div>
                 </div>
-            </div>
 
-            <!-- How to connect, and the log: below the WLAN box (phones: at the end of the page), with or without a connected device -->
-            <div class="stack view-narrow" id="deviceAside">
-            <div class="neu-card" id="connectionCard">
-                <div class="card-head">
-                    <h2>Verbindung</h2>
-                </div>
-                <div class="field">
-                    <span class="form-label" id="connectWayTitle">Verbinden per</span>
-                    <div class="seg" role="group" aria-labelledby="connectWayTitle">
-                        <button type="button" id="btnWayAsk" class="seg-btn" aria-pressed="true">Immer fragen</button>
-                        <button type="button" id="btnWayBle" class="seg-btn" aria-pressed="false">Bluetooth</button>
-                        <button type="button" id="btnWayUsb" class="seg-btn" aria-pressed="false">USB-Kabel</button>
-                    </div>
-                    <p class="field-hint" id="connectWayHint"></p>
-                </div>
-            </div>
+            <!-- The log: below the left box (phones: at the end of the page), with or without a connected device -->
+            <div class="stack" id="deviceAside">
             <div class="neu-card log-card" id="logCard">
                 <div class="card-head">
                     <h2>Log</h2>
@@ -517,6 +514,7 @@
                     <a href="#hilfe">Hilfe</a>
                     stehen die Details.
                 </p>
+            </div>
             </div>
             </div>
         </section>
@@ -546,6 +544,12 @@
                         <span class="callout-caption">📶 Bluetooth-Update</span>
                         Das E-Paper muss eingeschaltet und per Bluetooth verbunden sein (nach Drücken der Reset-Taste ca. 30 Sekunden aktiv).
                     </p>
+                    <p id="bleCloudHint" class="callout callout-warn">
+                        <span class="callout-caption">⚠️ Noch die Cloud-Firmware installiert?</span>
+                        Dort ist Bluetooth nur nach einem Werksreset aktiv:
+                        <strong>Reset-Taste 5× schnell hintereinander drücken</strong>
+                        und warten, bis der WLAN-Verbindungsbildschirm erscheint.
+                    </p>
                     <p id="serialModeNotice" class="callout callout-warn" hidden>
                         <span class="callout-caption">🔌 Anleitung für USB</span>
                         Verbinde das E-Paper per USB-C-Kabel mit dem PC. Die Abdeckung kann dran bleiben: Wenn nötig, bittet dich die Seite um einen kurzen Druck auf die Reset-Taste. Wird das E-Paper nicht gefunden oder startet das Flashen nicht:
@@ -571,7 +575,7 @@
                 <!-- Everything else: cloud firmware, certificate backup, custom firmware, debug monitor -->
                 <div class="collapsible" id="moreFirmware" data-collapsible>
                     <button type="button" class="collapsible-head" aria-expanded="false" aria-controls="moreFirmwareBody">
-                        <span>Weitere Optionen</span>
+                        <span>Backup &amp; Cloud Firmware</span>
                         <span class="collapsible-icon" aria-hidden="true">▲</span>
                     </button>
                     <div class="collapsible-body" id="moreFirmwareBody">

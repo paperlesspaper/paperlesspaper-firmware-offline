@@ -130,7 +130,6 @@ const btnConnect = $("btnConnect");
 const btnDisconnect = $("btnDisconnect");
 const systemStatusBar = $("systemStatusBar");
 const notConnectedState = $("notConnectedState");
-const controls = $("controls");
 
 const wifiInputMask = $("wifiInputMask");
 const btnSaveWifi = $("btnSaveWifi");
@@ -292,12 +291,10 @@ function syncUi() {
 
   systemStatusBar.hidden = !connected;
   notConnectedState.hidden = connected;
-  // the log: below the WLAN box of a connected device, else below the hint how to connect
-  const aside = $("deviceAside");
-  const asideHome = connected ? controls : $("viewConnect");
-  if (aside.parentElement !== asideHome) asideHome.appendChild(aside);
-  aside.classList.toggle("view-narrow", !connected);
-  controls.hidden = !connected;
+  // left box: the WLAN of a connected device, else the hint how to connect
+  $("wifiCard").hidden = !connected;
+  $("deviceSettings").hidden = !connected; // without a device the settings only hold the way to connect
+  $("bleCloudHint").hidden = connected || state.otaMethod !== "ble"; // a connected device is reachable
 
   // Bild: the gallery, or the download from a URL (stored on the device)
   $("btnSourceGallery").setAttribute("aria-pressed", String(state.source === "gallery"));
@@ -549,11 +546,12 @@ btnDisconnect.addEventListener("click", () => bleInterface.disconnect());
 
 // --- Bluetooth or USB: asked every time, or chosen once under "Gerät" ---
 
-const CONNECT_WAYS = { ask: "btnWayAsk", ble: "btnWayBle", usb: "btnWayUsb" };
+const CONNECT_WAYS = ["ask", "ble", "usb"];
+const connectWaySelect = $("connectWaySelect");
 let connectWay = "ask";
 try {
   const stored = localStorage.getItem("connectWay");
-  if (stored in CONNECT_WAYS) connectWay = stored;
+  if (CONNECT_WAYS.includes(stored)) connectWay = stored;
 } catch (e) {
   // private mode: asks every time
 }
@@ -567,27 +565,23 @@ function effectiveConnectWay() {
 
 function renderConnectWay() {
   const way = effectiveConnectWay();
-  Object.entries(CONNECT_WAYS).forEach(([key, id]) => $(id).setAttribute("aria-pressed", String(key === way)));
-  $("btnWayAsk").disabled = !bluetoothAvailable || !serialAvailable;
-  $("btnWayBle").disabled = !bluetoothAvailable;
-  $("btnWayUsb").disabled = !serialAvailable;
+  connectWaySelect.value = way;
+  connectWaySelect.disabled = !bluetoothAvailable || !serialAvailable;
   $("connectWayHint").textContent =
     !bluetoothAvailable || !serialAvailable
       ? `Dieser Browser kann das E-Paper nur per ${serialAvailable ? "USB-Kabel" : "Bluetooth"} verbinden.`
       : { ask: "„Verbinden“ fragt jedes Mal, ob per Bluetooth oder USB-Kabel.", ble: "„Verbinden“ nimmt ohne Nachfrage Bluetooth.", usb: "„Verbinden“ nimmt ohne Nachfrage das USB-Kabel." }[way];
 }
 
-Object.entries(CONNECT_WAYS).forEach(([key, id]) =>
-  $(id).addEventListener("click", () => {
-    connectWay = key;
-    try {
-      localStorage.setItem("connectWay", key);
-    } catch (e) {
-      // lasts for this visit
-    }
-    renderConnectWay();
-  }),
-);
+connectWaySelect.addEventListener("change", () => {
+  connectWay = connectWaySelect.value;
+  try {
+    localStorage.setItem("connectWay", connectWay);
+  } catch (e) {
+    // lasts for this visit
+  }
+  renderConnectWay();
+});
 renderConnectWay();
 
 /**
@@ -2773,7 +2767,9 @@ async function ensureBleConnected() {
   }
   const connectNow = await showMessage({
     title: "Nicht verbunden",
+    tone: "warn",
     text: "Für das Update per Bluetooth muss das E-Paper verbunden sein. Drücke die Reset-Taste am Gerät und verbinde dich – oder wechsle zum Verbindungsweg USB-Kabel.",
+    detail: "Noch die Cloud-Firmware installiert? Dort ist Bluetooth nur nach einem Werksreset aktiv: Reset-Taste 5× schnell hintereinander drücken und warten, bis der WLAN-Verbindungsbildschirm erscheint.",
     okLabel: "Verbinden",
     cancelLabel: "Abbrechen",
     okVariant: "signal",

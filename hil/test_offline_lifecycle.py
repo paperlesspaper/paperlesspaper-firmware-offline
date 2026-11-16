@@ -18,7 +18,7 @@ import time
 import pytest
 
 from . import settings
-from .ble_client import BleSession, ble_run, upload_firmware
+from .ble_client import BleError, BleSession, ble_run, upload_firmware
 from .cloud import cloud_config, fetch_production_firmware
 from .web_bridge import web_ui
 
@@ -36,6 +36,17 @@ def _flash_over_ble(device, firmware_path):
     return device.wait_for_reboot(since, timeout=90)
 
 
+def _replace_leftover_firmware(device, firmware_path):
+    """As _flash_over_ble(), for an offline firmware that a failed run left on the device. If it does not
+    take an update over BLE, it is replaced over USB: the bench must not get stuck on it."""
+    try:
+        return _flash_over_ble(device, firmware_path)
+    except BleError as err:
+        print(f"⚠️ [{device.target.name}] The firmware on the device refused the update over BLE ({err}). Flashing over USB.")
+        device.enter_bootloader()
+        return device.flash_over_usb(firmware_path)
+
+
 def test_00_install_candidate(device, target, run_state):
     """Flashes the candidate over BLE, from the cloud firmware or from an offline firmware."""
     assert os.path.isfile(target.candidate_bin), f"Candidate firmware not found: {target.candidate_bin}"
@@ -46,10 +57,10 @@ def test_00_install_candidate(device, target, run_state):
     if start.firmware == "cloud":
         # The cloud firmware only offers BLE after a factory reset.
         device.factory_reset_cloud()
+        booted = _flash_over_ble(device, target.candidate_bin)
     else:
         device.enter_setup_mode()
-
-    booted = _flash_over_ble(device, target.candidate_bin)
+        booted = _replace_leftover_firmware(device, target.candidate_bin)
 
     assert booted.firmware == "offline", "Device did not boot the offline firmware after the update."
     if settings.EXPECTED_CANDIDATE_VERSION:
@@ -448,7 +459,7 @@ def test_15_web_ui_over_usb(device, target, run_state):
     assert found["bluetooth"] == 0, "The page used Bluetooth."
 
 
-def test_99_restore_cloud_firmware(device, target):
+def test_99_restore_cloud_firmware(device, target, run_state):
     """Leaves the device as the cloud testbench expects it: cloud production firmware.
 
     Runs even if earlier tests failed.
@@ -477,7 +488,9 @@ def test_99_restore_cloud_firmware(device, target):
     device.wait_for_reboot(since, timeout=30 + settings.REFRESH_TIMEOUT)
 
     device.enter_setup_mode()
-    booted = _flash_over_ble(device, bin_path)
+    # The update over BLE is the candidate's job; another offline firmware only has to go.
+    flash = _flash_over_ble if run_state.get("candidate_running") else _replace_leftover_firmware
+    booted = flash(device, bin_path)
 
     assert booted.firmware == "cloud", "Device still runs the offline firmware after the restore."
     assert booted.version == cloud_version, f"Device runs V{booted.version}, expected cloud production V{cloud_version}."

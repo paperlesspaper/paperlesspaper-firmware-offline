@@ -3,7 +3,7 @@ import os
 import pytest
 
 from . import settings
-from .cloud import ESP32HardwareController
+from .cloud import ESP32HardwareController, sanitize_log_line
 from .device import OfflineDevice
 from .lock import hardware_lock
 
@@ -38,10 +38,21 @@ def run_state():
     return {}
 
 
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """A failed test shows what the device logged last: the firmware says there why it refused something."""
+    report = (yield).get_result()
+    device = item.funcargs.get("device") if hasattr(item, "funcargs") else None
+    if report.when == "call" and report.failed and device is not None:
+        lines = device.logs_since(getattr(item, "log_start", 0))[-40:]
+        report.sections.append(("device log", "\n".join(sanitize_log_line(line) for line in lines) or "<no log output>"))
+
+
 @pytest.fixture(autouse=True)
-def no_firmware_crash(device):
+def no_firmware_crash(request, device):
     """Fails a test during which the firmware crashed or ran into its failsafe timer."""
     position = device.log_position()
+    request.node.log_start = position
     yield
     crashes = device.crash_lines_since(position)
     assert not crashes, "Firmware crashed or hung during this test:\n" + "\n".join(crashes)

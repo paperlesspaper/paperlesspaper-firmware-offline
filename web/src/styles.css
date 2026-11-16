@@ -2646,6 +2646,15 @@ dialog.transfer::backdrop {
   .modal-actions > .btn-grow {
     flex: 0 0 auto;
   }
+  /* explanations take less room on a phone */
+  .card-desc,
+  .fact-list {
+    line-height: 1.35;
+  }
+  .fact-list {
+    gap: 2px;
+    padding-left: 16px;
+  }
   /* connect dialog: Bluetooth, USB, and "Abbrechen" at the bottom */
   #connectDialog .modal-actions > #btnCancelConnectDialog {
     order: 0;
@@ -3013,6 +3022,7 @@ dialog.transfer::backdrop {
   .grid-2 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+  #controls > #notConnectedState,
   #controls > #wifiCard {
     grid-column: 1;
     grid-row: 1;

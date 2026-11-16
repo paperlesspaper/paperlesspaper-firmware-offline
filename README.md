@@ -165,7 +165,7 @@ All keys are optional. The button **Prüfen** in the Web UI shows the file and a
 | **Firmware** | Flash the offline, cloud or your own firmware over Bluetooth or USB. Back up and restore certificates (USB); the dialog before flashing the offline firmware offers the backup too. Serial monitor (115200 baud). |
 | **Hilfe** | Short instructions. |
 
-**Connecting:** **Verbinden** asks whether to use Bluetooth or the USB-C cable (Chrome, Edge or Opera on a PC); under **Gerät** one of the two can be chosen for good. Both offer the same functions; press reset on the frame first. Certificates are only read and written over USB in the bootloader (**Firmware**).
+**Connecting:** **Verbinden** asks whether to use Bluetooth or the USB-C cable (Chrome, Edge or Opera on a PC); under **Gerät → Einstellungen** one of the two can be chosen for good. Both offer the same functions; press reset on the frame first. Certificates are only read and written over USB in the bootloader (**Firmware**).
 
 **Stable and preview:** the link above opens the stable version (branch `main`). The version button next to the title switches to the preview (branch `dev`). Each version flashes the firmware built from its own branch.
 
@@ -288,9 +288,9 @@ Commands are written as text to the upload command characteristic (`10000004`).
 
 Gallery pictures, the play order and firmware are uploaded the same way:
 
-1. A start command (`GAL_PUT:…`, `GAL_ORDER:…` or `START_FW`) prepares the target and a RAM buffer of 32 KB. For a gallery upload the buffer is smaller if memory is short: the status after the start command carries its size in `value` (4096 to 32768).
+1. A start command (`GAL_PUT:…`, `GAL_ORDER:…` or `START_FW`) prepares the target and a RAM buffer of 32 KB. The buffer is smaller if memory is short (13.3" frame): the status after the start command carries its size in `value` (4096 to 32768).
 2. `V2` selects protocol V2: every packet is 1 byte sequence number + data. The sequence number starts at 0 in every window. (Without `V2`, every packet is 4 bytes CRC32 + data.)
-3. Send the data in windows of that size (firmware: always 32768 bytes) to `10000003`.
+3. Send the data in windows of that size to `10000003`.
 4. Read the status after each window. If byte count and CRC32 match, send `FLUSH` to store the window. Otherwise send `CLEAR` and repeat the window.
 5. `END:<crc32 hex>` (firmware: `END_FW:<crc32 hex>`) finishes the upload.
 

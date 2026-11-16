@@ -239,7 +239,7 @@ class WebApp:
         await self.click("#btnSourceUrl")
 
     async def open_more_firmware(self):
-        """Opens the collapsed "Weitere Optionen" of the firmware view (cloud firmware, certificates, custom firmware)."""
+        """Opens the collapsed "Backup & Cloud Firmware" of the firmware view (cloud firmware, certificates, custom firmware)."""
         await self.view("firmware")
         if await self.page.get_attribute('[aria-controls="moreFirmwareBody"]', "aria-expanded") != "true":
             await self.click('[aria-controls="moreFirmwareBody"]')

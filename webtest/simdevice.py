@@ -239,7 +239,7 @@ class SimulatedDevice:
         self.drop_packets = 0  # number of data packets to lose (one per window, from now on)
         self.fail_flash = False  # flash write fails at the next FLUSH
         self.drop_link_after = None  # close the link after this many data packets
-        self.window_size = BLE_BUFFER_SIZE  # receive buffer of a gallery upload: smaller if memory is short
+        self.window_size = BLE_BUFFER_SIZE  # receive buffer of an upload: smaller if memory is short
         self.drop_link_at_pictures = None  # close the link during the upload that follows this many stored pictures
         self.reject_firmware_size = False
         self.packet_delay = 0.0  # seconds per data packet: slows an upload down
@@ -407,7 +407,7 @@ class SimulatedDevice:
             elif not self._upload_open:
                 value = self._final_crc  # CRC of the stored file, or the length of the opened stream
             else:
-                value = BLE_BUFFER_SIZE if self._fw_open else self.window_size  # how much a window takes
+                value = self.window_size  # how much a window takes
         return struct.pack("<HIH", position, value, self._chunk)
 
     def _exists(self, uuid):
@@ -600,7 +600,7 @@ class SimulatedDevice:
                 self._seq_error = True
                 return
             self._expected_seq += 1
-        if len(self._buffer) + len(payload) <= (BLE_BUFFER_SIZE if self._fw_open else self.window_size):
+        if len(self._buffer) + len(payload) <= self.window_size:
             self._buffer += payload
         else:
             self._seq_error = True
