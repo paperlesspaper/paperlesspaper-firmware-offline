@@ -83,28 +83,6 @@
         </div>
     </header>
 
-    <!-- Telemetry of the connected device -->
-    <div id="systemStatusBar" class="device-strip" hidden>
-        <div class="device-strip-inner">
-            <span class="chip" id="chipDevice">
-                <span class="chip-key">Gerät</span>
-                <span id="systemDeviceName">--</span>
-            </span>
-            <span class="chip" id="chipBattery">
-                <span class="chip-key">Batterie</span>
-                <span id="systemVoltage">-- V</span>
-            </span>
-            <span class="chip" id="chipUsb">
-                <span class="chip-key">USB</span>
-                <span id="systemChargerStatus" data-short="…">Prüfe…</span>
-            </span>
-            <span class="chip" id="chipFw">
-                <span class="chip-key">Firmware</span>
-                <span id="systemFwVersion">--</span>
-            </span>
-        </div>
-    </div>
-
     <p class="visually-hidden" id="statusLive" role="status" aria-live="polite"></p>
 
     <!-- Messages appear as a toast and go away again; an error stays until it is closed.
@@ -138,7 +116,7 @@
         <div id="bluetoothUnsupported" class="banner banner-err" role="alert" hidden>
             <div class="banner-body">
                 <p class="banner-title">⚠️ Bluetooth nicht verfügbar</p>
-                <p class="banner-text" id="bluetoothUnsupportedText">Dieser Browser unterstützt kein Web Bluetooth. Nutze Chrome, Edge oder Opera auf Android, Windows, macOS oder Linux. Bild-Editor und BMP-Download funktionieren auch ohne Verbindung.</p>
+                <p class="banner-text" id="bluetoothUnsupportedText">Dieser Browser unterstützt kein Web Bluetooth. Nutze Chrome, Edge oder Opera auf Android, Windows, macOS oder Linux. Galerie, Bild-Editor und BMP-Download funktionieren auch ohne Verbindung.</p>
             </div>
         </div>
 
@@ -151,123 +129,196 @@
             <button type="button" id="btnJumpToOta" class="btn-neu btn-util btn-neu-signal">Zum Update</button>
         </div>
 
-        <!-- ============================== VIEW: BILD ============================== -->
-        <section id="viewEditor" class="view" aria-labelledby="imageSecTitle" hidden>
-            <div class="editor-grid">
-                <div class="neu-card editor-preview" data-tone="info">
+        <!-- ============================== VIEW: BILD (gallery) ============================== -->
+        <section id="viewEditor" class="view" aria-labelledby="gallerySecTitle" hidden>
+            <div class="source-switch">
+                <div class="seg" role="group" aria-label="Woher das E-Paper sein Bild nimmt">
+                    <button type="button" id="btnSourceGallery" class="seg-btn seg-btn-stacked" aria-pressed="true">
+                        <span>Galerie</span>
+                        <span class="btn-hint" id="sourceGalleryActive" hidden>✓ aktiv auf dem Gerät</span>
+                    </button>
+                    <button type="button" id="btnSourceUrl" class="seg-btn seg-btn-stacked" aria-pressed="false">
+                        <span>Abruf per URL</span>
+                        <span class="btn-hint" id="sourceUrlActive" hidden>✓ aktiv auf dem Gerät</span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="gallery-layout" id="sourceGallery">
+                <div class="neu-card gallery-card" data-tone="info" id="galleryCard">
                     <div class="card-head">
-                        <h2 id="imageSecTitle">Bild</h2>
+                        <h2 id="gallerySecTitle">Galerie</h2>
                         <div class="badges">
-                            <span class="badge" id="displayBadge">7.3" · 800×480</span>
-                            <span class="badge badge-ok" id="displayAutoBadge" hidden>✓ Vom Gerät</span>
+                            <span class="badge" id="galleryCount">0 Bilder</span>
+                            <span class="badge" id="galleryDisplayBadge">7.3"</span>
                         </div>
                     </div>
 
-                    <div class="preview-frame" id="previewContainer">
-                        <button type="button" class="preview-empty" id="previewEmpty">
-                            <svg class="icon" aria-hidden="true"><use href="#i-image" /></svg>
-                            <span class="preview-empty-title">Kein Bild geladen</span>
-                            <span class="preview-empty-sub">Tippen, um ein Bild auszuwählen – oder Datei hierher ziehen</span>
-                        </button>
-                        <!-- With the calibrated profile: hover (mouse) or tap (touch) shows the raw colours -->
-                        <div class="preview-stage" id="previewStage" hidden>
-                            <canvas id="previewCanvas" role="img" aria-label="Vorschau des aufbereiteten Bildes"></canvas>
-                            <canvas id="previewHoverCanvas" aria-hidden="true"></canvas>
-                        </div>
-                        <span class="preview-chip preview-flag" id="previewRawFlag" hidden>Rohdaten</span>
-                        <div class="preview-chip preview-busy" aria-hidden="true">
-                            <span class="spinner spinner-sm"></span>
-                            Berechne
-                        </div>
-                        <button type="button" id="btnRotate" class="preview-action" aria-label="Bild um 90° drehen" title="Bild um 90° drehen" hidden>↻</button>
+                    <p class="callout callout-warn" id="galleryStoreNote" role="status" hidden>
+                        <span class="callout-caption">Galerie nur für diese Sitzung</span>
+                        Dieser Browser erlaubt der Seite keinen dauerhaften Speicher (z. B. im privaten Modus). Die Bilder gehen verloren, sobald du die Seite schließt oder neu lädst.
+                    </p>
+                    <div class="callout callout-warn callout-action" id="galleryFirmwareNote" role="status" hidden>
+                        <span>
+                            <span class="callout-caption">Firmware-Update nötig</span>
+                            Die Firmware dieses E-Paper kennt die Galerie noch nicht. Aktualisiere sie, danach lassen sich die Bilder übertragen.
+                        </span>
+                        <button type="button" id="btnGalleryFirmware" class="btn-neu btn-util btn-neu-signal">Zum Update</button>
                     </div>
 
-                    <input type="file" id="fileInput" accept="image/*" class="visually-hidden" tabindex="-1" aria-hidden="true" />
-                    <!-- Main action, centred below the picture -->
-                    <div class="btn-row editor-send">
-                        <button type="button" id="btnUploadImage" class="btn-neu btn-neu-signal btn-stacked" disabled>
-                            <span>Bild senden</span>
-                            <span class="btn-hint" id="uploadHint">kein Bild</span>
+                    <div class="gallery-device">
+                        <p class="field-hint" id="galleryDeviceText">Nicht verbunden. Die Bilder liegen in diesem Browser und werden beim Synchronisieren übertragen.</p>
+                        <div class="meter" id="galleryMeter" hidden>
+                            <div class="meter-fill" id="galleryMeterFill"></div>
+                        </div>
+                    </div>
+
+                    <ul class="tile-grid" id="galleryGrid" aria-label="Bilder der Galerie"></ul>
+                    <p class="field-hint" id="galleryEmpty">Noch keine Bilder. Tippe auf „+“ oder ziehe Dateien hierher.</p>
+
+                    <input type="file" id="galleryFileInput" accept="image/*" multiple class="visually-hidden" tabindex="-1" aria-hidden="true" />
+                    <!-- Main action, centred below the pictures -->
+                    <div class="btn-row editor-send sync-float">
+                        <button type="button" id="btnSyncGallery" class="btn-neu btn-neu-signal btn-stacked">
+                            <span>Synchronisieren</span>
+                            <span class="btn-hint" id="syncHint" hidden></span>
                         </button>
                     </div>
-                    <!-- Below it: BMP download on the left, picking a picture on the right -->
-                    <div class="btn-row btn-row-pair">
-                        <button type="button" id="btnDownloadBin" class="btn-neu btn-neu-info" disabled>BMP-Download</button>
-                        <button type="button" id="btnPickImage" class="btn-neu btn-neu-primary">Bild wählen</button>
-                    </div>
+                    <p class="field-hint">„+“ bereitet neue Bilder automatisch auf. Ein Klick auf ein Bild öffnet es zum Anpassen, Ziehen ändert die Reihenfolge.</p>
                 </div>
 
                 <div class="stack">
-                    <div class="collapsible" id="imageSettingsDetails" data-collapsible data-tone="warn">
-                        <button type="button" class="collapsible-head" aria-expanded="false" aria-controls="imageSettingsBody">
-                            <span>Bild-Einstellungen</span>
-                            <span class="collapsible-icon" aria-hidden="true">▲</span>
-                        </button>
-                        <div class="collapsible-body" id="imageSettingsBody">
-                            <div class="collapsible-inner">
-                                <div class="collapsible-content" id="expertControls">
-                                    <div class="range-row">
-                                        <label for="processingBrightness">Helligkeit</label>
-                                        <input type="range" id="processingBrightness" min="-100" max="100" value="0" />
-                                        <output for="processingBrightness" id="processingBrightnessOut">0</output>
-                                    </div>
-                                    <div class="range-row">
-                                        <label for="processingContrast">Kontrast</label>
-                                        <input type="range" id="processingContrast" min="-100" max="100" value="0" />
-                                        <output for="processingContrast" id="processingContrastOut">0</output>
-                                    </div>
-                                    <div class="range-row">
-                                        <label for="processingSaturation">Sättigung</label>
-                                        <input type="range" id="processingSaturation" min="-100" max="100" value="0" />
-                                        <output for="processingSaturation" id="processingSaturationOut">0</output>
-                                    </div>
+                    <div class="neu-card" data-tone="ok" id="playCard">
+                        <div class="card-head">
+                            <h2>Wiedergabe</h2>
+                            <span id="syncBadgePlay" class="badge badge-ok" hidden>✓ Vom Gerät geladen</span>
+                        </div>
+                        <p class="card-desc">So zeigt das E-Paper die Galerie. Die Einstellungen werden beim Synchronisieren übertragen.</p>
 
-                                    <button type="button" id="btnAutoDither" class="btn-neu btn-neu-attention btn-sys" disabled>Auto-Optimieren</button>
-                                    <button type="button" id="btnResetProcessing" class="btn-neu btn-util btn-neu-danger-text">Anpassungen zurücksetzen</button>
+                        <div class="field">
+                            <span class="form-label" id="playOrientationTitle">Ausrichtung</span>
+                            <div class="seg" role="group" aria-labelledby="playOrientationTitle">
+                                <button type="button" id="btnOrientLandscape" class="seg-btn" aria-pressed="true">Querformat</button>
+                                <button type="button" id="btnOrientPortrait" class="seg-btn" aria-pressed="false">Hochformat</button>
+                            </div>
+                            <p class="field-hint">So hängt oder steht der Rahmen. Alle Bilder der Galerie werden dafür passend aufbereitet.</p>
+                        </div>
 
-                                    <hr class="divider" />
-
-                                    <div class="field">
-                                        <label class="form-label" for="displaySizeSelect">Display</label>
-                                        <select id="displaySizeSelect" class="neu-select">
-                                            <option value="7" selected>7.3" (800×480)</option>
-                                            <option value="13">13.3" (1200×1600)</option>
-                                        </select>
-                                    </div>
-
-                                    <div class="field">
-                                        <label class="form-label" for="paletteSelect">Palette</label>
-                                        <select id="paletteSelect" class="neu-select">
-                                            <option value="spectra6Original">Spectra 6 Originalfarben (knallig)</option>
-                                            <option value="spectra6Custom">Spectra 6 Custom</option>
-                                            <option value="new" selected>Spectra 6 Profil (kalibriert)</option>
-                                        </select>
-                                    </div>
-
-                                    <div id="paletteEditor" class="palette-editor" role="group" aria-label="Palettenfarben anpassen">
-                                        <!-- Palette colors are injected here -->
-                                    </div>
-
-                                    <div class="field">
-                                        <label class="form-label" for="errorDiffusionMatrix">Dithering-Algorithmus</label>
-                                        <select id="errorDiffusionMatrix" class="neu-select">
-                                            <option value="floydSteinberg" selected>Floyd-Steinberg</option>
-                                            <option value="atkinson">Atkinson</option>
-                                            <option value="jarvisJudiceNinke">Jarvis-Judice-Ninke</option>
-                                            <option value="sierra2">Sierra 2</option>
-                                        </select>
-                                    </div>
-
-                                    <label class="form-check-neu">
-                                        <input type="checkbox" id="serpentine" checked />
-                                        <span class="check-text">
-                                            <span class="check-title">Serpentine Dithering</span>
-                                            <span class="check-desc">Wechselt die Richtung pro Zeile – vermeidet sichtbare Muster.</span>
-                                        </span>
-                                    </label>
-                                </div>
+                        <div class="field">
+                            <span class="form-label" id="playOrderTitle">Reihenfolge</span>
+                            <div class="seg" role="group" aria-labelledby="playOrderTitle">
+                                <button type="button" id="btnPlayOrder" class="seg-btn" aria-pressed="true">Der Reihe nach</button>
+                                <button type="button" id="btnPlayShuffle" class="seg-btn" aria-pressed="false">Zufällig</button>
                             </div>
                         </div>
+
+                        <div class="field">
+                            <span class="form-label" id="playAutoTitle">Bildwechsel</span>
+                            <div class="seg" role="group" aria-labelledby="playAutoTitle">
+                                <button type="button" id="btnPlayAuto" class="seg-btn" aria-pressed="true">Automatisch</button>
+                                <button type="button" id="btnPlayManual" class="seg-btn" aria-pressed="false">Nur per Taste</button>
+                            </div>
+                            <p class="field-hint" id="playAutoHint">Das E-Paper wacht im eingestellten Abstand auf und zeigt das nächste Bild.</p>
+                        </div>
+
+                        <div class="field" id="playIntervalField">
+                            <label class="form-label" for="galleryInterval">Wechsel alle</label>
+                            <div class="input-group interval-row">
+                                <input type="number" id="galleryInterval" class="neu-input" inputmode="numeric" min="1" step="1" value="1" aria-describedby="galleryIntervalError galleryIntervalHint" />
+                                <select id="galleryIntervalUnit" class="neu-select" aria-label="Einheit">
+                                    <option value="60">Minuten</option>
+                                    <option value="3600" selected>Stunden</option>
+                                    <option value="86400">Tage</option>
+                                </select>
+                            </div>
+                            <p class="field-hint" id="galleryIntervalHint">1 Minute bis 30 Tage.</p>
+                            <p class="field-error" id="galleryIntervalError" role="alert" hidden></p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="stack view-narrow" id="sourceUrl" hidden>
+                <div id="urlControls">
+                    <!-- Bild-Abruf -->
+                    <div class="neu-card" data-tone="ok">
+                        <div class="card-head">
+                            <h2>Bild-Abruf</h2>
+                            <span id="syncBadgeSettings" class="badge badge-ok" hidden>✓ Vom Gerät geladen</span>
+                        </div>
+                        <p class="card-desc">Das E-Paper lädt sein Bild selbst von einer Adresse im Netz und zeigt es an – im eingestellten Intervall immer wieder neu.</p>
+                        <ul class="fact-list">
+                            <li>
+                                <strong>WLAN:</strong>
+                                wird dafür gebraucht. Du trägst es unter „Gerät“ ein.
+                            </li>
+                            <li>
+                                <strong>Synchronisieren:</strong>
+                                speichert diese Angaben auf dem E-Paper. Ist keines verbunden, wird zuerst verbunden.
+                            </li>
+                            <li>
+                                <strong>Galerie oder URL:</strong>
+                                Das E-Paper zeigt nur eines von beiden. Beim Umstellen auf die URL werden die Bilder der Galerie vom Gerät gelöscht. In diesem Browser bleiben sie.
+                            </li>
+                        </ul>
+
+                        <form id="settingsForm" class="form" novalidate>
+                            <div class="field">
+                                <label class="form-label" for="settingUrl">Download-URL</label>
+                                <input type="url" id="settingUrl" class="neu-input" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="http://mein-server.de/bild.bmp" aria-describedby="settingUrlError" />
+                                <p class="field-error" id="settingUrlError" role="alert" hidden></p>
+                            </div>
+
+                            <div class="field">
+                                <label class="form-label" for="settingTimeout">Aktualisierungs-Intervall (Sekunden)</label>
+                                <input type="number" id="settingTimeout" class="neu-input" inputmode="numeric" min="60" max="2592000" step="1" placeholder="3600" aria-describedby="settingTimeoutError settingTimeoutHint" />
+                                <p class="field-hint" id="settingTimeoutHint">60 Sekunden bis 30 Tage.</p>
+                                <p class="field-error" id="settingTimeoutError" role="alert" hidden></p>
+                            </div>
+
+                            <div class="field">
+                                <label class="form-label" for="settingSettingsUrl">
+                                    Settings-JSON-URL
+                                    <span class="optional">optional</span>
+                                </label>
+                                <div class="input-group">
+                                    <input type="url" id="settingSettingsUrl" class="neu-input" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="http://mein-server.de/settings.json" aria-describedby="settingSettingsUrlError" />
+                                    <button type="button" id="btnPreviewJson" class="btn-neu btn-small btn-neu-info">Prüfen</button>
+                                </div>
+                                <p class="field-error" id="settingSettingsUrlError" role="alert" hidden></p>
+                            </div>
+
+                            <div class="field">
+                                <label class="form-label" for="settingHttpAuthUser">
+                                    HTTP-Auth Benutzername
+                                    <span class="optional">optional</span>
+                                </label>
+                                <input type="text" id="settingHttpAuthUser" class="neu-input" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="z. B. apiuser" aria-describedby="settingHttpAuthUserError" />
+                                <p class="field-error" id="settingHttpAuthUserError" role="alert" hidden></p>
+                            </div>
+
+                            <div class="field">
+                                <label class="form-label" for="settingHttpAuthPassword">
+                                    HTTP-Auth Passwort
+                                    <span class="optional">optional</span>
+                                </label>
+                                <div class="input-affix">
+                                    <input type="password" id="settingHttpAuthPassword" class="neu-input" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Leer = gespeichertes behalten" aria-describedby="settingHttpAuthPasswordError settingHttpAuthPasswordHint" />
+                                    <button type="button" class="icon-btn" data-reveal="settingHttpAuthPassword" aria-label="Passwort anzeigen" aria-pressed="false">
+                                        <svg class="icon" aria-hidden="true"><use href="#i-eye" /></svg>
+                                    </button>
+                                </div>
+                                <p class="field-hint" id="settingHttpAuthPasswordHint">Das Gerät gibt das gespeicherte Passwort nicht zurück. Leer lassen, um es zu behalten.</p>
+                                <p class="field-error" id="settingHttpAuthPasswordError" role="alert" hidden></p>
+                            </div>
+
+                            <div class="save-zone" id="settingsSaveZone">
+                                <span class="dirty-note">Ungespeicherte Änderungen</span>
+                                <div class="btn-row sync-float">
+                                    <button type="submit" id="btnSaveSettings" class="btn-neu btn-neu-signal btn-sys">Synchronisieren</button>
+                                </div>
+                            </div>
+                        </form>
                     </div>
                 </div>
             </div>
@@ -275,11 +326,33 @@
 
         <!-- ============================== VIEW: GERÄT ============================== -->
         <section id="viewConnect" class="view" aria-label="Geräte-Einstellungen" hidden>
+            <!-- Telemetry of the connected device -->
+            <div id="systemStatusBar" class="device-strip" hidden>
+                <div class="device-strip-inner">
+                    <span class="chip" id="chipDevice">
+                        <span class="chip-key">Gerät</span>
+                        <span id="systemDeviceName">--</span>
+                    </span>
+                    <span class="chip" id="chipBattery">
+                        <span class="chip-key">Batterie</span>
+                        <span id="systemVoltage">-- V</span>
+                    </span>
+                    <span class="chip" id="chipUsb">
+                        <span class="chip-key">USB</span>
+                        <span id="systemChargerStatus" data-short="…">Prüfe…</span>
+                    </span>
+                    <span class="chip" id="chipFw">
+                        <span class="chip-key">Firmware</span>
+                        <span id="systemFwVersion">--</span>
+                    </span>
+                </div>
+            </div>
+
             <div id="notConnectedState" class="neu-card empty-state view-narrow" data-tone="warn">
                 <div class="card-head">
                     <h2>Kein Gerät verbunden</h2>
                 </div>
-                <p class="card-desc">WLAN, Bild-Abruf und Geräte-Optionen werden direkt auf dem E-Paper gespeichert. Verbinde es dazu per Bluetooth:</p>
+                <p class="card-desc">WLAN und Geräte-Optionen werden direkt auf dem E-Paper gespeichert. Verbinde es dazu per Bluetooth:</p>
                 <ol class="step-list">
                     <li class="step-item">
                         <span class="step-num">1</span>
@@ -309,7 +382,7 @@
 
             <div id="controls" class="grid-2" hidden>
                 <!-- WLAN -->
-                <div class="neu-card" data-tone="info">
+                <div class="neu-card" data-tone="info" id="wifiCard">
                     <div class="card-head">
                         <h2>WLAN</h2>
                         <span id="syncBadgeWifi" class="badge badge-ok" hidden>✓ Vom Gerät geladen</span>
@@ -370,144 +443,81 @@
                         </div>
 
                         <div class="btn-row">
+                            <button type="button" id="btnCancelWifi" class="btn-neu btn-fit" hidden>Abbrechen</button>
                             <button type="submit" id="btnSaveWifi" class="btn-neu btn-neu-ready btn-sys">WLAN speichern</button>
                         </div>
                     </form>
                 </div>
 
-                <div class="stack">
-                    <!-- Bild-Abruf -->
-                    <div class="neu-card" data-tone="ok">
-                        <div class="card-head">
-                            <h2>Bild-Abruf</h2>
-                            <span id="syncBadgeSettings" class="badge badge-ok" hidden>✓ Vom Gerät geladen</span>
-                        </div>
-                        <p class="card-desc">Das E-Paper lädt in festen Abständen selbstständig ein Bild von deinem Server.</p>
-
-                        <form id="settingsForm" class="form" novalidate>
-                            <div class="field">
-                                <label class="form-label" for="settingUrl">Download-URL</label>
-                                <div class="input-group">
-                                    <input type="url" id="settingUrl" class="neu-input" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="http://mein-server.de/bild.bmp" aria-describedby="settingUrlError urlValidationStatus" />
-                                    <button type="button" id="btnCheckImageUrl" class="btn-neu btn-small btn-neu-info">Prüfen</button>
-                                </div>
-                                <p class="field-error" id="settingUrlError" role="alert" hidden></p>
-                                <p class="field-note" id="urlValidationStatus" role="status" hidden></p>
-                            </div>
-
-                            <div class="field">
-                                <label class="form-label" for="settingTimeout">Aktualisierungs-Intervall (Sekunden)</label>
-                                <input type="number" id="settingTimeout" class="neu-input" inputmode="numeric" min="60" max="2592000" step="1" placeholder="3600" aria-describedby="settingTimeoutError settingTimeoutHint" />
-                                <p class="field-hint" id="settingTimeoutHint">60 Sekunden bis 30 Tage.</p>
-                                <p class="field-error" id="settingTimeoutError" role="alert" hidden></p>
-                            </div>
-
-                            <div class="field">
-                                <label class="form-label" for="settingSettingsUrl">
-                                    Settings-JSON-URL
-                                    <span class="optional">optional</span>
-                                </label>
-                                <div class="input-group">
-                                    <input type="url" id="settingSettingsUrl" class="neu-input" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="http://mein-server.de/settings.json" aria-describedby="settingSettingsUrlError" />
-                                    <button type="button" id="btnPreviewJson" class="btn-neu btn-small btn-neu-info">Prüfen</button>
-                                </div>
-                                <p class="field-error" id="settingSettingsUrlError" role="alert" hidden></p>
-                            </div>
-
-                            <div class="field">
-                                <label class="form-label" for="settingHttpAuthUser">
-                                    HTTP-Auth Benutzername
-                                    <span class="optional">optional</span>
-                                </label>
-                                <input type="text" id="settingHttpAuthUser" class="neu-input" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="z. B. apiuser" aria-describedby="settingHttpAuthUserError" />
-                                <p class="field-error" id="settingHttpAuthUserError" role="alert" hidden></p>
-                            </div>
-
-                            <div class="field">
-                                <label class="form-label" for="settingHttpAuthPassword">
-                                    HTTP-Auth Passwort
-                                    <span class="optional">optional</span>
-                                </label>
-                                <div class="input-affix">
-                                    <input type="password" id="settingHttpAuthPassword" class="neu-input" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Leer = gespeichertes behalten" aria-describedby="settingHttpAuthPasswordError settingHttpAuthPasswordHint" />
-                                    <button type="button" class="icon-btn" data-reveal="settingHttpAuthPassword" aria-label="Passwort anzeigen" aria-pressed="false">
-                                        <svg class="icon" aria-hidden="true"><use href="#i-eye" /></svg>
-                                    </button>
-                                </div>
-                                <p class="field-hint" id="settingHttpAuthPasswordHint">Das Gerät gibt das gespeicherte Passwort nicht zurück. Leer lassen, um es zu behalten.</p>
-                                <p class="field-error" id="settingHttpAuthPasswordError" role="alert" hidden></p>
-                            </div>
-
-                            <div class="save-zone" id="settingsSaveZone">
-                                <span class="dirty-note">Ungespeicherte Änderungen</span>
-                                <div class="btn-row">
-                                    <button type="submit" id="btnSaveSettings" class="btn-neu btn-neu-ready btn-sys">Einstellungen speichern</button>
-                                </div>
-                            </div>
-                        </form>
+                <!-- Experten-Einstellungen -->
+                <div class="neu-card" data-tone="warn" id="expertCard">
+                    <div class="card-head">
+                        <h2>Experten-Einstellungen</h2>
                     </div>
+                    <div class="stack" id="expertBody">
+                        <p class="field-hint">Diese Optionen werden beim Umschalten sofort auf dem Gerät gespeichert.</p>
+                        <label class="form-check-neu">
+                            <input type="checkbox" id="settingMotionWakeup" />
+                            <span class="check-text">
+                                <span class="check-title">Motion Wakeup</span>
+                                <span class="check-desc">Weckt die Firmware bei Bewegung auf (nur im URL-Modus).</span>
+                            </span>
+                        </label>
+                        <label class="form-check-neu">
+                            <input type="checkbox" id="settingAutoRotation" checked />
+                            <span class="check-text">
+                                <span class="check-title">Auto Rotation</span>
+                                <span class="check-desc">Richtet das Bild automatisch nach dem Lagesensor aus.</span>
+                            </span>
+                        </label>
+                        <label class="form-check-neu">
+                            <input type="checkbox" id="settingChargerMode" />
+                            <span class="check-text">
+                                <span class="check-title">Charger Mode (nur NiMH)</span>
+                                <span class="check-desc is-warn">⚠ Nur mit NiMH-Akkus nutzen! Lädt den Akku über USB-C.</span>
+                            </span>
+                        </label>
 
-                    <!-- Experten-Bereich -->
-                    <div class="collapsible" data-collapsible data-tone="warn">
-                        <button type="button" class="collapsible-head" aria-expanded="false" aria-controls="expertBody">
-                            <span>Experten-Bereich</span>
-                            <span class="collapsible-icon" aria-hidden="true">▲</span>
-                        </button>
-                        <div class="collapsible-body" id="expertBody">
-                            <div class="collapsible-inner">
-                                <div class="collapsible-content">
-                                    <p class="field-hint">Diese Optionen werden beim Umschalten sofort auf dem Gerät gespeichert.</p>
-                                    <label class="form-check-neu">
-                                        <input type="checkbox" id="settingMotionWakeup" />
-                                        <span class="check-text">
-                                            <span class="check-title">Motion Wakeup</span>
-                                            <span class="check-desc">Weckt die Firmware bei Bewegung auf (nur im URL-Modus).</span>
-                                        </span>
-                                    </label>
-                                    <label class="form-check-neu">
-                                        <input type="checkbox" id="settingAutoRotation" checked />
-                                        <span class="check-text">
-                                            <span class="check-title">Auto Rotation</span>
-                                            <span class="check-desc">Richtet das Bild automatisch nach dem Lagesensor aus.</span>
-                                        </span>
-                                    </label>
-                                    <label class="form-check-neu">
-                                        <input type="checkbox" id="settingChargerMode" />
-                                        <span class="check-text">
-                                            <span class="check-title">Charger Mode (nur NiMH)</span>
-                                            <span class="check-desc is-warn">⚠ Nur mit NiMH-Akkus nutzen! Lädt den Akku über USB-C.</span>
-                                        </span>
-                                    </label>
-
-                                    <div class="zone-danger">
-                                        <div class="sub-head">
-                                            <h3>Gefahrenzone</h3>
-                                        </div>
-                                        <p class="field-hint">Löscht alle Einstellungen, WLAN-Zugangsdaten und gespeicherte Bilder auf dem Gerät.</p>
-                                        <div class="btn-row">
-                                            <button type="button" id="btnFactoryReset" class="btn-neu btn-neu-danger btn-sys">Gerät zurücksetzen</button>
-                                        </div>
-                                    </div>
-                                </div>
+                        <div class="zone-danger">
+                            <div class="sub-head">
+                                <h3>Gefahrenzone</h3>
+                            </div>
+                            <p class="field-hint">Löscht alle Einstellungen, WLAN-Zugangsdaten und gespeicherte Bilder auf dem Gerät.</p>
+                            <div class="btn-row">
+                                <button type="button" id="btnFactoryReset" class="btn-neu btn-neu-danger btn-sys">Gerät zurücksetzen</button>
                             </div>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- Help and log: at the end of the view, with or without a connected device -->
-            <div class="view-foot view-narrow" id="deviceFoot">
-                <div class="view-foot-row">
-                    <p class="field-hint">
-                        Probleme? In der
-                        <a href="#hilfe">Hilfe</a>
-                        stehen die Details.
-                    </p>
-                    <button type="button" class="btn-neu btn-util btn-neu-primary log-btn" id="btnLog" aria-expanded="false" aria-controls="logPanel">Log</button>
+            <!-- How to connect, and the log: below the WLAN box (phones: at the end of the page), with or without a connected device -->
+            <div class="stack view-narrow" id="deviceAside">
+            <div class="neu-card" id="connectionCard">
+                <div class="card-head">
+                    <h2>Verbindung</h2>
                 </div>
-                <div class="log-panel" id="logPanel" hidden>
-                    <pre class="terminal" id="statusLogOutput" tabindex="0" aria-label="Verlauf der Meldungen"></pre>
+                <div class="field">
+                    <span class="form-label" id="connectWayTitle">Verbinden per</span>
+                    <div class="seg" role="group" aria-labelledby="connectWayTitle">
+                        <button type="button" id="btnWayAsk" class="seg-btn" aria-pressed="true">Immer fragen</button>
+                        <button type="button" id="btnWayBle" class="seg-btn" aria-pressed="false">Bluetooth</button>
+                        <button type="button" id="btnWayUsb" class="seg-btn" aria-pressed="false">USB-Kabel</button>
+                    </div>
+                    <p class="field-hint" id="connectWayHint"></p>
                 </div>
+            </div>
+            <div class="neu-card log-card" id="logCard">
+                <div class="card-head">
+                    <h2>Log</h2>
+                </div>
+                <pre class="terminal" id="statusLogOutput" tabindex="0" aria-label="Verlauf der Meldungen"></pre>
+                <p class="field-hint">
+                    Probleme? In der
+                    <a href="#hilfe">Hilfe</a>
+                    stehen die Details.
+                </p>
+            </div>
             </div>
         </section>
 
@@ -649,7 +659,7 @@
                     <div class="card-head">
                         <h2 id="helpTitle">Hilfe</h2>
                     </div>
-                    <p class="card-desc">Kurz erklärt: verbinden, Bild senden, Bild automatisch laden und Firmware wechseln.</p>
+                    <p class="card-desc">Kurz erklärt: verbinden, die Galerie füllen, Bild automatisch laden und Firmware wechseln.</p>
                 </div>
 
                 <div class="collapsible open" data-collapsible>
@@ -684,7 +694,7 @@
                                         <span class="step-num">3</span>
                                         <div>
                                             <strong>Loslegen</strong>
-                                            <span class="step-desc">Unter „Bild“ ein Bild senden oder unter „Gerät“ WLAN und Download-URL einrichten.</span>
+                                            <span class="step-desc">Unter „Bild“ die Galerie füllen und synchronisieren. Oder dort auf „Abruf per URL“ umschalten und die Download-URL eintragen; das WLAN dazu steht unter „Gerät“.</span>
                                         </div>
                                     </li>
                                 </ol>
@@ -712,15 +722,15 @@
                                 <dl class="def-list">
                                     <div class="def-row">
                                         <dt>1× Reset</dt>
-                                        <dd>Einrichtungsmodus: Bluetooth ist 30 Sekunden aktiv. Ohne Verbindung aktualisiert das Gerät das Bild wie gewohnt und schläft wieder ein. Im Batteriebetrieb beendet es eine Verbindung nach 10 Minuten ohne Eingabe.</dd>
+                                        <dd>Einrichtungsmodus: Bluetooth ist 30 Sekunden aktiv. Ohne Verbindung macht das Gerät danach wie gewohnt weiter und schläft wieder ein. Mit einer Galerie zeigt es dabei gleich das nächste Bild. Im Batteriebetrieb beendet es eine Verbindung nach 10 Minuten ohne Eingabe.</dd>
                                     </div>
                                     <div class="def-row">
                                         <dt>2× Reset</dt>
-                                        <dd>Sofort aktualisieren: überspringt Bluetooth und lädt das Bild neu vom Server, auch wenn es sich nicht geändert hat.</dd>
+                                        <dd>Sofort weiter: überspringt Bluetooth. Auch dann erscheint das nächste Bild der Galerie; mit einer Download-URL wird das Bild neu vom Server geladen, auch wenn es sich nicht geändert hat.</dd>
                                     </div>
                                     <div class="def-row">
                                         <dt>5× Reset</dt>
-                                        <dd>Werkseinstellungen: löscht Einstellungen, WLAN-Zugangsdaten und das gespeicherte Bild.</dd>
+                                        <dd>Werkseinstellungen: löscht Einstellungen, WLAN-Zugangsdaten und die gespeicherten Bilder.</dd>
                                     </div>
                                     <div class="def-row">
                                         <dt>Klein + Reset</dt>
@@ -735,7 +745,7 @@
 
                 <div class="collapsible" data-collapsible>
                     <button type="button" class="collapsible-head" aria-expanded="false" aria-controls="helpImage">
-                        <span>🎨 Bild per Bluetooth senden</span>
+                        <span>🖼️ Galerie: Bilder auf das Gerät bringen</span>
                         <span class="collapsible-icon" aria-hidden="true">▲</span>
                     </button>
                     <div class="collapsible-body" id="helpImage">
@@ -745,28 +755,53 @@
                                     <li class="step-item">
                                         <span class="step-num">1</span>
                                         <div>
-                                            <strong>Unter „Bild“ ein Bild wählen</strong>
-                                            <span class="step-desc">Es wird an das Display angepasst und in dessen 6 Farben umgerechnet. Die Vorschau zeigt das Ergebnis.</span>
+                                            <strong>Unter „Bild“ auf das Feld mit dem „+“ tippen</strong>
+                                            <span class="step-desc">Es nimmt mehrere Dateien auf einmal, auch per Drag &amp; Drop. Jedes Bild wird an das Display angepasst und in dessen 6 Farben umgerechnet.</span>
                                         </div>
                                     </li>
                                     <li class="step-item">
                                         <span class="step-num">2</span>
                                         <div>
-                                            <strong>Bei Bedarf anpassen</strong>
-                                            <span class="step-desc">„Auto-Optimieren“ wählt passende Werte. Palette, Dithering, Helligkeit, Kontrast und Sättigung stehen unter „Bild-Einstellungen“. Das Symbol ↻ auf dem Bild dreht es. Mit der kalibrierten Palette zeigt die Vorschau die echten Display-Farben; Antippen (am PC: mit der Maus darüberfahren) zeigt die Rohdaten.</span>
+                                            <strong>Bei Bedarf anpassen und ordnen</strong>
+                                            <span class="step-desc">Ein Klick auf ein Bild öffnet es im Editor, das ✕ auf dem Bild löscht es, Ziehen ändert die Reihenfolge (Tastatur: Umschalt + Pfeiltaste). Im Editor: „Auto-Optimieren“ wählt passende Werte, Palette, Dithering, Helligkeit, Kontrast und Sättigung stehen unter „Bild-Einstellungen“, das Symbol ↻ dreht das Bild. Mit der kalibrierten Palette zeigt die Vorschau die echten Display-Farben; Antippen (am PC: mit der Maus darüberfahren) zeigt die Rohdaten. Die Pfeile unter einem Bild ändern die Reihenfolge, am PC geht das auch durch Ziehen.</span>
                                         </div>
                                     </li>
                                     <li class="step-item">
                                         <span class="step-num">3</span>
                                         <div>
-                                            <strong>„An Gerät senden“</strong>
-                                            <span class="step-desc">Das Gerät muss verbunden sein. Nach der Übertragung erscheint das Bild auf dem Display.</span>
+                                            <strong>Wiedergabe wählen</strong>
+                                            <span class="step-desc">Der Reihe nach oder zufällig. Der Wechsel passiert automatisch im eingestellten Abstand oder nur per Reset-Taste.</span>
+                                        </div>
+                                    </li>
+                                    <li class="step-item">
+                                        <span class="step-num">4</span>
+                                        <div>
+                                            <strong>„Synchronisieren“</strong>
+                                            <span class="step-desc">Überträgt neue Bilder, löscht entfernte und speichert Reihenfolge und Wiedergabe auf dem Gerät. Ohne Verbindung führt der Knopf erst durch das Verbinden. Nach einer Unterbrechung einfach noch einmal drücken: Es wird nur gesendet, was noch fehlt.</span>
                                         </div>
                                     </li>
                                 </ol>
+                                <dl class="def-list">
+                                    <div class="def-row">
+                                        <dt>Synchron</dt>
+                                        <dd>Das Bild liegt genau so auf dem Gerät.</dd>
+                                    </div>
+                                    <div class="def-row">
+                                        <dt>Neu, Geändert</dt>
+                                        <dd>Das Bild oder seine Änderung wird beim nächsten Synchronisieren übertragen.</dd>
+                                    </div>
+                                    <div class="def-row">
+                                        <dt>Nur auf dem Gerät</dt>
+                                        <dd>Das Bild stammt aus einem anderen Browser. Es bleibt auf dem Gerät, bis du es mit dem ✕ löschst. Geöffnet lässt es sich ansehen und in die Galerie übernehmen; das Original fehlt allerdings, jede Anpassung kostet Qualität.</dd>
+                                    </div>
+                                </dl>
                                 <p class="callout callout-info">
-                                    <span class="callout-caption">Gut zu wissen</span>
-                                    Ein gesendetes Bild bleibt stehen. Das Gerät wacht dann nicht mehr von selbst auf, sondern nur über die Reset-Taste. Sobald du unter „Gerät“ eine Download-URL speicherst, lädt es Bilder wieder automatisch.
+                                    <span class="callout-caption">Wo liegen die Bilder?</span>
+                                    Die Originale und deine Anpassungen bleiben in diesem Browser, auch ohne Verbindung und nach einem Neustart. Auf dem Gerät liegen die fertig umgerechneten Bilder: beim 7.3" im internen Speicher, beim 13.3" auf der SD-Karte. Die Galerie zeigt, wie viel Platz dort noch frei ist.
+                                </p>
+                                <p class="callout">
+                                    <span class="callout-caption">Galerie oder Download-URL</span>
+                                    Das Gerät zeigt entweder die Galerie oder das Bild von deinem Server. Der Umschalter oben in „Bild“ wechselt zwischen beiden. Sobald du unter „Abruf per URL“ eine Download-URL speicherst, lädt das Gerät von dort: Die Seite fragt vorher nach, denn die Bilder der Galerie werden dabei vom Gerät gelöscht – die Originale im Browser bleiben. „Synchronisieren“ schaltet zurück auf die Galerie. Verbindest du ein Gerät, dessen Galerie sich von der im Browser unterscheidet, bietet die Seite das Synchronisieren gleich an.
                                 </p>
                             </div>
                         </div>
@@ -792,15 +827,15 @@
                                     <li class="step-item">
                                         <span class="step-num">2</span>
                                         <div>
-                                            <strong>Download-URL und Intervall speichern</strong>
-                                            <span class="step-desc">Die URL zeigt auf ein Bild auf deinem Server (http oder https). Das Gerät lädt es im eingestellten Abstand, von 60 Sekunden bis 30 Tage. „Prüfen“ zeigt, ob das Gerät das Bild anzeigen kann.</span>
+                                            <strong>Unter „Bild“ → „Abruf per URL“ Download-URL und Intervall speichern</strong>
+                                            <span class="step-desc">Die URL zeigt auf ein Bild auf deinem Server (http oder https). Das Gerät lädt es im eingestellten Abstand, von 60 Sekunden bis 30 Tage. Nach dem Speichern fragt die Seite, ob sie trennen soll: Erst dann beginnt das Gerät mit dem Abruf.</span>
                                         </div>
                                     </li>
                                     <li class="step-item">
                                         <span class="step-num">3</span>
                                         <div>
                                             <strong>Bild auf dem Server ablegen</strong>
-                                            <span class="step-desc">Am besten ein Bild aus dem Editor: unter „Bild“ auf „BMP-Download“ tippen.</span>
+                                            <span class="step-desc">Am besten ein Bild aus dem Editor: unter „Bild“ ein Bild öffnen und auf „BMP-Download“ tippen.</span>
                                         </div>
                                     </li>
                                 </ol>
@@ -1030,6 +1065,14 @@
         <div class="modal-body">
             <h3 id="otaOfflineTitle">Offline Firmware flashen</h3>
             <p class="modal-text">Wähle dein Gerät aus, um die neueste Offline-Firmware zu flashen.</p>
+            <div class="callout callout-info callout-action" id="offlineOtaBackupNote">
+                <span>
+                    <span class="callout-caption">Vorher die Zertifikate sichern</span>
+                    Die Cloud-Firmware braucht die Zertifikate, die auf dem E-Paper gespeichert sind. Sichere sie einmal per USB-Kabel, bevor du die Firmware wechselst: Damit kommst du später sicher zur Cloud-Firmware zurück.
+                    <span id="offlineOtaBackupUnsupported" hidden>Das geht am PC mit Chrome, Edge oder Opera.</span>
+                </span>
+                <button type="button" id="btnOfflineOtaBackup" class="btn-neu btn-util btn-neu-ready">Zertifikate sichern</button>
+            </div>
             <div class="field">
                 <label class="form-label" for="offlineOtaDeviceSelect">Gerät (Displaygröße)</label>
                 <select id="offlineOtaDeviceSelect" class="neu-select">
@@ -1137,12 +1180,19 @@
     <dialog id="connectDialog" class="modal" aria-labelledby="connectDialogTitle">
         <div class="modal-body">
             <h3 id="connectDialogTitle">Kein Gerät verbunden</h3>
-            <p class="modal-text">Zum Senden wird das E-Paper per Bluetooth verbunden. Sobald die Verbindung steht, startet die Übertragung von selbst.</p>
+            <p class="modal-text" id="connectDialogText">Zum Synchronisieren wird das E-Paper per Bluetooth oder USB-Kabel verbunden. Sobald die Verbindung steht, startet die Übertragung von selbst.</p>
             <!-- the same steps as in the device view, copied from there by app.js -->
             <div id="connectDialogSteps"></div>
             <div class="modal-actions">
                 <button type="button" id="btnCancelConnectDialog" class="btn-neu">Abbrechen</button>
-                <button type="button" id="btnConnectAndSend" class="btn-neu btn-neu-signal btn-grow">Mit E-Paper verbinden</button>
+                <button type="button" id="btnConnectUsbAndSend" class="btn-neu btn-stacked" hidden>
+                    <span>USB</span>
+                    <span class="btn-hint">per USB verbinden</span>
+                </button>
+                <button type="button" id="btnConnectAndSend" class="btn-neu btn-neu-signal btn-stacked">
+                    <span>Bluetooth</span>
+                    <span class="btn-hint">per Bluetooth verbinden</span>
+                </button>
             </div>
         </div>
     </dialog>
@@ -1169,6 +1219,133 @@
             <p class="field-hint" id="versionSwitchNote" hidden></p>
             <div class="modal-actions">
                 <button type="button" id="btnCloseVersion" class="btn-neu">Schließen</button>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- Picture editor: one picture of the gallery -->
+    <dialog id="editorDialog" class="modal modal-editor" aria-labelledby="imageSecTitle" data-scrim-close="false">
+        <div class="modal-body">
+            <div class="editor-grid">
+                <div class="neu-card editor-preview" data-tone="info">
+                    <div class="card-head">
+                        <h2 id="imageSecTitle">Bild</h2>
+                        <div class="badges">
+                            <span class="badge" id="displayBadge">7.3" · 800×480</span>
+                            <span class="badge badge-ok" id="displayAutoBadge" hidden>✓ Vom Gerät</span>
+                        </div>
+                    </div>
+
+                    <div class="preview-frame" id="previewContainer">
+                        <div class="preview-empty" id="previewEmpty">
+                            <svg class="icon" aria-hidden="true"><use href="#i-image" /></svg>
+                            <span class="preview-empty-title">Bild wird geladen…</span>
+                        </div>
+                        <!-- With the calibrated profile: hover (mouse) or tap (touch) shows the raw colours -->
+                        <div class="preview-stage" id="previewStage" hidden>
+                            <canvas id="previewCanvas" role="img" aria-label="Vorschau des aufbereiteten Bildes"></canvas>
+                            <canvas id="previewHoverCanvas" aria-hidden="true"></canvas>
+                        </div>
+                        <span class="preview-chip preview-flag" id="previewRawFlag" hidden>Rohdaten</span>
+                        <div class="preview-chip preview-busy" aria-hidden="true">
+                            <span class="spinner spinner-sm"></span>
+                            Berechne
+                        </div>
+                        <button type="button" id="btnRotate" class="preview-action" aria-label="Bild um 90° drehen" title="Bild um 90° drehen" hidden>↻</button>
+                    </div>
+
+                    <p class="callout callout-warn editor-note" id="editorDeviceNote" hidden>
+                        <span class="callout-caption">Bild vom Gerät</span>
+                        Dieses Bild liegt nur in den 6 Display-Farben vor, das Original fehlt. Unverändert gespeichert bleibt es wie es ist. Jede Anpassung rechnet es neu um und kostet Qualität.
+                    </p>
+
+                </div>
+
+                <div class="stack">
+                    <div class="collapsible" id="imageSettingsDetails" data-collapsible data-tone="warn">
+                        <button type="button" class="collapsible-head" aria-expanded="false" aria-controls="imageSettingsBody">
+                            <span>Bild-Einstellungen</span>
+                            <span class="collapsible-icon" aria-hidden="true">▲</span>
+                        </button>
+                        <div class="collapsible-body" id="imageSettingsBody">
+                            <div class="collapsible-inner">
+                                <div class="collapsible-content" id="expertControls">
+                                    <div class="range-row">
+                                        <label for="processingBrightness">Helligkeit</label>
+                                        <input type="range" id="processingBrightness" min="-100" max="100" value="0" />
+                                        <output for="processingBrightness" id="processingBrightnessOut">0</output>
+                                    </div>
+                                    <div class="range-row">
+                                        <label for="processingContrast">Kontrast</label>
+                                        <input type="range" id="processingContrast" min="-100" max="100" value="0" />
+                                        <output for="processingContrast" id="processingContrastOut">0</output>
+                                    </div>
+                                    <div class="range-row">
+                                        <label for="processingSaturation">Sättigung</label>
+                                        <input type="range" id="processingSaturation" min="-100" max="100" value="0" />
+                                        <output for="processingSaturation" id="processingSaturationOut">0</output>
+                                    </div>
+
+                                    <div class="btn-row btn-row-pair">
+                                        <button type="button" id="btnAutoDither" class="btn-neu btn-neu-attention" disabled>Auto-Optimieren</button>
+                                        <button type="button" id="btnResetProcessing" class="btn-neu btn-neu-danger-text">Zurücksetzen</button>
+                                    </div>
+
+                                    <hr class="divider" />
+
+                                    <div class="field">
+                                        <label class="form-label" for="displaySizeSelect">Display</label>
+                                        <select id="displaySizeSelect" class="neu-select">
+                                            <option value="7" selected>7.3" (800×480)</option>
+                                            <option value="13">13.3" (1200×1600)</option>
+                                        </select>
+                                    </div>
+
+                                    <div class="field">
+                                        <label class="form-label" for="paletteSelect">Palette</label>
+                                        <select id="paletteSelect" class="neu-select">
+                                            <option value="spectra6Original">Spectra 6 Originalfarben (knallig)</option>
+                                            <option value="spectra6Custom">Spectra 6 Custom</option>
+                                            <option value="new" selected>Spectra 6 Profil (kalibriert)</option>
+                                        </select>
+                                    </div>
+
+                                    <div id="paletteEditor" class="palette-editor" role="group" aria-label="Palettenfarben anpassen">
+                                        <!-- Palette colors are injected here -->
+                                    </div>
+
+                                    <div class="field">
+                                        <label class="form-label" for="errorDiffusionMatrix">Dithering-Algorithmus</label>
+                                        <select id="errorDiffusionMatrix" class="neu-select">
+                                            <option value="floydSteinberg" selected>Floyd-Steinberg</option>
+                                            <option value="atkinson">Atkinson</option>
+                                            <option value="jarvisJudiceNinke">Jarvis-Judice-Ninke</option>
+                                            <option value="sierra2">Sierra 2</option>
+                                        </select>
+                                    </div>
+
+                                    <label class="form-check-neu">
+                                        <input type="checkbox" id="serpentine" checked />
+                                        <span class="check-text">
+                                            <span class="check-title">Serpentine Dithering</span>
+                                            <span class="check-desc">Wechselt die Richtung pro Zeile – vermeidet sichtbare Muster.</span>
+                                        </span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- Wide screens: one row at the bottom right. Phones: "Speichern" floats above the content. -->
+            <div class="editor-foot">
+                <div class="editor-save">
+                    <button type="button" id="btnSaveToGallery" class="btn-neu btn-neu-signal" disabled>Speichern</button>
+                </div>
+                <div class="modal-actions editor-actions">
+                    <button type="button" id="btnCloseEditor" class="btn-neu">Schließen</button>
+                    <button type="button" id="btnDownloadBin" class="btn-neu btn-neu-info" disabled>BMP-Download</button>
+                </div>
             </div>
         </div>
     </dialog>

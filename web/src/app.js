@@ -1,7 +1,9 @@
 import { GeneratePicture } from "./GeneratePicture.js";
 import { DeviceBleInterface, validateEsp32FirmwareBinary } from "./DeviceBleInterface.js";
 import { ESPLoader, Transport } from "esptool-js";
-import { checkImageForDevice, imageHeaderComplete } from "./imageCheck.js";
+import { Gallery } from "./gallery.js";
+import { openGalleryStore } from "./galleryStore.js";
+import { DISPLAYS, GALLERY_HEADER_SIZE, GALLERY_MAX_ITEMS, GALLERY_WINDOW_BITS, buildContainer, parseContainer, readContainerHeader, repackContainer, idOf, makeThumb, rawToPng } from "./galleryFormat.js";
 import { bootloaderAnswers, requestBootloader, readBootLog } from "./serialBoot.js";
 import { $, setStatus, onStatus, currentStatus, setProgress, onProgress, setLed, initNavigation, navigate, getCurrentView, initDialogs, openDialog, closeDialog, showMessage, initCollapsibles, setCollapsible, nextFrame, byteLength, setFieldError, formatDuration, downloadBlob } from "./ui.js";
 
@@ -57,6 +59,16 @@ const generatePicture = new GeneratePicture();
 const bleInterface = new DeviceBleInterface();
 const bluetoothAvailable = DeviceBleInterface.isSupported();
 const serialAvailable = "serial" in navigator;
+const canConnect = bluetoothAvailable || serialAvailable; // Bluetooth or the USB link
+
+/** The side of "Bild" that was open last. */
+function storedSource() {
+  try {
+    return localStorage.getItem("bildSource") === "url" ? "url" : "gallery";
+  } catch (e) {
+    return "gallery";
+  }
+}
 
 /** Central UI state – every enabled/disabled/visible decision is derived from it in syncUi(). */
 const state = {
@@ -64,6 +76,8 @@ const state = {
   busy: false, // a transfer (upload / flash / backup) is running
   hasImage: false,
   otaMethod: "ble", // "ble" | "serial"
+  source: storedSource(), // view "Bild": "gallery" | "url"
+  deviceMode: null, // what the connected device shows: 0 = gallery, 1 = download URL, null = unknown
   wifiScanning: false,
 };
 
@@ -142,8 +156,6 @@ const btnPreviewJson = $("btnPreviewJson");
 const settingTimeout = $("settingTimeout");
 const settingTimeoutHint = $("settingTimeoutHint");
 const settingUrl = $("settingUrl");
-const urlValidationStatus = $("urlValidationStatus");
-const btnCheckImageUrl = $("btnCheckImageUrl");
 const settingSettingsUrl = $("settingSettingsUrl");
 const settingHttpAuthUser = $("settingHttpAuthUser");
 const settingHttpAuthPassword = $("settingHttpAuthPassword");
@@ -151,10 +163,29 @@ const settingMotionWakeup = $("settingMotionWakeup");
 const settingChargerMode = $("settingChargerMode");
 const settingAutoRotation = $("settingAutoRotation");
 
-const fileInput = $("fileInput");
-const btnPickImage = $("btnPickImage");
-const btnUploadImage = $("btnUploadImage");
-const uploadHint = $("uploadHint");
+const galleryGrid = $("galleryGrid");
+const galleryEmpty = $("galleryEmpty");
+const galleryFileInput = $("galleryFileInput");
+const galleryDisplayBadge = $("galleryDisplayBadge");
+// The last box of the grid: adds pictures.
+const btnAddPictures = document.createElement("button");
+btnAddPictures.type = "button";
+btnAddPictures.id = "btnAddPictures";
+btnAddPictures.className = "tile-add-btn";
+btnAddPictures.textContent = "+";
+btnAddPictures.setAttribute("aria-label", "Bilder hinzufügen");
+btnAddPictures.title = "Bilder hinzufügen";
+const addTile = document.createElement("li");
+addTile.className = "tile-add";
+addTile.appendChild(btnAddPictures);
+const btnSyncGallery = $("btnSyncGallery");
+const syncHint = $("syncHint");
+const galleryInterval = $("galleryInterval");
+const galleryIntervalUnit = $("galleryIntervalUnit");
+
+const editorDialog = $("editorDialog");
+const editorDeviceNote = $("editorDeviceNote");
+const btnSaveToGallery = $("btnSaveToGallery");
 const btnDownloadBin = $("btnDownloadBin");
 const canvas = $("previewCanvas");
 const previewHoverCanvas = $("previewHoverCanvas");
@@ -251,42 +282,56 @@ function syncUi() {
 
   // App bar: one button whose meaning follows the connection state
   btnConnect.hidden = connected || pending;
-  btnConnect.disabled = !bluetoothAvailable;
+  btnConnect.disabled = !canConnect;
   btnDisconnect.hidden = !(connected || pending);
   btnDisconnect.textContent = connected ? "Trennen" : "Abbrechen";
   document.querySelectorAll('[data-action="connect"]').forEach((btn) => {
-    btn.disabled = !bluetoothAvailable || pending;
+    btn.disabled = !canConnect || pending;
     btn.textContent = pending ? "Verbinde…" : "Mit E-Paper verbinden";
   });
 
   systemStatusBar.hidden = !connected;
   notConnectedState.hidden = connected;
-  $("deviceFoot").classList.toggle("view-narrow", !connected); // as wide as the box above it
+  // the log: below the WLAN box of a connected device, else below the hint how to connect
+  const aside = $("deviceAside");
+  const asideHome = connected ? controls : $("viewConnect");
+  if (aside.parentElement !== asideHome) asideHome.appendChild(aside);
+  aside.classList.toggle("view-narrow", !connected);
   controls.hidden = !connected;
 
+  // Bild: the gallery, or the download from a URL (stored on the device)
+  $("btnSourceGallery").setAttribute("aria-pressed", String(state.source === "gallery"));
+  $("btnSourceUrl").setAttribute("aria-pressed", String(state.source === "url"));
+  $("sourceGallery").hidden = state.source !== "gallery";
+  $("sourceUrl").hidden = state.source !== "url";
+  // which of the two the connected device uses
+  $("sourceGalleryActive").hidden = !connected || state.deviceMode !== 0;
+  $("sourceUrlActive").hidden = !connected || state.deviceMode !== 1;
+
   // Editor
-  btnPickImage.textContent = state.hasImage ? "Anderes Bild" : "Bild wählen";
   btnRotate.hidden = !state.hasImage;
   btnRotate.disabled = busy;
   btnAutoDither.disabled = !state.hasImage || busy;
   btnDownloadBin.disabled = !state.hasImage || busy;
-  // Sending also works without a connection: the button then leads through connecting first.
-  // That needs Web Bluetooth, though.
-  const cannotConnect = !connected && !bluetoothAvailable;
-  btnUploadImage.disabled = !state.hasImage || cannotConnect || busy;
-  // A disabled send button says why, in small print below its label.
-  const sendHint = !state.hasImage ? "kein Bild" : cannotConnect ? "kein Bluetooth" : "";
-  uploadHint.textContent = sendHint;
-  uploadHint.hidden = !sendHint;
+  btnSaveToGallery.disabled = !state.hasImage || busy;
+
+  // Gallery. Syncing also works without a connection: the button then leads through connecting
+  // first. That needs Web Bluetooth or Web Serial, though.
+  const cannotConnect = !connected && !canConnect;
+  btnSyncGallery.disabled = busy || cannotConnect || (connected && !bleInterface.gallerySupported);
+  syncHint.textContent = galleryHint;
+  syncHint.hidden = !galleryHint;
+  [btnAddPictures, $("btnOrientLandscape"), $("btnOrientPortrait"), galleryInterval, galleryIntervalUnit, $("btnPlayOrder"), $("btnPlayShuffle"), $("btnPlayAuto"), $("btnPlayManual")].forEach((el) => {
+    el.disabled = busy;
+  });
 
   // Device settings
   btnSaveWifi.disabled = busy;
-  btnSaveSettings.disabled = busy;
+  btnSaveSettings.disabled = busy || (!connected && !canConnect);
   btnScanWifi.disabled = busy || state.wifiScanning;
   btnScanWifi.textContent = state.wifiScanning ? "Suche…" : "Scan";
   btnFactoryReset.disabled = busy;
   btnPreviewJson.disabled = busy;
-  btnCheckImageUrl.disabled = busy;
 
   // Firmware
   const usbBlocked = state.otaMethod === "serial" && !serialAvailable;
@@ -387,7 +432,7 @@ async function runTransfer({ title, abortable = false, successTitle = "Fertig", 
     await nextFrame();
     const outcome = await task();
     ok = true;
-    finishTransfer({ ok: true, title: outcome?.title || successTitle, message: currentStatus.text, sticky: stickySuccess });
+    finishTransfer({ ok: true, title: outcome?.title || successTitle, message: currentStatus.text, sticky: stickySuccess || Boolean(outcome?.sticky) });
   } catch (err) {
     console.error(err);
     if (transfer.aborted) {
@@ -441,10 +486,12 @@ bleInterface.onStatusChange = (text, level) => {
 };
 
 bleInterface.onConnectionStateChange = (connectionState) => {
+  if (connectionState === "connecting") userConnect = true;
+  if (connectionState === "reconnecting") userConnect = false;
   state.conn = connectionState;
-  // connecting was cancelled or failed for good: nothing is sent later on its own
-  if (connectionState === "disconnected") sendAfterConnect = false;
-  syncUi();
+  // connecting was cancelled or failed for good: nothing is synced later on its own
+  if (connectionState === "disconnected") syncAfterConnect = false;
+  renderGallery();
 };
 
 bleInterface.onConnected = (isPaperL) => {
@@ -456,12 +503,16 @@ bleInterface.onConnected = (isPaperL) => {
   setChip("systemDeviceName", `${deviceName} · ${is13Inch ? '13.3"' : '7.3"'}`, "neutral", shortDeviceName(deviceName));
 
   state.conn = "connected";
-  syncUi();
+  renderGallery();
 
-  // "Senden" was pressed before a device was connected: the upload starts now.
-  if (sendAfterConnect) {
-    sendAfterConnect = false;
-    if (state.hasImage) startImageUpload();
+  // "Synchronisieren" was pressed before a device was connected: the sync starts now.
+  if (syncAfterConnect) {
+    syncAfterConnect = false;
+    if (connectPurpose === "url") saveDeviceSettings();
+    else startGallerySync();
+  } else {
+    offerSyncAfterList = userConnect; // not after a link that came back on its own
+    refreshDeviceGallery();
   }
 };
 
@@ -484,19 +535,95 @@ bleInterface.onDisconnected = () => {
   wifiList.replaceChildren();
   wifiListBox.hidden = true;
 
-  syncUi();
+  listRev = null;
+  offerSyncAfterList = false;
+  state.deviceMode = null;
+  syncBadgeSettings.hidden = true;
+  $("syncBadgePlay").hidden = true;
+  gallery.clearDevice(); // renders the gallery and the buttons
 };
 
-btnConnect.addEventListener("click", () => bleInterface.connect());
-document.querySelectorAll('[data-action="connect"]').forEach((btn) => btn.addEventListener("click", () => bleInterface.connect()));
+btnConnect.addEventListener("click", () => startConnect());
+document.querySelectorAll('[data-action="connect"]').forEach((btn) => btn.addEventListener("click", () => startConnect()));
 btnDisconnect.addEventListener("click", () => bleInterface.disconnect());
+
+// --- Bluetooth or USB: asked every time, or chosen once under "Gerät" ---
+
+const CONNECT_WAYS = { ask: "btnWayAsk", ble: "btnWayBle", usb: "btnWayUsb" };
+let connectWay = "ask";
+try {
+  const stored = localStorage.getItem("connectWay");
+  if (stored in CONNECT_WAYS) connectWay = stored;
+} catch (e) {
+  // private mode: asks every time
+}
+
+/** The way "Verbinden" takes: the choice, as far as this browser offers it. */
+function effectiveConnectWay() {
+  if (!serialAvailable) return "ble";
+  if (!bluetoothAvailable) return "usb";
+  return connectWay;
+}
+
+function renderConnectWay() {
+  const way = effectiveConnectWay();
+  Object.entries(CONNECT_WAYS).forEach(([key, id]) => $(id).setAttribute("aria-pressed", String(key === way)));
+  $("btnWayAsk").disabled = !bluetoothAvailable || !serialAvailable;
+  $("btnWayBle").disabled = !bluetoothAvailable;
+  $("btnWayUsb").disabled = !serialAvailable;
+  $("connectWayHint").textContent =
+    !bluetoothAvailable || !serialAvailable
+      ? `Dieser Browser kann das E-Paper nur per ${serialAvailable ? "USB-Kabel" : "Bluetooth"} verbinden.`
+      : { ask: "„Verbinden“ fragt jedes Mal, ob per Bluetooth oder USB-Kabel.", ble: "„Verbinden“ nimmt ohne Nachfrage Bluetooth.", usb: "„Verbinden“ nimmt ohne Nachfrage das USB-Kabel." }[way];
+}
+
+Object.entries(CONNECT_WAYS).forEach(([key, id]) =>
+  $(id).addEventListener("click", () => {
+    connectWay = key;
+    try {
+      localStorage.setItem("connectWay", key);
+    } catch (e) {
+      // lasts for this visit
+    }
+    renderConnectWay();
+  }),
+);
+renderConnectWay();
+
+/**
+ * Starts connecting. Must run directly inside a click (the choosers need a user gesture).
+ * sync: once the device is connected, the gallery or the download settings are synced (connectPurpose).
+ */
+async function startConnect({ sync = false } = {}) {
+  if (state.conn !== "disconnected") return;
+  const way = effectiveConnectWay();
+  if (way === "ask") {
+    openConnectDialog(sync);
+  } else if (way === "usb") {
+    syncAfterConnect = (await connectUsb()) && sync;
+  } else {
+    syncAfterConnect = sync;
+    bleInterface.connect();
+  }
+}
+
+/** Connects over the USB cable: everything that works over Bluetooth, on the serial line. */
+async function connectUsb() {
+  if (state.conn !== "disconnected") return false;
+  const port = await pickSerialPort(); // must run directly inside the click
+  if (!port) return false;
+  bleInterface.connect({ usbPort: port });
+  return true;
+}
 
 if (!bluetoothAvailable) {
   $("bluetoothUnsupported").hidden = false;
   if (!window.isSecureContext) {
-    $("bluetoothUnsupportedText").textContent = "Web Bluetooth funktioniert nur über eine sichere Verbindung (HTTPS oder localhost). Bild-Editor und BMP-Download funktionieren trotzdem.";
+    $("bluetoothUnsupportedText").textContent = "Web Bluetooth funktioniert nur über eine sichere Verbindung (HTTPS oder localhost). Galerie, Bild-Editor und BMP-Download funktionieren trotzdem.";
+  } else if (serialAvailable) {
+    $("bluetoothUnsupportedText").textContent = "Dieser Browser unterstützt kein Web Bluetooth. „Verbinden“ nutzt hier das USB-Kabel.";
   }
-  setStatus("Bluetooth ist in diesem Browser nicht verfügbar – Bild-Editor und Download funktionieren trotzdem.", "warn");
+  setStatus("Bluetooth ist in diesem Browser nicht verfügbar – Galerie, Bild-Editor und Download funktionieren trotzdem.", "warn");
 } else {
   setStatus("Warte auf Verbindung…", "idle");
 }
@@ -580,6 +707,7 @@ bleInterface.onSystemStatusChange = (info) => {
 function updateWifiStatusUI(isConnected) {
   wifiInputMask.hidden = isConnected;
   wifiConnectedInfo.hidden = !isConnected;
+  $("btnCancelWifi").hidden = true; // only while a working network is being changed
 }
 
 bleInterface.onWifiStatusChange = (isConnected) => {
@@ -599,7 +727,16 @@ bleInterface.onWifiInfoChange = (info) => {
 
 btnEditWifi.addEventListener("click", () => {
   updateWifiStatusUI(false);
+  $("btnCancelWifi").hidden = false;
   wifiSsid.focus();
+});
+
+$("btnCancelWifi").addEventListener("click", () => {
+  wifiPass.value = "";
+  [wifiSsid, wifiPass].forEach((el) => setFieldError(el, ""));
+  wifiSsid.value = infoSsid.textContent; // the network the device is still connected to
+  updateWifiStatusUI(true);
+  btnEditWifi.focus();
 });
 
 let wifiScanTimer = null;
@@ -749,7 +886,10 @@ document.querySelectorAll("[data-reveal]").forEach((btn) => {
 // Device settings
 // ---------------------------------------------------------------------------
 
+let settingsDirty = false; // the download settings were edited and are not on the device
+
 function markSettingsDirty(dirty) {
+  settingsDirty = dirty;
   settingsSaveZone.classList.toggle("settings-dirty", dirty);
 }
 
@@ -760,27 +900,38 @@ function updateTimeoutHint() {
 }
 
 bleInterface.onSettingsLoaded = (settings) => {
-  if (settings.url !== undefined) {
+  if (settings.imageMode !== undefined) {
+    // without a URL there is nothing to download: the device then waits for a gallery
+    state.deviceMode = settings.imageMode === 1 && settings.url ? 1 : 0;
+  }
+  // Download settings that were prepared here before connecting are kept: they are what the
+  // user wants on the device.
+  const keepForm = settingsDirty;
+  if (settings.url !== undefined && !keepForm) {
     settingUrl.value = settings.url;
     syncBadgeSettings.hidden = false;
   }
   if (settings.timeout !== undefined) {
-    settingTimeout.value = settings.timeout;
-    syncBadgeSettings.hidden = false;
+    if (!keepForm) {
+      settingTimeout.value = settings.timeout;
+      syncBadgeSettings.hidden = false;
+    }
+    setGalleryInterval(settings.timeout);
+    intervalDirty = false;
   }
-  if (settings.httpAuthUser !== undefined) settingHttpAuthUser.value = settings.httpAuthUser;
+  if (settings.httpAuthUser !== undefined && !keepForm) settingHttpAuthUser.value = settings.httpAuthUser;
   if (settings.motionWakeup !== undefined) settingMotionWakeup.checked = settings.motionWakeup;
   if (settings.chargerMode !== undefined) settingChargerMode.checked = settings.chargerMode;
   if (settings.autoRotation !== undefined) settingAutoRotation.checked = settings.autoRotation;
-  if (settings.settingsUrl !== undefined) settingSettingsUrl.value = settings.settingsUrl;
+  if (settings.settingsUrl !== undefined && !keepForm) settingSettingsUrl.value = settings.settingsUrl;
   if (settings.wifiSsid !== undefined) {
     wifiSsid.value = settings.wifiSsid;
     syncBadgeWifi.hidden = false;
   }
 
-  [settingUrl, settingTimeout, settingSettingsUrl, settingHttpAuthUser, settingHttpAuthPassword].forEach((el) => setFieldError(el, ""));
-  urlValidationStatus.hidden = true;
   updateTimeoutHint();
+  if (keepForm) return;
+  [settingUrl, settingTimeout, settingSettingsUrl, settingHttpAuthUser, settingHttpAuthPassword].forEach((el) => setFieldError(el, ""));
   markSettingsDirty(false);
 };
 
@@ -791,9 +942,6 @@ bleInterface.onSettingsLoaded = (settings) => {
   });
 });
 settingTimeout.addEventListener("input", updateTimeoutHint);
-settingUrl.addEventListener("input", () => {
-  urlValidationStatus.hidden = true; // the result belongs to the previous URL
-});
 
 function validateUrlField(input) {
   const value = input.value.trim();
@@ -846,122 +994,6 @@ function validateSettingsForm() {
 
 // --- Check of the picture behind the download URL ---
 
-const IMAGE_HEAD_LIMIT = 1024 * 1024; // the headers of a JPEG with a large EXIF block still fit
-
-/** Loads the beginning of the file behind a URL: just enough to judge its format. */
-async function fetchImageHead(url, allowProxy) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15000);
-  try {
-    const options = { cache: "no-store", signal: controller.signal };
-    const res = allowProxy ? await fetchWithProxy(url, options) : await fetch(url, options);
-    if (!res.ok) {
-      const error = new Error("HTTP " + res.status);
-      error.httpStatus = res.status;
-      throw error;
-    }
-    if (!res.body) return new Uint8Array(await res.arrayBuffer());
-
-    const reader = res.body.getReader();
-    let head = new Uint8Array(0);
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const joined = new Uint8Array(head.length + value.length);
-      joined.set(head);
-      joined.set(value, head.length);
-      head = joined;
-      if (imageHeaderComplete(head) || head.length >= IMAGE_HEAD_LIMIT) {
-        reader.cancel().catch(() => {}); // the rest of the picture is not needed
-        break;
-      }
-    }
-    return head;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/** Fallback when the browser may not read the file itself (CORS): can it at least show it? */
-function canLoadAsImage(url) {
-  return new Promise((resolve) => {
-    const img = new Image();
-    const timeout = setTimeout(() => resolve(false), 5000);
-    img.onload = () => {
-      clearTimeout(timeout);
-      resolve(true);
-    };
-    img.onerror = () => {
-      clearTimeout(timeout);
-      resolve(false);
-    };
-    img.src = url;
-  });
-}
-
-let imageCheckRun = 0;
-
-/**
- * Tells whether the device can show the picture behind the download URL (see imageCheck.js).
- * Informational only: the device fetches the URL itself, saving never depends on the result.
- * allowProxy: also try the public CORS proxies. Only on request ("Prüfen"), because the URL is
- * sent to them.
- */
-async function checkImageUrl(url, { allowProxy }) {
-  const run = ++imageCheckRun;
-  const show = (level, text) => {
-    if (run !== imageCheckRun || settingUrl.value.trim() !== url) return; // a newer check or another URL
-    urlValidationStatus.dataset.tone = level;
-    urlValidationStatus.textContent = ({ ok: "✓ ", warn: "⚠ ", err: "✗ " }[level] || "") + text;
-    urlValidationStatus.hidden = false;
-  };
-
-  if (!url) {
-    urlValidationStatus.hidden = true;
-    return;
-  }
-  show("info", "… Prüfe das Bild hinter der URL");
-
-  try {
-    const head = await fetchImageHead(url, allowProxy);
-    const result = checkImageForDevice(head, { width: EPD_WIDTH, height: EPD_HEIGHT });
-    show(result.level, result.text);
-  } catch (e) {
-    if (e.httpStatus === 401) {
-      show("warn", "Der Server verlangt eine Anmeldung (HTTP 401). Der Browser kann das Bild deshalb nicht prüfen.");
-    } else if (e.httpStatus) {
-      show("warn", `Der Server antwortet mit HTTP ${e.httpStatus}. Bitte die URL prüfen.`);
-    } else {
-      // Not readable from this page: local address, http:// on an https:// page, or no CORS permission.
-      const mixedContent = location.protocol === "https:" && /^http:\/\//i.test(url);
-      const reachable = !mixedContent && (await canLoadAsImage(url));
-      const proxyHint = !allowProxy && !isPrivateUrl(url) ? " „Prüfen“ versucht es über einen öffentlichen Proxy." : "";
-      show("warn", (reachable ? "Die URL ist erreichbar, der Browser darf das Bild aber nicht lesen. Das Format wurde nicht geprüft." : "Der Browser kann die URL nicht lesen (z. B. lokale Adresse). Das Bild wurde nicht geprüft, das Gerät lädt es trotzdem.") + proxyHint);
-    }
-  }
-}
-
-btnCheckImageUrl.addEventListener("click", async () => {
-  if (!settingUrl.value.trim()) {
-    setFieldError(settingUrl, "Bitte zuerst eine Download-URL eingeben.");
-    settingUrl.focus();
-    return;
-  }
-  if (!validateUrlField(settingUrl)) {
-    settingUrl.focus();
-    return;
-  }
-
-  btnCheckImageUrl.textContent = "Prüfe…";
-  btnCheckImageUrl.disabled = true;
-  try {
-    await checkImageUrl(settingUrl.value, { allowProxy: true });
-  } finally {
-    btnCheckImageUrl.textContent = "Prüfen";
-    syncUi();
-  }
-});
-
 async function saveDeviceSettings() {
   if (state.busy) return false;
   if (!validateSettingsForm()) {
@@ -983,6 +1015,21 @@ async function saveDeviceSettings() {
     settingsUrl: settingSettingsUrl.value,
   };
 
+  // A download URL replaces the gallery on the device.
+  const stored = Number(gallery.deviceState?.count) || 0;
+  const replacesGallery = Boolean(settings.url) && state.deviceMode !== 1 && bleInterface.gallerySupported && stored > 0;
+  if (replacesGallery) {
+    const confirmed = await showMessage({
+      title: "Auf Abruf per URL umstellen?",
+      tone: "warn",
+      text: `Das E-Paper zeigt dann das Bild der Download-URL. Die ${pictures(stored)} der Galerie werden vom Gerät gelöscht (in diesem Browser bleiben sie erhalten). Als Intervall gilt das Aktualisierungs-Intervall von hier, nicht mehr der Bildwechsel der Galerie.`,
+      okLabel: "Umstellen",
+      cancelLabel: "Abbrechen",
+      okVariant: "danger",
+    });
+    if (!confirmed) return false;
+  }
+
   const originalText = btnSaveSettings.textContent;
   btnSaveSettings.textContent = "Speichere…";
   btnSaveSettings.disabled = true;
@@ -995,18 +1042,66 @@ async function saveDeviceSettings() {
   }
 
   if (success) {
+    if (settings.url) state.deviceMode = 1; // a stored URL switches the device to the download
+    if (replacesGallery) {
+      try {
+        await bleInterface.galleryClear();
+        refreshDeviceGallery();
+      } catch (e) {
+        setStatus("Einstellungen gespeichert, die Galerie auf dem E-Paper ließ sich aber nicht löschen: " + e.message, "warn");
+      }
+    }
     syncBadgeSettings.hidden = false;
     markSettingsDirty(false);
-    checkImageUrl(settings.url, { allowProxy: false });
+    setGalleryInterval(settings.timeout || "3600");
+    intervalDirty = false;
+    renderGallery();
+    if (settings.url) offerToStartDownload(); // not awaited: the caller goes on with the result
   } else if (!bleInterface.isConnected) {
     setStatus("Nicht gespeichert: Das E-Paper ist nicht verbunden.", "err");
   }
   return success;
 }
 
+/** The device starts the download once the setup mode has ended: stay connected, or disconnect now? */
+async function offerToStartDownload() {
+  if (!bleInterface.isConnected) return;
+  const leave = await showMessage({
+    title: "Abruf jetzt starten?",
+    text: "Die Einstellungen sind gespeichert. Das E-Paper lädt das Bild, sobald die Verbindung getrennt ist. Du kannst jetzt trennen – oder verbunden bleiben und weitere Einstellungen vornehmen.",
+    okLabel: "Trennen und laden",
+    cancelLabel: "Verbunden bleiben",
+    okVariant: "signal",
+  });
+  if (leave && bleInterface.isConnected) bleInterface.disconnect();
+}
+
+/**
+ * "Synchronisieren" of the download settings: stores them on the device. Without a connection
+ * it leads through connecting first and stores them then (see onConnected).
+ */
+async function syncUrlSettings() {
+  if (state.busy) return false;
+  if (bleInterface.isConnected) return saveDeviceSettings();
+  if (!validateSettingsForm()) {
+    setStatus("Bitte die markierten Felder korrigieren.", "err");
+    settingsForm.querySelector('[aria-invalid="true"]')?.focus();
+    return false;
+  }
+  markSettingsDirty(true); // what the form says goes to the device, not the other way round
+  connectPurpose = "url";
+  if (state.conn !== "disconnected") {
+    syncAfterConnect = true;
+    setStatus("Verbindung wird aufgebaut – die Einstellungen werden danach übertragen.", "busy");
+  } else {
+    startConnect({ sync: true });
+  }
+  return false;
+}
+
 settingsForm.addEventListener("submit", (e) => {
   e.preventDefault();
-  saveDeviceSettings();
+  syncUrlSettings();
 });
 
 // --- Settings JSON preview ---
@@ -1073,7 +1168,7 @@ $("btnApplyJson").addEventListener("click", async () => {
   updateTimeoutHint();
   markSettingsDirty(true);
 
-  const saved = await saveDeviceSettings();
+  const saved = await syncUrlSettings();
   if (saved && chargerIgnored) {
     setStatus("Einstellungen gespeichert. „chargerMode: true“ aus der Datei wurde nicht übernommen: Der Charger Mode lässt sich nur mit dem Schalter einschalten.", "warn");
   }
@@ -1135,12 +1230,17 @@ btnFactoryReset.addEventListener("click", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Image editor
+// Display format
 // ---------------------------------------------------------------------------
 
 let EPD_WIDTH = 800;
 let EPD_HEIGHT = 480;
 let displayLockedToDevice = false;
+
+/** "7" or "13": the display the pictures are prepared for. */
+function currentDisplay() {
+  return EPD_WIDTH === 1200 ? "13" : "7";
+}
 
 function applyDisplayProfile(isPaperL, lockToDevice = false) {
   const nextWidth = isPaperL ? 1200 : 800;
@@ -1155,8 +1255,9 @@ function applyDisplayProfile(isPaperL, lockToDevice = false) {
   EPD_HEIGHT = nextHeight;
   displayLockedToDevice = lockToDevice;
 
-  previewContainer.style.setProperty("--epd-ratio", `${EPD_WIDTH} / ${EPD_HEIGHT}`);
+  applyOrientationLayout();
   displayBadge.textContent = isPaperL ? '13.3" · 1200×1600' : '7.3" · 800×480';
+  galleryDisplayBadge.textContent = isPaperL ? '13.3"' : '7.3"';
   displaySizeSelect.value = isPaperL ? "13" : "7";
   displaySizeSelect.disabled = lockToDevice;
   displaySizeSelect.title = lockToDevice ? `Automatisch an verbundenes Gerät angepasst (${isPaperL ? '13.3"' : '7.3"'})` : "";
@@ -1168,18 +1269,35 @@ function applyDisplayProfile(isPaperL, lockToDevice = false) {
 
   const img = generatePicture.getOriginalImage();
   if (img && dimsChanged) {
-    applyAutoRotation(img);
+    generatePicture.setImageRotation(orientationRotation());
     updatePreview();
   }
+  if (dimsChanged) renderGallery();
 }
 
-/** Landscape picture on a portrait display (or vice versa) is turned by 90°. */
-function applyAutoRotation(img) {
-  if ((img.height > img.width && EPD_WIDTH > EPD_HEIGHT) || (img.width > img.height && EPD_HEIGHT > EPD_WIDTH)) {
-    generatePicture.setImageRotation(270);
-  } else {
-    generatePicture.setImageRotation(0);
-  }
+// --- Orientation of the frame ---
+
+/** The picture rows of this display are taller than wide. */
+const rasterPortrait = (display) => DISPLAYS[display].height > DISPLAYS[display].width;
+
+/** The frame hangs upright (true) or across (false). Not chosen yet: as its display is built. */
+function framePortrait(display = currentDisplay()) {
+  return gallery.play.portrait ?? rasterPortrait(display);
+}
+
+/** How a picture is turned so that it is upright on the frame. */
+function orientationRotation(display = currentDisplay()) {
+  return framePortrait(display) !== rasterPortrait(display) ? 270 : 0;
+}
+
+/** Preview and tiles show the pictures as the frame hangs. */
+function applyOrientationLayout() {
+  const turned = orientationRotation() !== 0;
+  const ratio = turned ? `${EPD_HEIGHT} / ${EPD_WIDTH}` : `${EPD_WIDTH} / ${EPD_HEIGHT}`;
+  [previewContainer, galleryGrid].forEach((el) => {
+    el.style.setProperty("--epd-ratio", ratio);
+    el.toggleAttribute("data-turned", turned);
+  });
 }
 
 displaySizeSelect.addEventListener("change", (e) => {
@@ -1190,12 +1308,59 @@ displaySizeSelect.addEventListener("change", (e) => {
   applyDisplayProfile(e.target.value === "13", false);
 });
 
-// --- Processing options ---
+/** Size of the preview canvas for a display (the 13.3" preview is rendered at half size). */
+function previewSizeFor(display) {
+  const { width, height } = DISPLAYS[display];
+  const scale = display === "13" ? 0.5 : 1;
+  return [Math.floor(width * scale), Math.floor(height * scale)];
+}
+
+// ---------------------------------------------------------------------------
+// Processing: from a picture and its edit settings to the picture file of the device
+// ---------------------------------------------------------------------------
+
+const DEFAULT_PALETTE = "new";
+const plain = (value) => (value == null ? null : JSON.parse(JSON.stringify(value)));
 
 let activeAutoOptions = null;
 // After "Auto-Optimieren" the sliders show the suggested values. They only override the
 // suggestion once the user actually moves one.
 let toneSlidersTouched = false;
+
+/** Edit settings of a picture, as they are stored with it. `rotation` belongs to `display`. */
+function defaultUi(display = currentDisplay()) {
+  return { palette: DEFAULT_PALETTE, matrix: "floydSteinberg", serpentine: true, brightness: 0, contrast: 0, saturation: 0, autoOptions: null, slidersTouched: false, customPalette: null, rotation: 0, display };
+}
+
+function readEditorUi() {
+  return {
+    palette: paletteSelect.value || "spectra6Custom",
+    matrix: errorDiffusionMatrix.value,
+    serpentine: serpentine.checked,
+    brightness: parseInt(processingBrightness.value, 10) || 0,
+    contrast: parseInt(processingContrast.value, 10) || 0,
+    saturation: parseInt(processingSaturation.value, 10) || 0,
+    autoOptions: plain(activeAutoOptions),
+    slidersTouched: toneSlidersTouched,
+    customPalette: plain(generatePicture.getCustomPalette()),
+    rotation: generatePicture.getImageRotation(),
+    display: currentDisplay(),
+  };
+}
+
+function applyEditorUi(ui) {
+  paletteSelect.value = ui.palette;
+  errorDiffusionMatrix.value = ui.matrix;
+  serpentine.checked = ui.serpentine;
+  processingBrightness.value = ui.brightness;
+  processingContrast.value = ui.contrast;
+  processingSaturation.value = ui.saturation;
+  updateSliderOutputs();
+  activeAutoOptions = plain(ui.autoOptions);
+  toneSlidersTouched = Boolean(ui.slidersTouched);
+  generatePicture.setCustomPalette(plain(ui.customPalette));
+  renderPaletteEditor();
+}
 
 function updateSliderOutputs() {
   [processingBrightness, processingContrast, processingSaturation].forEach((slider) => {
@@ -1204,24 +1369,19 @@ function updateSliderOutputs() {
   });
 }
 
-function collectProcessingInputs() {
-  const matrix = errorDiffusionMatrix.value;
-  const isSerpentine = serpentine.checked;
-  const brightness = parseInt(processingBrightness.value, 10) || 0;
-  const contrast = parseInt(processingContrast.value, 10) || 0;
-  const saturation = parseInt(processingSaturation.value, 10) || 0;
+/** What GeneratePicture needs for a set of edit settings. */
+function processingInput(ui) {
+  const options = ui.autoOptions ? { ...ui.autoOptions } : {};
+  options.errorDiffusionMatrix = ui.matrix;
+  options.serpentine = ui.serpentine;
 
-  const options = activeAutoOptions ? { ...activeAutoOptions } : {};
-  options.errorDiffusionMatrix = matrix;
-  options.serpentine = isSerpentine;
-
-  if (options.toneMapping && toneSlidersTouched) {
+  if (options.toneMapping && ui.slidersTouched) {
     // Without this the auto tone mapping always won and the sliders had no effect at all.
     const base = options.toneMapping;
-    const merged = { ...base, exposure: brightness / 100, contrast: contrast / 100, saturation: saturation / 100 };
+    const merged = { ...base, exposure: ui.brightness / 100, contrast: ui.contrast / 100, saturation: ui.saturation / 100 };
     if (base.mode === "off") {
       merged.mode = "contrast";
-    } else if (base.mode === "scurve" && contrast !== 0) {
+    } else if (base.mode === "scurve" && ui.contrast !== 0) {
       // epdoptimize applies the contrast factor only in "contrast" mode; without a mode it
       // applies both the contrast and the S-curve.
       delete merged.mode;
@@ -1230,7 +1390,117 @@ function collectProcessingInputs() {
     options.toneMapping = merged;
   }
 
-  return { palette: paletteSelect.value || "spectra6Custom", matrix, isSerpentine, brightness, contrast, saturation, options };
+  return { palette: ui.palette || "spectra6Custom", matrix: ui.matrix, isSerpentine: ui.serpentine, brightness: ui.brightness, contrast: ui.contrast, saturation: ui.saturation, options };
+}
+
+/**
+ * Suggested settings for the picture `gp` holds, analysed on `canvas` (preview size).
+ * null if nothing was found; the canvas then shows the undithered picture.
+ */
+function suggestProcessing(gp, canvas, palette, matrix) {
+  let result = null;
+  try {
+    result = gp.autoOptimise(canvas, palette);
+  } catch (e) {
+    console.error(e);
+  }
+  if (!result) return null;
+
+  const options = result.resolvedOptions || result;
+  options.errorDiffusionMatrix = matrix;
+  const tone = options.toneMapping;
+  return {
+    options,
+    suggestion: result.suggestion,
+    serpentine: options.serpentine ?? true,
+    brightness: tone ? Math.round((tone.exposure ?? 0) * 100) || 0 : 0,
+    contrast: tone ? Math.round((tone.contrast ?? 0) * 100) || 0 : 0,
+    saturation: tone ? Math.round((tone.saturation ?? 0) * 100) || 0 : 0,
+  };
+}
+
+// Pictures are prepared without the editor (quick add, another display) on an instance of their own.
+const renderer = new GeneratePicture();
+
+/** The automatic settings every picture starts with. */
+function autoUi(img, display) {
+  const { width, height } = DISPLAYS[display];
+  const ui = defaultUi(display);
+  ui.rotation = orientationRotation(display);
+  renderer.setOriginalImage(img);
+  renderer.setEpdDimensions(width, height);
+  renderer.setCustomPalette(null);
+  renderer.setImageRotation(ui.rotation);
+  const canvas = document.createElement("canvas");
+  [canvas.width, canvas.height] = previewSizeFor(display);
+  const suggested = suggestProcessing(renderer, canvas, ui.palette, ui.matrix);
+  renderer.setOriginalImage(null);
+  if (suggested) {
+    Object.assign(ui, { autoOptions: plain(suggested.options), serpentine: suggested.serpentine, brightness: suggested.brightness, contrast: suggested.contrast, saturation: suggested.saturation });
+  }
+  return ui;
+}
+
+/** The 4 bit per pixel payload of the display for a picture and its edit settings. */
+async function renderRaw(img, ui, display) {
+  const { width, height } = DISPLAYS[display];
+  const input = processingInput(ui);
+  renderer.setOriginalImage(img);
+  renderer.setEpdDimensions(width, height);
+  renderer.setCustomPalette(plain(ui.customPalette));
+  // a rotation chosen for one display format does not fit the other
+  renderer.setImageRotation(ui.display === display ? ui.rotation : orientationRotation(display));
+  try {
+    await renderer.generateFullBuffer(input.palette, input.matrix, input.isSerpentine, input.brightness, input.contrast, input.saturation, input.options);
+    return renderer.getProcessedImageBuffer();
+  } finally {
+    renderer.setOriginalImage(null);
+  }
+}
+
+/** Picture file, id and preview for a payload. */
+async function buildRender(raw, display) {
+  const thumbBytes = await makeThumb(raw, display);
+  const container = await buildContainer(raw, display, thumbBytes);
+  return {
+    id: idOf(container),
+    container: new Blob([container], { type: "application/octet-stream" }),
+    size: container.length,
+    w: GALLERY_WINDOW_BITS,
+    thumb: thumbBytes.length ? new Blob([thumbBytes], { type: "image/jpeg" }) : null,
+  };
+}
+
+/** Decodes a picture file. The caller revokes `url` when the picture is no longer used. */
+function loadImage(blob) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => resolve({ img, url });
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Das Bild konnte nicht geladen werden. Bitte ein JPEG, PNG oder WebP wählen."));
+    };
+    img.src = url;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Picture editor (dialog)
+// ---------------------------------------------------------------------------
+
+const editor = {
+  item: null, // picture of the gallery that is open, null for a new one
+  remote: null, // { id, container }: a picture read from the device that is not in the gallery
+  file: null, // Blob of the original
+  name: "",
+  url: null, // object URL of the loaded picture
+  touched: false, // something was changed since the picture was opened
+  focusKey: null, // key of the tile that gets the focus when the editor closes
+};
+
+function collectProcessingInputs() {
+  return processingInput(readEditorUi());
 }
 
 // --- Preview pipeline: never two renders on the same canvas at once ---
@@ -1253,7 +1523,7 @@ async function renderPreview() {
 
     const hasSimulation = Boolean(result?.hasDisplaySimulation);
     setSimulationAvailable(hasSimulation);
-    if (!previewQueued) setStatus(bleInterface.isConnected ? "Bildvorschau optimiert und bereit zum Senden." : "Bildvorschau optimiert. Zum Senden das E-Paper verbinden oder als BMP herunterladen.", "ok");
+    if (!previewQueued) setStatus("Bildvorschau optimiert. „Speichern“ übernimmt das Bild.", "ok");
   } catch (e) {
     setStatus("Fehler beim Dithering: " + e.message, "err");
     console.error(e);
@@ -1286,21 +1556,17 @@ function schedulePreview() {
   previewDebounce = setTimeout(updatePreview, 250);
 }
 
-async function generateFullBuffer() {
-  if (!generatePicture.getOriginalImage()) return;
-  if (bleInterface.isConnected) {
-    applyDisplayProfile(bleInterface.isPaperL, true);
-  }
-  const input = collectProcessingInputs();
-  generatePicture.setEpdDimensions(EPD_WIDTH, EPD_HEIGHT);
-  await generatePicture.generateFullBuffer(input.palette, input.matrix, input.isSerpentine, input.brightness, input.contrast, input.saturation, input.options);
-}
-
-[errorDiffusionMatrix, serpentine].forEach((el) => el.addEventListener("change", updatePreview));
+[errorDiffusionMatrix, serpentine].forEach((el) =>
+  el.addEventListener("change", () => {
+    editor.touched = true;
+    updatePreview();
+  }),
+);
 
 [processingBrightness, processingContrast, processingSaturation].forEach((el) => {
   el.addEventListener("input", () => {
     toneSlidersTouched = true;
+    editor.touched = true;
     updateSliderOutputs();
     schedulePreview();
   });
@@ -1309,6 +1575,7 @@ async function generateFullBuffer() {
 btnResetProcessing.addEventListener("click", () => {
   activeAutoOptions = null;
   toneSlidersTouched = false;
+  editor.touched = true;
   processingBrightness.value = 0;
   processingContrast.value = 0;
   processingSaturation.value = 0;
@@ -1316,76 +1583,147 @@ btnResetProcessing.addEventListener("click", () => {
   updatePreview();
 });
 
-// --- Loading an image ---
+// --- Opening and closing ---
 
-let currentImageUrl = null;
-
-function loadImageFile(file) {
-  if (!file) return;
-  const url = URL.createObjectURL(file);
-  const img = new Image();
-  img.onload = () => {
-    if (currentImageUrl) URL.revokeObjectURL(currentImageUrl);
-    currentImageUrl = url;
-
-    activeAutoOptions = null;
-    toneSlidersTouched = false;
-    if (bleInterface.isConnected) {
-      applyDisplayProfile(bleInterface.isPaperL, true);
-    }
-    generatePicture.setOriginalImage(img);
-    applyAutoRotation(img);
-
-    state.hasImage = true;
-    previewEmpty.hidden = true;
-    previewStage.hidden = false;
-    syncUi();
-    runAutoOptimise(); // every new picture starts with the automatic settings
-  };
-  img.onerror = () => {
-    URL.revokeObjectURL(url);
-    setStatus("Das Bild konnte nicht geladen werden. Bitte ein JPEG, PNG oder WebP wählen.", "err");
-  };
-  img.src = url;
+function setEditorImage(img, url) {
+  if (editor.url) URL.revokeObjectURL(editor.url);
+  editor.url = url;
+  generatePicture.setOriginalImage(img);
+  state.hasImage = Boolean(img);
+  previewEmpty.hidden = state.hasImage;
+  previewStage.hidden = !state.hasImage;
 }
 
-fileInput.addEventListener("change", (e) => {
-  loadImageFile(e.target.files[0]);
-  fileInput.value = ""; // allows picking the same file again
-});
-btnPickImage.addEventListener("click", () => fileInput.click());
-previewEmpty.addEventListener("click", () => fileInput.click());
+function editorTitle() {
+  return editor.remote ? "Bild vom Gerät" : "Bild bearbeiten";
+}
 
-// Drag & drop / paste (desktop)
-["dragenter", "dragover"].forEach((type) =>
-  previewContainer.addEventListener(type, (e) => {
-    if (!e.dataTransfer?.types?.includes("Files")) return;
-    e.preventDefault();
-    previewContainer.classList.add("is-dragover");
-  }),
-);
-["dragleave", "dragend", "drop"].forEach((type) =>
-  previewContainer.addEventListener(type, (e) => {
-    // dragleave also fires when moving onto a child element
-    if (type === "dragleave" && previewContainer.contains(e.relatedTarget)) return;
-    previewContainer.classList.remove("is-dragover");
-  }),
-);
-previewContainer.addEventListener("drop", (e) => {
-  const file = [...(e.dataTransfer?.files || [])].find((f) => f.type.startsWith("image/"));
-  if (!file) return;
-  e.preventDefault();
-  loadImageFile(file);
+/** Opens a picture of the gallery in the editor. */
+async function openEditor(item) {
+  if (state.busy || !item) return;
+  Object.assign(editor, { item, remote: null, file: item.original || null, name: item.name || "", touched: false, focusKey: item.key });
+  setEditorImage(null, null);
+  editorDeviceNote.hidden = !item.fromDevice;
+  applyEditorUi(item.ui || defaultUi());
+  generatePicture.setImageRotation(0);
+  $("imageSecTitle").textContent = editorTitle();
+  openDialog(editorDialog);
+  syncUi();
+
+  try {
+    const { img, url } = await loadImage(item.original);
+    setEditorImage(img, url);
+    // a rotation chosen for one display format does not fit the other
+    generatePicture.setImageRotation(item.ui && item.ui.display === currentDisplay() ? item.ui.rotation : orientationRotation());
+    syncUi();
+    updatePreview();
+  } catch (e) {
+    setStatus("Das Original dieses Bildes kann nicht mehr geladen werden.", "err");
+  }
+}
+
+/** Reads a picture that is only on the device and opens it in the editor. */
+async function openRemotePicture(entry) {
+  if (state.busy) return;
+  let container = null;
+  let parsed = null;
+  const ok = await runTransfer({ title: "Bild wird vom Gerät geladen", abortable: true, failTitle: "Laden fehlgeschlagen" }, async () => {
+    setStatus("Lade Bild vom E-Paper…", "busy");
+    container = await bleInterface.readGalleryPicture(entry.id, (received, total) => {
+      const percent = Math.round((received / total) * 100);
+      setProgress(percent);
+      setStatus(`Lade Bild vom E-Paper… ${percent}%`, "busy");
+    });
+    if (idOf(container) !== entry.id) throw new Error("Das Bild wurde nicht vollständig übertragen. Bitte erneut versuchen.");
+    parsed = await parseContainer(container);
+    setStatus("Bild vom E-Paper geladen.", "ok");
+  });
+  if (!ok) return;
+
+  let png, img, url;
+  try {
+    png = await rawToPng(parsed.raw, parsed.display);
+    ({ img, url } = await loadImage(png));
+  } catch (e) {
+    console.warn(e);
+    setStatus("Das Bild vom E-Paper kann nicht angezeigt werden.", "err");
+    return;
+  }
+  Object.assign(editor, { item: null, remote: { id: entry.id, container }, file: png, name: `Bild ${entry.id}`, touched: false, focusKey: null });
+  // the pure display colours and no adjustments: an unchanged picture stays exactly as it is
+  applyEditorUi({ ...defaultUi(), palette: "spectra6Original" });
+  setEditorImage(img, url);
+  generatePicture.setImageRotation(0);
+  editorDeviceNote.hidden = false;
+  $("imageSecTitle").textContent = editorTitle();
+  openDialog(editorDialog);
+  syncUi();
+  updatePreview();
+}
+
+/** Closes the editor; unsaved changes are confirmed first. */
+async function requestCloseEditor() {
+  if (state.busy) return;
+  if (editor.touched && state.hasImage) {
+    const discard = await showMessage({
+      title: "Änderungen verwerfen?",
+      text: "Das Bild wurde geändert, aber noch nicht in der Galerie gespeichert.",
+      okLabel: "Verwerfen",
+      cancelLabel: "Weiter bearbeiten",
+      okVariant: "danger",
+    });
+    if (!discard) return;
+  }
+  closeDialog(editorDialog);
+}
+
+editorDialog.addEventListener("cancel", (e) => {
+  e.preventDefault(); // Escape: ask before changes are lost
+  requestCloseEditor();
 });
+editorDialog.addEventListener("close", () => {
+  clearTimeout(previewDebounce);
+  const focusKey = editor.focusKey;
+  setEditorImage(null, null);
+  Object.assign(editor, { item: null, remote: null, file: null, name: "", touched: false, focusKey: null });
+  syncUi();
+  // the tiles were rebuilt meanwhile: the focus goes to the picture that was open
+  const tile = focusKey && galleryGrid.querySelector(`[data-key="${focusKey}"] .tile-open`);
+  (tile || btnAddPictures).focus();
+});
+$("btnCloseEditor").addEventListener("click", requestCloseEditor);
+
+/** Marks a drop zone while files are dragged over it. */
+function watchFileDrag(zone) {
+  ["dragenter", "dragover"].forEach((type) =>
+    zone.addEventListener(type, (e) => {
+      if (!e.dataTransfer?.types?.includes("Files")) return;
+      e.preventDefault();
+      zone.classList.add("is-dragover");
+    }),
+  );
+  ["dragleave", "dragend", "drop"].forEach((type) =>
+    zone.addEventListener(type, (e) => {
+      // dragleave also fires when moving onto a child element
+      if (type === "dragleave" && zone.contains(e.relatedTarget)) return;
+      zone.classList.remove("is-dragover");
+    }),
+  );
+}
+
+const imageFiles = (list) => [...(list || [])].filter((f) => f.type.startsWith("image/"));
+
 document.addEventListener("paste", (e) => {
-  if (getCurrentView() !== "bild" || state.busy) return;
-  const file = [...(e.clipboardData?.files || [])].find((f) => f.type.startsWith("image/"));
-  if (file) loadImageFile(file);
+  if (state.busy) return;
+  const files = imageFiles(e.clipboardData?.files);
+  if (!files.length) return;
+  if (getCurrentView() === "bild" && state.source === "gallery" && !document.querySelector("dialog[open]")) quickAdd(files);
 });
 
 btnRotate.addEventListener("click", () => {
   if (!generatePicture.getOriginalImage()) return;
   generatePicture.setImageRotation((generatePicture.getImageRotation() + 90) % 360);
+  editor.touched = true;
   updatePreview();
 });
 
@@ -1435,12 +1773,6 @@ previewStage.addEventListener("keydown", (e) => {
   }
 });
 
-/** Size of the preview canvas for the current display (the 13.3" preview is rendered at half size). */
-function previewSize() {
-  const scale = EPD_WIDTH === 1200 && EPD_HEIGHT === 1600 ? 0.5 : 1;
-  return [Math.floor(EPD_WIDTH * scale), Math.floor(EPD_HEIGHT * scale)];
-}
-
 /**
  * Finds processing settings for the loaded picture, shows them in the sliders and renders the
  * preview with them. Runs for every picture that is loaded and on "Auto-Optimieren".
@@ -1451,58 +1783,43 @@ function runAutoOptimise({ announce = false } = {}) {
 
   generatePicture.setEpdDimensions(EPD_WIDTH, EPD_HEIGHT);
   // The picture is analysed on the preview canvas: it needs the display format, also before the first preview.
-  const [width, height] = previewSize();
+  const [width, height] = previewSizeFor(currentDisplay());
   if (canvas.width !== width || canvas.height !== height) {
     canvas.width = width;
     canvas.height = height;
   }
 
-  let result = null;
-  try {
-    result = generatePicture.autoOptimise(canvas, paletteSelect.value || "spectra6Custom");
-  } catch (e) {
-    console.error(e);
-  }
-  if (!result) {
+  const suggested = suggestProcessing(generatePicture, canvas, paletteSelect.value || "spectra6Custom", errorDiffusionMatrix.value);
+  toneSlidersTouched = false;
+  if (!suggested) {
     activeAutoOptions = null;
-    toneSlidersTouched = false;
     if (announce) setStatus("Für dieses Bild wurde keine automatische Einstellung gefunden.", "warn");
     updatePreview(); // autoOptimise drew the undithered picture onto the preview canvas
     return;
   }
 
-  const resolvedOptions = result.resolvedOptions || result;
-  const suggestion = result.suggestion;
-
-  resolvedOptions.errorDiffusionMatrix = errorDiffusionMatrix.value;
-  serpentine.checked = resolvedOptions.serpentine ?? true;
-
-  if (resolvedOptions.toneMapping) {
-    processingBrightness.value = Math.round((resolvedOptions.toneMapping.exposure ?? 0) * 100) || 0;
-    processingContrast.value = Math.round((resolvedOptions.toneMapping.contrast ?? 0) * 100) || 0;
-    processingSaturation.value = Math.round((resolvedOptions.toneMapping.saturation ?? 0) * 100) || 0;
-  } else {
-    processingBrightness.value = 0;
-    processingContrast.value = 0;
-    processingSaturation.value = 0;
-  }
+  serpentine.checked = suggested.serpentine;
+  processingBrightness.value = suggested.brightness;
+  processingContrast.value = suggested.contrast;
+  processingSaturation.value = suggested.saturation;
   updateSliderOutputs();
-
-  activeAutoOptions = resolvedOptions;
-  toneSlidersTouched = false;
+  activeAutoOptions = suggested.options;
 
   if (announce) {
-    if (paletteSelect.value === "new" || !suggestion) {
+    if (paletteSelect.value === "new" || !suggested.suggestion) {
       setStatus("Automatisches Setting gefunden: Custom Color Profile", "ok");
     } else {
-      setStatus(`Automatisches Setting gefunden: ${suggestion.classification.style}, Typ: ${suggestion.imageKind}`, "ok");
+      setStatus(`Automatisches Setting gefunden: ${suggested.suggestion.classification.style}, Typ: ${suggested.suggestion.imageKind}`, "ok");
     }
   }
 
   updatePreview();
 }
 
-btnAutoDither.addEventListener("click", () => runAutoOptimise({ announce: true }));
+btnAutoDither.addEventListener("click", () => {
+  editor.touched = true;
+  runAutoOptimise({ announce: true });
+});
 
 // --- Palette ---
 
@@ -1535,6 +1852,7 @@ function renderPaletteEditor() {
     input.addEventListener("input", (e) => {
       currentCustomPalette[idx].color = e.target.value;
       input.title = `${label} (${e.target.value})`;
+      editor.touched = true;
       schedulePreview();
     });
 
@@ -1551,6 +1869,7 @@ function renderPaletteEditor() {
   reset.textContent = "Farben zurücksetzen";
   reset.addEventListener("click", () => {
     generatePicture.setCustomPalette(null);
+    editor.touched = true;
     renderPaletteEditor();
     updatePreview();
   });
@@ -1559,12 +1878,13 @@ function renderPaletteEditor() {
 
 paletteSelect.addEventListener("change", () => {
   generatePicture.setCustomPalette(null);
+  editor.touched = true;
   renderPaletteEditor();
   if (paletteSelect.value !== "new") setRawPreview(false);
   updatePreview();
 });
 
-// --- Download / upload ---
+// --- BMP download ---
 
 function buildBmp(imageBuffer) {
   const headerSize = 118;
@@ -1621,14 +1941,14 @@ function buildBmp(imageBuffer) {
 }
 
 btnDownloadBin.addEventListener("click", async () => {
-  if (!generatePicture.getOriginalImage() || state.busy) return;
+  const img = generatePicture.getOriginalImage();
+  if (!img || state.busy) return;
 
   btnDownloadBin.disabled = true;
   try {
     setStatus("Generiere volle Auflösung für Download…", "busy");
     await nextFrame();
-    await generateFullBuffer();
-    downloadBlob(buildBmp(generatePicture.getProcessedImageBuffer()), "epaper_image.bmp");
+    downloadBlob(buildBmp(await renderRaw(img, readEditorUi(), currentDisplay())), "epaper_image.bmp");
     setStatus("BMP-Datei erstellt (epaper_image.bmp).", "ok");
   } catch (err) {
     console.error(err);
@@ -1638,48 +1958,777 @@ btnDownloadBin.addEventListener("click", async () => {
   }
 });
 
-function startImageUpload() {
-  return runTransfer({ title: "Bild wird gesendet", abortable: true, failTitle: "Senden fehlgeschlagen" }, async () => {
-    setStatus("Generiere volle Auflösung für Upload…", "busy");
-    await nextFrame();
-    await generateFullBuffer();
-    await bleInterface.uploadImage(generatePicture.getProcessedImageBuffer());
-  });
+// --- Saving, deleting, showing ---
+
+/** Stores the picture of the editor in the gallery and closes the editor. Resolves to the picture, or null. */
+async function saveEditorToGallery() {
+  const img = generatePicture.getOriginalImage();
+  if (!img || state.busy) return null;
+  if (!editor.item && gallery.items.length >= GALLERY_MAX_ITEMS) {
+    setStatus(`Die Galerie fasst höchstens ${GALLERY_MAX_ITEMS} Bilder. Entferne zuerst eines.`, "warn");
+    return null;
+  }
+
+  state.busy = true;
+  syncUi();
+  navigator.storage?.persist?.().catch(() => {}); // asks the browser not to clear the gallery on its own
+  setStatus("Speichere das Bild in der Galerie…", "busy");
+  await nextFrame();
+  let saved = null;
+  try {
+    const display = currentDisplay();
+    const ui = readEditorUi();
+    let render;
+    if (editor.remote && !editor.touched) {
+      // unchanged picture from the device: its file is taken over as it is (packed again if it
+      // came from a page that used the large window)
+      const bytes = await repackContainer(editor.remote.container);
+      const header = readContainerHeader(bytes);
+      const thumbBytes = bytes.subarray(GALLERY_HEADER_SIZE, GALLERY_HEADER_SIZE + header.thumbLen);
+      render = {
+        id: idOf(bytes),
+        container: new Blob([bytes], { type: "application/octet-stream" }),
+        size: bytes.length,
+        w: header.window,
+        thumb: header.thumbLen ? new Blob([thumbBytes], { type: "image/jpeg" }) : gallery.remoteThumbs.get(editor.remote.id) || null,
+      };
+    } else {
+      render = await buildRender(await renderRaw(img, ui, display), display);
+    }
+    const fields = {
+      name: editor.name || "Bild",
+      original: editor.file,
+      ui,
+      renders: { [display]: { id: render.id, container: render.container, size: render.size, w: render.w } },
+      thumb: render.thumb,
+    };
+    if (editor.item) {
+      saved = Object.assign(editor.item, fields);
+      await gallery.update(saved);
+    } else {
+      // a picture from the device replaces the one it was read from at the next sync
+      saved = await gallery.add({ ...fields, fromDevice: Boolean(editor.remote), synced: editor.remote ? { [display]: editor.remote.id } : {} });
+    }
+    editor.touched = false;
+    editor.focusKey = saved.key;
+    closeDialog(editorDialog);
+    setStatus("Bild in der Galerie gespeichert. „Synchronisieren“ überträgt es auf das E-Paper.", "ok");
+  } catch (err) {
+    console.error(err);
+    setStatus("Das Bild konnte nicht gespeichert werden: " + err.message, "err");
+    saved = null;
+  } finally {
+    state.busy = false;
+    syncUi();
+  }
+  return saved;
 }
 
-// "Senden" without a connected device: a dialog explains how to connect (the steps of the device
-// view). Its button opens the Bluetooth device chooser, and once the device is connected the
-// upload starts by itself (see onConnected).
-const connectDialog = $("connectDialog");
-let sendAfterConnect = false;
+btnSaveToGallery.addEventListener("click", () => saveEditorToGallery());
 
-function openConnectDialog() {
+/** Removes a picture of the gallery (item) or one that is only on the device (remote entry). */
+async function deletePicture({ item = null, remote = null }) {
+  if (state.busy || (!item && !remote)) return;
+  const onDevice = remote || (gallery.status(item, currentDisplay()) !== "new" && bleInterface.isConnected);
+  const confirmed = await showMessage({
+    title: "Bild löschen?",
+    tone: "warn",
+    text: remote ? "Das Bild liegt nur auf dem E-Paper. Es wird dort beim nächsten Synchronisieren gelöscht und lässt sich nicht wiederherstellen." : "Das Bild wird mit seinem Original aus der Galerie entfernt." + (onDevice ? " Auf dem E-Paper wird es beim nächsten Synchronisieren gelöscht." : ""),
+    okLabel: "Löschen",
+    cancelLabel: "Abbrechen",
+    okVariant: "danger",
+  });
+  if (!confirmed) return;
+  if (item) await gallery.remove(item.key);
+  else await gallery.forgetRemote(remote.id);
+  setStatus("Bild gelöscht.", "ok");
+  btnAddPictures.focus();
+}
+
+// ---------------------------------------------------------------------------
+// Gallery
+// ---------------------------------------------------------------------------
+
+const gallery = new Gallery(openGalleryStore);
+let intervalDirty = false; // the interval was changed here and is not on the device yet
+
+function formatBytes(bytes) {
+  if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1).replace(".", ",") + " MB";
+  return Math.max(1, Math.round(bytes / 1024)) + " KB";
+}
+
+const pictures = (count) => (count === 1 ? "1 Bild" : `${count} Bilder`);
+
+const thumbUrls = new WeakMap(); // Blob of a preview -> object URL
+function thumbUrl(blob) {
+  if (!blob) return "";
+  if (!thumbUrls.has(blob)) thumbUrls.set(blob, URL.createObjectURL(blob));
+  return thumbUrls.get(blob);
+}
+
+const TILE_STATUS = {
+  synced: { label: "Synchron", tone: "ok" },
+  new: { label: "Neu", tone: "warn" },
+  changed: { label: "Geändert", tone: "warn" },
+  remote: { label: "Nur auf dem Gerät", tone: "info" },
+};
+
+let dragKey = null; // key of the tile that is being dragged
+
+function buildTile({ label, thumb, status, shown, onOpen, onDelete }) {
+  const tile = document.createElement("li");
+  tile.className = "tile";
+  if (status) tile.dataset.status = status;
+
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "tile-open";
+  open.setAttribute("aria-label", [label, status ? TILE_STATUS[status].label : "", shown ? "wird gerade angezeigt" : "", "Bearbeiten"].filter(Boolean).join(", "));
+  if (thumb) {
+    const img = document.createElement("img");
+    img.alt = "";
+    img.draggable = false;
+    img.src = thumbUrl(thumb);
+    open.appendChild(img);
+  } else {
+    const placeholder = document.createElement("span");
+    placeholder.className = "tile-placeholder";
+    placeholder.textContent = "Vorschau lädt…";
+    open.appendChild(placeholder);
+  }
+  if (status) {
+    const badge = document.createElement("span");
+    badge.className = `tile-badge badge badge-${TILE_STATUS[status].tone}`;
+    badge.textContent = TILE_STATUS[status].label;
+    open.appendChild(badge);
+  }
+  if (shown) {
+    const flag = document.createElement("span");
+    flag.className = "tile-shown";
+    flag.textContent = "▶ Auf dem Display";
+    open.appendChild(flag);
+  }
+  // shown over the picture on hover and focus, always on touch screens
+  const edit = document.createElement("span");
+  edit.className = "tile-edit";
+  edit.setAttribute("aria-hidden", "true");
+  edit.textContent = "✎ Bearbeiten";
+  open.appendChild(edit);
+  open.addEventListener("click", onOpen);
+  tile.appendChild(open);
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "tile-delete";
+  remove.textContent = "✕";
+  remove.title = "Bild löschen";
+  remove.setAttribute("aria-label", `${label} löschen`);
+  remove.addEventListener("click", onDelete);
+  tile.appendChild(remove);
+  return tile;
+}
+
+function itemTile(item, index, display, shownId) {
+  const status = gallery.status(item, display);
+  const id = gallery.idFor(item, display);
+  const tile = buildTile({
+    label: `Bild ${index + 1}: ${item.name}`,
+    thumb: item.thumb,
+    status: status === "local" ? null : status,
+    shown: Boolean(id) && id === shownId,
+    onOpen: () => openEditor(item),
+    onDelete: () => deletePicture({ item }),
+  });
+  tile.dataset.key = item.key;
+
+  // The order: drag and drop, or Shift + arrow keys on the focused picture.
+  const open = tile.querySelector(".tile-open");
+  open.setAttribute("aria-keyshortcuts", "Shift+ArrowLeft Shift+ArrowRight");
+  open.addEventListener("keydown", async (e) => {
+    const delta = e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : 0;
+    if (!e.shiftKey || !delta || state.busy) return;
+    e.preventDefault();
+    const target = gallery.items.indexOf(item) + delta;
+    if (target < 0 || target >= gallery.items.length) return;
+    await gallery.moveTo(item.key, target);
+    galleryGrid.querySelector(`[data-key="${item.key}"] .tile-open`)?.focus();
+  });
+
+  tile.draggable = true;
+  tile.addEventListener("dragstart", (e) => {
+    if (state.busy) {
+      e.preventDefault();
+      return;
+    }
+    dragKey = item.key;
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", item.name);
+    tile.classList.add("is-dragging");
+  });
+  tile.addEventListener("dragend", () => {
+    dragKey = null;
+    galleryGrid.querySelectorAll(".is-dragging, .is-droptarget").forEach((el) => el.classList.remove("is-dragging", "is-droptarget"));
+  });
+  tile.addEventListener("dragover", (e) => {
+    if (!dragKey || dragKey === item.key) return;
+    e.preventDefault();
+    tile.classList.add("is-droptarget");
+  });
+  tile.addEventListener("dragleave", () => tile.classList.remove("is-droptarget"));
+  tile.addEventListener("drop", (e) => {
+    if (!dragKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const key = dragKey;
+    dragKey = null;
+    if (!state.busy) gallery.moveTo(key, index);
+  });
+  return tile;
+}
+
+function remoteTile(entry, shownId) {
+  const tile = buildTile({
+    label: `Bild auf dem Gerät (${formatBytes(entry.size)})`,
+    thumb: gallery.remoteThumbs.get(entry.id) || null,
+    status: "remote",
+    shown: entry.id === shownId,
+    onOpen: () => openRemotePicture(entry),
+    onDelete: () => deletePicture({ remote: entry }),
+  });
+  tile.dataset.remote = entry.id;
+  if (!entry.thumbLen) tile.querySelector(".tile-placeholder")?.replaceChildren("Keine Vorschau");
+  return tile;
+}
+
+/** Text below the "Synchronisieren" button: what a sync would do. */
+function syncHintText(display) {
+  if (!bleInterface.isConnected) return canConnect ? "" : "kein Bluetooth";
+  if (!bleInterface.gallerySupported) return "Firmware-Update nötig";
+  if (!gallery.deviceList) return "";
+  const plan = gallery.plan(display);
+  const changes = plan.puts.length + plan.deletes.length + (plan.order ? 1 : 0) + (plan.settings || (intervalDirty && gallery.play.auto) ? 1 : 0);
+  return changes ? `${changes} ${changes === 1 ? "Änderung" : "Änderungen"}` : "alles synchron";
+}
+
+function renderGalleryDevice(display) {
+  const meter = $("galleryMeter");
+  const text = $("galleryDeviceText");
+  const connected = bleInterface.isConnected;
+  const deviceState = gallery.deviceState;
+  $("galleryFirmwareNote").hidden = !connected || bleInterface.gallerySupported;
+  meter.hidden = true;
+
+  if (!connected) {
+    text.textContent = "Nicht verbunden. Die Bilder liegen in diesem Browser und werden beim Synchronisieren übertragen.";
+  } else if (!bleInterface.gallerySupported) {
+    text.textContent = "Verbunden. Die Galerie lässt sich erst nach dem Firmware-Update übertragen.";
+  } else if (!deviceState) {
+    text.textContent = "Lese die Galerie des E-Paper…";
+  } else {
+    const used = Number(deviceState.used) || 0;
+    const free = Number(deviceState.free) || 0;
+    const where = deviceState.storage === "sd" ? "SD-Karte" : "Flash";
+    let line = `Auf dem E-Paper: ${pictures(Number(deviceState.count) || 0)} · ${formatBytes(used)} belegt, ${formatBytes(free)} frei (${where}).`;
+    if (gallery.deviceList) {
+      const pending = gallery.plan(display).puts;
+      const bytes = pending.reduce((sum, item) => sum + (item.renders?.[display]?.size || 0), 0);
+      if (pending.length) line += ` Zu übertragen: ${pictures(pending.length)}${bytes ? ` (${formatBytes(bytes)})` : ""}.`;
+      if (bytes > free) line += " Das passt nicht ganz auf das Gerät.";
+    }
+    if (state.deviceMode === 1) line += " Derzeit zeigt das E-Paper das Bild der Download-URL; Synchronisieren stellt es auf die Galerie um.";
+    text.textContent = line;
+    if (used + free > 0) {
+      const percent = Math.round((used / (used + free)) * 100);
+      meter.hidden = false;
+      meter.setAttribute("role", "img");
+      meter.setAttribute("aria-label", `Speicher des E-Paper zu ${percent} % belegt`);
+      $("galleryMeterFill").style.width = percent + "%";
+    }
+  }
+}
+
+function renderPlay() {
+  const { shuffle, auto } = gallery.play;
+  const portrait = framePortrait();
+  $("btnOrientLandscape").setAttribute("aria-pressed", String(!portrait));
+  $("btnOrientPortrait").setAttribute("aria-pressed", String(portrait));
+  $("btnPlayOrder").setAttribute("aria-pressed", String(!shuffle));
+  $("btnPlayShuffle").setAttribute("aria-pressed", String(shuffle));
+  $("btnPlayAuto").setAttribute("aria-pressed", String(auto));
+  $("btnPlayManual").setAttribute("aria-pressed", String(!auto));
+  $("playIntervalField").hidden = !auto;
+  $("playAutoHint").textContent = auto ? "Das E-Paper wacht im eingestellten Abstand auf und zeigt das nächste Bild. Ein Druck auf die Reset-Taste zeigt es sofort." : "Kein automatisches Aufwachen: Das Bild wechselt nur, wenn du die Reset-Taste drückst.";
+}
+
+let galleryHint = "";
+
+function renderGallery() {
+  const display = currentDisplay();
+  const shownId = gallery.deviceState?.current || "";
+  const tiles = gallery.items.map((item, index) => itemTile(item, index, display, shownId));
+  gallery.remoteOnly(display).forEach((entry) => tiles.push(remoteTile(entry, shownId)));
+  galleryGrid.replaceChildren(...tiles, addTile);
+  galleryEmpty.hidden = tiles.length > 0;
+  $("galleryCount").textContent = pictures(tiles.length);
+  $("galleryStoreNote").hidden = gallery.persistent;
+  renderGalleryDevice(display);
+  renderPlay();
+  galleryHint = syncHintText(display);
+  syncUi();
+}
+
+gallery.onChange = renderGallery;
+
+// --- Adding pictures ---
+
+/** Adds a picture with the automatic settings, prepared for the current display. */
+async function addOriginal(file) {
+  const { img, url } = await loadImage(file);
+  try {
+    const display = currentDisplay();
+    const ui = autoUi(img, display);
+    const render = await buildRender(await renderRaw(img, ui, display), display);
+    await gallery.add({ name: file.name || "Bild", original: file, ui, renders: { [display]: { id: render.id, container: render.container, size: render.size, w: render.w } }, thumb: render.thumb });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/** Quick add: several files, each with the automatic settings. */
+async function quickAdd(files) {
+  if (state.busy) return;
+  const images = imageFiles(files);
+  if (!images.length) {
+    setStatus("Das sind keine Bilddateien. Bitte JPEG, PNG oder WebP wählen.", "warn");
+    return;
+  }
+  const room = GALLERY_MAX_ITEMS - gallery.items.length;
+  const accepted = images.slice(0, Math.max(0, room));
+
+  state.busy = true;
+  syncUi();
+  let failed = 0;
+  try {
+    navigator.storage?.persist?.().catch(() => {}); // asks the browser not to clear the gallery on its own
+    for (const [index, file] of accepted.entries()) {
+      setStatus(`Bereite Bild ${index + 1} von ${accepted.length} auf…`, "busy");
+      setProgress((index / accepted.length) * 100);
+      await nextFrame();
+      try {
+        await addOriginal(file);
+      } catch (e) {
+        console.warn("Picture could not be added:", file.name, e);
+        failed++;
+      }
+    }
+  } finally {
+    state.busy = false;
+    setProgress(null);
+    renderGallery();
+  }
+
+  const added = accepted.length - failed;
+  const notes = [];
+  if (failed) notes.push(`${pictures(failed)} ließ${failed === 1 ? "" : "en"} sich nicht lesen.`);
+  if (images.length > accepted.length) notes.push(`Die Galerie fasst höchstens ${GALLERY_MAX_ITEMS} Bilder.`);
+  setStatus(`${pictures(added)} hinzugefügt.${notes.length ? " " + notes.join(" ") : " „Synchronisieren“ überträgt sie auf das E-Paper."}`, notes.length ? "warn" : "ok");
+}
+
+btnAddPictures.addEventListener("click", () => galleryFileInput.click());
+galleryFileInput.addEventListener("change", (e) => {
+  const files = [...e.target.files];
+  galleryFileInput.value = "";
+  quickAdd(files);
+});
+
+const galleryCard = $("galleryCard");
+watchFileDrag(galleryCard);
+galleryCard.addEventListener("drop", (e) => {
+  const files = imageFiles(e.dataTransfer?.files);
+  if (!files.length) return;
+  e.preventDefault();
+  quickAdd(files);
+});
+
+$("btnGalleryFirmware").addEventListener("click", () => btnJumpToOta.click());
+
+// --- Gallery or download from a URL ---
+
+function setSource(source) {
+  state.source = source;
+  try {
+    localStorage.setItem("bildSource", source);
+  } catch (e) {
+    // private mode: the choice lasts for this visit
+  }
+  syncUi();
+}
+$("btnSourceGallery").addEventListener("click", () => setSource("gallery"));
+$("btnSourceUrl").addEventListener("click", () => setSource("url"));
+
+// --- Orientation of the frame: every picture is prepared for it ---
+
+/** Prepares the pictures of the gallery again, upright for the way the frame hangs. */
+async function turnAllPictures() {
+  const display = currentDisplay();
+  // a picture taken over from a device has no original: it stays as it is
+  const items = gallery.items.filter((item) => item.original && !item.fromDevice);
+  if (!items.length) return;
+
+  state.busy = true;
+  syncUi();
+  let failed = 0;
+  try {
+    for (const [index, item] of items.entries()) {
+      setStatus(`Richte Bild ${index + 1} von ${items.length} neu aus…`, "busy");
+      setProgress((index / items.length) * 100);
+      await nextFrame();
+      try {
+        const { img, url } = await loadImage(item.original);
+        try {
+          const ui = { ...(item.ui || autoUi(img, display)), rotation: orientationRotation(display), display };
+          const render = await buildRender(await renderRaw(img, ui, display), display);
+          item.ui = ui;
+          item.renders = { [display]: { id: render.id, container: render.container, size: render.size, w: render.w } };
+          item.thumb = render.thumb;
+          await gallery.update(item);
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+      } catch (e) {
+        console.warn("Picture could not be turned:", item.name, e);
+        failed++;
+      }
+    }
+  } finally {
+    state.busy = false;
+    setProgress(null);
+    renderGallery();
+  }
+  setStatus(failed ? `${pictures(failed)} ließ${failed === 1 ? "" : "en"} sich nicht neu ausrichten.` : `${pictures(items.length)} neu ausgerichtet. „Synchronisieren“ überträgt sie auf das E-Paper.`, failed ? "warn" : "ok");
+}
+
+async function setOrientation(portrait) {
+  if (state.busy || framePortrait() === portrait) return;
+  await gallery.setPlay({ portrait }, { dirty: gallery.play.dirty });
+  applyOrientationLayout();
+  await turnAllPictures();
+}
+
+$("btnOrientLandscape").addEventListener("click", () => setOrientation(false));
+$("btnOrientPortrait").addEventListener("click", () => setOrientation(true));
+
+// --- Play settings ---
+
+$("btnPlayOrder").addEventListener("click", () => gallery.setPlay({ shuffle: false }));
+$("btnPlayShuffle").addEventListener("click", () => gallery.setPlay({ shuffle: true }));
+$("btnPlayAuto").addEventListener("click", () => gallery.setPlay({ auto: true }));
+$("btnPlayManual").addEventListener("click", () => gallery.setPlay({ auto: false }));
+
+const INTERVAL_UNITS = [86400, 3600, 60];
+
+/** Shows an interval in seconds in the largest unit that fits. */
+function setGalleryInterval(seconds) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value <= 0) return;
+  const unit = INTERVAL_UNITS.find((u) => value % u === 0) || 60;
+  galleryInterval.value = Math.max(1, Math.round(value / unit));
+  galleryIntervalUnit.value = String(unit);
+  setFieldError(galleryInterval, "");
+}
+
+/** The interval of the gallery view in seconds, null if it is not allowed. */
+function galleryIntervalSeconds() {
+  const count = Number(galleryInterval.value);
+  if (!Number.isInteger(count) || count < 1) return null;
+  const seconds = count * Number(galleryIntervalUnit.value);
+  return seconds >= DEVICE_LIMITS.timeoutMin && seconds <= DEVICE_LIMITS.timeoutMax ? seconds : null;
+}
+
+function onGalleryIntervalInput() {
+  const seconds = galleryIntervalSeconds();
+  if (seconds === null) {
+    setFieldError(galleryInterval, "Erlaubt sind 1 Minute bis 30 Tage, in ganzen Zahlen.");
+    return;
+  }
+  setFieldError(galleryInterval, "");
+  intervalDirty = true;
+  settingTimeout.value = seconds; // the same value on the device
+  updateTimeoutHint();
+  renderGallery();
+}
+
+galleryInterval.addEventListener("input", onGalleryIntervalInput);
+galleryIntervalUnit.addEventListener("change", onGalleryIntervalInput);
+
+// --- The gallery of the connected device ---
+
+let listRev = null; // `rev` of the device state the list was read for
+const deviceRefresh = { running: false, again: false };
+
+bleInterface.onGalleryStateChange = (deviceState) => {
+  gallery.setDeviceState(deviceState);
+  if (!gallery.play.dirty && (gallery.play.shuffle !== Boolean(deviceState.shuffle) || gallery.play.auto !== Boolean(deviceState.auto))) {
+    gallery.setPlay({ shuffle: Boolean(deviceState.shuffle), auto: Boolean(deviceState.auto) }, { dirty: false });
+  }
+  $("syncBadgePlay").hidden = gallery.play.dirty;
+  renderGallery();
+  if (state.conn === "connected" && deviceState.rev !== listRev) refreshDeviceGallery();
+};
+
+/** Runs a read of the background refresh; waits while the display is busy. null: give up. */
+async function readQuietly(read) {
+  while (bleInterface.isConnected && !state.busy) {
+    try {
+      return await read();
+    } catch (e) {
+      if (e?.code !== "BUSY") {
+        console.warn("Gallery of the device:", e);
+        return null;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
+  }
+  return null;
+}
+
+/** Reads the list of the device and then the previews of pictures that are only there. In the background. */
+async function refreshDeviceGallery() {
+  if (!bleInterface.isConnected || !bleInterface.gallerySupported) return;
+  if (deviceRefresh.running) {
+    deviceRefresh.again = true;
+    return;
+  }
+  deviceRefresh.running = true;
+  try {
+    do {
+      deviceRefresh.again = false;
+      const rev = gallery.deviceState?.rev ?? null;
+      const list = await readQuietly(() => bleInterface.readGalleryList({ quiet: true }));
+      if (!list) break;
+      listRev = rev;
+      gallery.setDeviceList(list);
+      offerSync();
+
+      for (const entry of gallery.remoteOnly(currentDisplay())) {
+        if (!entry.thumbLen || gallery.remoteThumbs.has(entry.id)) continue;
+        const bytes = await readQuietly(() => bleInterface.readGalleryThumb(entry.id, { quiet: true }));
+        if (!bytes) break;
+        await gallery.putRemoteThumb(entry.id, new Blob([bytes], { type: "image/jpeg" }));
+        renderGallery();
+      }
+    } while (deviceRefresh.again && bleInterface.isConnected);
+  } catch (e) {
+    console.warn("Gallery of the device:", e);
+  } finally {
+    deviceRefresh.running = false;
+  }
+}
+
+/**
+ * After connecting by hand: the device shows the gallery, and it differs from the one in this
+ * browser. Offers to sync, once.
+ */
+let userConnect = false; // the running connection was started by the user
+let offerSyncAfterList = false;
+
+async function offerSync() {
+  if (!offerSyncAfterList) return;
+  offerSyncAfterList = false;
+  if (state.busy || state.deviceMode === 1 || !gallery.items.length || document.querySelector("dialog[open]")) return;
+  const plan = gallery.plan(currentDisplay());
+  const changes = plan.puts.length + plan.deletes.length + (plan.order ? 1 : 0);
+  if (!changes) return;
+  const sync = await showMessage({
+    title: "Galerie synchronisieren?",
+    text: `Die Galerie in diesem Browser und die auf dem E-Paper unterscheiden sich (${changes} ${changes === 1 ? "Änderung" : "Änderungen"}).`,
+    okLabel: "Synchronisieren",
+    cancelLabel: "Später",
+    okVariant: "signal",
+  });
+  if (sync && bleInterface.isConnected) startGallerySync();
+}
+
+// --- Sync ---
+
+/** Prepares a picture for a display it was not rendered for yet. */
+async function ensureRender(item, display) {
+  if (item.renders?.[display]) return;
+  if (!item.original) throw new Error(`„${item.name}“ kann für dieses Display nicht aufbereitet werden: Das Original fehlt.`);
+  const { img, url } = await loadImage(item.original);
+  try {
+    const render = await buildRender(await renderRaw(img, item.ui || autoUi(img, display), display), display);
+    item.renders = { ...item.renders, [display]: { id: render.id, container: render.container, size: render.size, w: render.w } };
+    item.thumb = render.thumb;
+    await gallery.update(item);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/**
+ * Brings the device to the state of the gallery. Every step can be repeated: a sync that was
+ * interrupted continues where it stopped when it is started again.
+ */
+async function syncGallery() {
+  const display = currentDisplay();
+
+  const unprepared = gallery.items.filter((item) => !gallery.idFor(item, display));
+  for (const [index, item] of unprepared.entries()) {
+    setStatus(`Bereite Bild ${index + 1} von ${unprepared.length} für dieses Display auf…`, "busy");
+    await nextFrame();
+    await ensureRender(item, display);
+  }
+
+  setStatus("Vergleiche mit dem E-Paper…", "busy");
+  let list = await bleInterface.readGalleryList();
+  gallery.setDeviceList(list);
+  const plan = gallery.plan(display);
+
+  for (const [index, id] of plan.deletes.entries()) {
+    setStatus(`Lösche Bild ${index + 1} von ${plan.deletes.length} auf dem E-Paper…`, "busy");
+    await bleInterface.galleryDelete(id);
+  }
+  await gallery.dropTombstones(plan.deletes);
+
+  const totalBytes = plan.puts.reduce((sum, item) => sum + item.renders[display].size, 0);
+  let sentBytes = 0;
+  let notFitting = 0;
+  for (const [index, item] of plan.puts.entries()) {
+    const render = item.renders[display];
+    const bytes = new Uint8Array(await render.container.arrayBuffer());
+    const label = `Sende Bild ${index + 1} von ${plan.puts.length}`;
+    setStatus(`${label}…`, "busy");
+    try {
+      await bleInterface.galleryPut(render.id, bytes, { label, onProgress: (fraction) => setProgress(((sentBytes + fraction * bytes.length) / totalBytes) * 100) });
+    } catch (e) {
+      if (e.code !== "NO_SPACE") throw e;
+      notFitting++;
+    }
+    sentBytes += bytes.length;
+  }
+  setProgress(null);
+
+  setStatus("Übertrage Reihenfolge und Einstellungen…", "busy");
+  if (plan.deletes.length || plan.puts.length) list = await bleInterface.readGalleryList();
+  if (gallery.orderDiffers(display, list)) {
+    await bleInterface.galleryOrder(gallery.orderFor(display, list));
+    list = await bleInterface.readGalleryList();
+  }
+  const deviceState = gallery.deviceState;
+  if (gallery.play.dirty || !deviceState || Boolean(deviceState.shuffle) !== gallery.play.shuffle || Boolean(deviceState.auto) !== gallery.play.auto) {
+    await bleInterface.gallerySet(gallery.play.shuffle, gallery.play.auto);
+    await gallery.setPlay({}, { dirty: false });
+  }
+  if (intervalDirty && gallery.play.auto) {
+    const seconds = galleryIntervalSeconds();
+    if (seconds !== null) {
+      await bleInterface.saveTimeout(seconds);
+      intervalDirty = false;
+    }
+  }
+
+  // what the device holds now is the synced state of the gallery
+  const onDevice = new Set(list.map((entry) => entry.id));
+  for (const item of gallery.items) {
+    const id = gallery.idFor(item, display);
+    if (id && onDevice.has(id) && item.synced?.[display] !== id) {
+      item.synced = { ...item.synced, [display]: id };
+      await gallery.update(item);
+    }
+  }
+  const latest = (await bleInterface.readGalleryState()) || deviceState;
+  if (latest) {
+    gallery.setDeviceState(latest);
+    listRev = latest.rev ?? null;
+  }
+  gallery.setDeviceList(list);
+
+  // the gallery is what the device shows from now on
+  let shown = false;
+  if (list.length) {
+    const mode = await bleInterface.readImageMode();
+    const current = latest?.current && onDevice.has(latest.current) ? latest.current : "";
+    if (!current || mode !== 0) {
+      await bleInterface.galleryShow(current || gallery.orderFor(display, list)[0] || list[0].id);
+      shown = true;
+    }
+  }
+
+  if (notFitting) {
+    setStatus(`${notFitting === 1 ? "1 Bild passte" : `${notFitting} Bilder passten`} nicht mehr auf das E-Paper: Der Speicher ist voll oder die Höchstzahl von ${GALLERY_MAX_ITEMS} Bildern erreicht. Entferne Bilder aus der Galerie und synchronisiere erneut.`, "warn");
+    return { title: "Nicht alles übertragen", sticky: true };
+  }
+  if (list.length) state.deviceMode = 0;
+  setStatus(shown ? "Galerie synchronisiert. Das E-Paper zeigt sie jetzt an." : "Galerie synchronisiert.", "ok");
+  return undefined;
+}
+
+async function startGallerySync() {
+  if (state.busy) return;
+  if (!bleInterface.gallerySupported) {
+    setStatus("Die Firmware des E-Paper kennt die Galerie noch nicht. Bitte zuerst die Firmware aktualisieren.", "warn");
+    return;
+  }
+  if (gallery.play.auto && galleryIntervalSeconds() === null) {
+    setFieldError(galleryInterval, "Erlaubt sind 1 Minute bis 30 Tage, in ganzen Zahlen.");
+    galleryInterval.focus();
+    return;
+  }
+  await runTransfer({ title: "Galerie wird synchronisiert", abortable: true, failTitle: "Synchronisieren fehlgeschlagen" }, syncGallery);
+  renderGallery();
+  refreshDeviceGallery();
+}
+
+// "Synchronisieren" without a connected device: a dialog explains how to connect (the steps of
+// the device view). Its button opens the Bluetooth device chooser, and once the device is
+// connected the sync starts by itself (see onConnected).
+const connectDialog = $("connectDialog");
+let syncAfterConnect = false;
+let connectPurpose = "gallery"; // what is synced once the device is connected: "gallery" | "url"
+
+let connectDialogSync = false; // the dialog was opened by a sync button
+
+function openConnectDialog(sync) {
+  connectDialogSync = sync;
   const steps = $("connectDialogSteps");
   if (!steps.hasChildNodes()) {
     steps.append(document.querySelector("#notConnectedState .step-list").cloneNode(true));
   }
+  $("connectDialogTitle").textContent = sync ? "Kein Gerät verbunden" : "Mit E-Paper verbinden";
+  $("connectDialogText").textContent = sync
+    ? "Zum Synchronisieren wird das E-Paper per Bluetooth oder USB-Kabel verbunden. Sobald die Verbindung steht, startet die Übertragung von selbst."
+    : "Per Bluetooth oder per USB-Kabel? Unter „Gerät“ lässt sich das fest einstellen.";
   openDialog(connectDialog);
 }
 
 $("btnCancelConnectDialog").addEventListener("click", () => closeDialog(connectDialog));
 
 $("btnConnectAndSend").addEventListener("click", () => {
-  sendAfterConnect = true;
+  syncAfterConnect = connectDialogSync;
   closeDialog(connectDialog);
   bleInterface.connect(); // opens the device chooser; must be called directly from this click
 });
 
-btnUploadImage.addEventListener("click", () => {
-  if (!generatePicture.getOriginalImage() || state.busy) return;
+$("btnConnectUsbAndSend").hidden = !serialAvailable;
+$("btnConnectAndSend").disabled = !bluetoothAvailable;
+$("btnConnectUsbAndSend").addEventListener("click", async () => {
+  closeDialog(connectDialog);
+  syncAfterConnect = (await connectUsb()) && connectDialogSync;
+});
+
+btnSyncGallery.addEventListener("click", () => {
+  if (state.busy) return;
+  connectPurpose = "gallery";
 
   if (bleInterface.isConnected) {
-    startImageUpload();
+    startGallerySync();
   } else if (state.conn !== "disconnected") {
-    // a connection attempt is already running: send as soon as it succeeds
-    sendAfterConnect = true;
-    setStatus("Verbindung wird aufgebaut – das Bild wird danach gesendet.", "busy");
+    // a connection attempt is already running: sync as soon as it succeeds
+    syncAfterConnect = true;
+    setStatus("Verbindung wird aufgebaut – die Galerie wird danach synchronisiert.", "busy");
   } else {
-    openConnectDialog();
+    startConnect({ sync: true });
   }
 });
 
@@ -1729,7 +2778,7 @@ async function ensureBleConnected() {
     cancelLabel: "Abbrechen",
     okVariant: "signal",
   });
-  if (connectNow) bleInterface.connect();
+  if (connectNow) startConnect();
   return false;
 }
 
@@ -1793,8 +2842,14 @@ async function explainMissingPort() {
   }
 }
 
+/** The flasher and the monitor open the serial port themselves: a session of the USB link ends first. */
+function releaseUsbLink() {
+  return bleInterface.releaseUsb();
+}
+
 /** Must run directly inside a click handler (the port chooser needs a user gesture). */
 async function pickSerialPort() {
+  await releaseUsbLink();
   try {
     return await requestSerialPort();
   } catch (e) {
@@ -2092,10 +3147,31 @@ btnUpdateOfflineFw.addEventListener("click", async () => {
 
 btnCancelOfflineOta.addEventListener("click", () => closeDialog(otaOfflineDialog));
 
+// The backup of the certificates, right where the firmware is changed. It runs over USB.
+$("btnOfflineOtaBackup").disabled = !serialAvailable;
+$("offlineOtaBackupUnsupported").hidden = serialAvailable;
+$("btnOfflineOtaBackup").addEventListener("click", async () => {
+  if (state.busy) return;
+  const port = await pickSerialPort();
+  if (!port) return;
+  closeDialog(otaOfflineDialog);
+  await runTransfer({ title: "Zertifikate werden gesichert", successTitle: "Backup gespeichert", failTitle: "Backup fehlgeschlagen", stickySuccess: true }, () => backupSpiffsSerial(port));
+  // back to the dialog, to go on with the firmware
+  const reopen = () => openDialog(otaOfflineDialog);
+  if (transferDialog.open) transferDialog.addEventListener("close", reopen, { once: true });
+  else reopen();
+});
+
 btnConfirmOfflineOta.addEventListener("click", async () => {
   const method = state.otaMethod;
   const type = offlineOtaDeviceSelect.value;
   let port = null;
+  if (method === "ble" && !bleInterface.settingsService) {
+    // the backup over USB has restarted the device: connect again first
+    closeDialog(otaOfflineDialog);
+    await ensureBleConnected();
+    return;
+  }
   if (method === "serial") {
     port = await pickSerialPort();
     if (!port) {
@@ -2390,8 +3466,7 @@ function describeBuild(channel, info) {
 function openVersionDialog() {
   if (state.busy) return;
   const notes = [];
-  if (state.conn !== "disconnected") notes.push("Beim Wechsel wird die Bluetooth-Verbindung getrennt – danach einfach neu verbinden.");
-  if (state.hasImage) notes.push("Das geladene Bild muss neu ausgewählt werden.");
+  if (state.conn !== "disconnected") notes.push("Beim Wechsel wird die Verbindung zum E-Paper getrennt – danach einfach neu verbinden.");
   const note = $("versionSwitchNote");
   note.textContent = notes.join(" ");
   note.hidden = notes.length === 0;
@@ -2554,5 +3629,11 @@ if (window.matchMedia("(min-width: 900px)").matches) {
 renderPaletteEditor();
 updateSliderOutputs();
 setOtaMode("ble");
-syncUi();
+applyOrientationLayout();
+setGalleryInterval(3600);
+renderGallery();
+gallery.ready.then(() => {
+  applyOrientationLayout(); // the stored orientation is known now
+  renderGallery();
+});
 initReleaseChannel();

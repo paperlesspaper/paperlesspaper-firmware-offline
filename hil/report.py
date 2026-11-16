@@ -32,11 +32,14 @@ TEST_TITLES = {
     "test_00": "Kandidaten-Firmware per BLE installieren",
     "test_01": "Werksreset (5x Taster)",
     "test_02": "BLE-Schnittstelle (GATT)",
+    "test_03": "Galerie: speichern, anzeigen, nächstes Bild",
+    "test_04": "USB-Verbindung: Einstellungen und Galerie",
     "test_10": "Web-UI: Verbindung und Geräteanzeige",
     "test_11": "Web-UI: Einstellungen speichern",
-    "test_12": "Web-UI: Bild senden und anzeigen",
+    "test_12": "Web-UI: Galerie synchronisieren und anzeigen",
     "test_13": "Web-UI: Firmware-Update",
     "test_14": "USB-Flash ohne Boot-Taste, Start aus app0",
+    "test_15": "Web-UI per USB-Kabel: Galerie synchronisieren",
     "test_99": "Cloud-Firmware wiederherstellen",
 }
 
@@ -48,9 +51,9 @@ WEB_AREA_TITLES = {
     "connection": "Verbindung",
     "settings": "Einstellungen",
     "Wi-Fi": "WLAN",
-    "picture upload": "Bild senden",
+    "gallery": "Galerie",
+    "USB link": "Verbindung per USB-Kabel",
     "firmware update": "Firmware-Update und USB",
-    "check of the download URL": "Prüfung der Download-URL",
 }
 CONSISTENCY_AREA = "Konsistenz Firmware / Web-UI / Tests"
 OTHER_AREA = "Weitere"

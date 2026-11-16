@@ -4,7 +4,7 @@
         await app.connect()
         ...
 
-`backend` answers the GATT operations of the page (see shim.js). It is either a
+`backend` answers the GATT operations and the serial port of the page (see shim.js). It is either a
 SimulatedDevice or the bridge to a real device (hil/web_bridge.py). A backend has
     async handle(op, args) -> dict     raises GattError for a failed operation
     emit                               set here: async (event) -> None, events to the page
@@ -115,8 +115,9 @@ class Site:
 
 
 class WebApp:
-    def __init__(self, site, backend=None, bluetooth=True, headless=None):
+    def __init__(self, site, backend=None, bluetooth=True, headless=None, init_script=None):
         self.site = site
+        self.init_script = init_script  # runs in the page before its own scripts
         self.backend = backend
         self.bluetooth = bluetooth
         self.headless = os.environ.get("WEBTEST_HEADED", "") == "" if headless is None else headless
@@ -147,6 +148,8 @@ class WebApp:
         page.on("pageerror", lambda err: self.console_errors.append(f"uncaught: {err}"))
 
         await page.add_init_script(TRANSFER_COUNTER)
+        if self.init_script:
+            await page.add_init_script(self.init_script)
         if self.bluetooth:
             await page.expose_binding("__bleBridge", self._bridge)
             with open(os.path.join(WEBTEST_DIR, "shim.js"), "r", encoding="utf-8") as f:
@@ -221,10 +224,19 @@ class WebApp:
         await self.click(f'[data-view-target="{name}"]')
 
     async def open_expert_area(self):
-        """Opens the collapsed "Experten-Bereich" of the device view (switches, factory reset)."""
+        """The expert settings of the device view (switches, factory reset)."""
         await self.view("geraet")
-        if await self.page.get_attribute('[aria-controls="expertBody"]', "aria-expanded") != "true":
-            await self.click('[aria-controls="expertBody"]')
+
+    async def gallery_view(self):
+        """Opens the gallery ("Bild", "Galerie"); a device that downloads its picture opens the other side."""
+        await self.view("bild")
+        if await self.page.get_attribute("#btnSourceGallery", "aria-pressed") != "true":
+            await self.click("#btnSourceGallery")
+
+    async def url_settings(self):
+        """Opens the settings of the download from a URL ("Bild", "Abruf per URL")."""
+        await self.view("bild")
+        await self.click("#btnSourceUrl")
 
     async def open_more_firmware(self):
         """Opens the collapsed "Weitere Optionen" of the firmware view (cloud firmware, certificates, custom firmware)."""
@@ -232,8 +244,21 @@ class WebApp:
         if await self.page.get_attribute('[aria-controls="moreFirmwareBody"]', "aria-expanded") != "true":
             await self.click('[aria-controls="moreFirmwareBody"]')
 
+    async def start_connect(self, usb=False, button="#btnConnect"):
+        """Presses "Verbinden" and answers the question how: Bluetooth, or the USB link of the shim."""
+        await self.click(button)
+        await self.page.wait_for_selector("#connectDialog[open]")
+        await self.click("#btnConnectUsbAndSend" if usb else "#btnConnectAndSend")
+
     async def connect(self, timeout=40000):
-        await self.click("#btnConnect")
+        await self.start_connect()
+        await self.page.wait_for_function(
+            "() => !document.getElementById('systemStatusBar').hidden", timeout=timeout
+        )
+
+    async def connect_usb(self, timeout=40000):
+        """Connects over the serial port of the shim (the USB link) instead of Bluetooth."""
+        await self.start_connect(usb=True)
         await self.page.wait_for_function(
             "() => !document.getElementById('systemStatusBar').hidden", timeout=timeout
         )
@@ -253,11 +278,65 @@ class WebApp:
         # The page reacts to the "close" event of the dialog, which fires just after it closed.
         await self.page.evaluate("() => new Promise(resolve => setTimeout(resolve, 50))")
 
-    async def load_image(self, png_bytes, name="test.png"):
-        """Picks a picture in the editor and waits for the dithered preview."""
-        await self.view("bild")
-        await self.page.set_input_files("#fileInput", {"name": name, "mimeType": "image/png", "buffer": bytes(png_bytes)})
+    async def load_image(self, png_bytes):
+        """Adds a picture to the gallery, opens it in the editor and waits for the dithered preview."""
+        await self.add_pictures([png_bytes])
+        await self.open_tile(len([tile for tile in await self.tiles() if tile["key"]]) - 1)
         await self.wait_status("Bildvorschau optimiert", timeout=60000)
+
+    async def save_picture(self):
+        """Stores the picture of the editor in the gallery; the editor closes."""
+        await self.click("#btnSaveToGallery")
+        await self.page.wait_for_selector("#editorDialog:not([open])", state="attached", timeout=60000)
+        await self.wait_idle()
+
+    async def wait_idle(self, timeout=120000):
+        """Waits until the page has finished preparing pictures."""
+        await self.page.wait_for_function("() => !document.getElementById('btnAddPictures').disabled", timeout=timeout)
+
+    async def tiles(self):
+        """The tiles of the gallery: key (picture of the gallery) or remote (id of a picture that is only on
+        the device), status (synced, new, changed, remote or None), has_image, shown."""
+        return await self.page.evaluate(
+            """() => [...document.querySelectorAll('#galleryGrid .tile')].map((tile) => ({
+                key: tile.dataset.key || null, remote: tile.dataset.remote || null, status: tile.dataset.status || null,
+                has_image: Boolean(tile.querySelector('img')), shown: Boolean(tile.querySelector('.tile-shown')),
+            }))"""
+        )
+
+    async def add_pictures(self, pictures, timeout=180000):
+        """Quick add: several PNG files at once, prepared with the automatic settings."""
+        await self.gallery_view()
+        before = len([tile for tile in await self.tiles() if tile["key"]])
+        files = [{"name": f"picture{index + 1}.png", "mimeType": "image/png", "buffer": bytes(data)} for index, data in enumerate(pictures)]
+        await self.page.set_input_files("#galleryFileInput", files)
+        await self.page.wait_for_function(
+            "count => document.querySelectorAll('#galleryGrid .tile[data-key]').length >= count", arg=before + len(files), timeout=timeout
+        )
+        await self.wait_idle()
+
+    async def open_tile(self, index):
+        """Opens the tile at this position (a picture of the gallery) in the editor."""
+        await self.page.locator("#galleryGrid .tile .tile-open").nth(index).click()
+        await self.page.wait_for_selector("#editorDialog[open]")
+
+    async def move_tile(self, key, steps):
+        """Moves a picture in the order with the keyboard: steps < 0 towards the front."""
+        await self.page.locator(f'#galleryGrid .tile[data-key="{key}"] .tile-open').focus()
+        for _ in range(abs(steps)):
+            await self.page.keyboard.press("Shift+ArrowLeft" if steps < 0 else "Shift+ArrowRight")
+            await self.page.evaluate("() => new Promise(resolve => setTimeout(resolve, 100))")
+
+    async def delete_tile(self, selector, accept=True):
+        """Deletes a picture with the button on its tile and answers the confirmation."""
+        tile = self.page.locator(selector)
+        await tile.hover()
+        await tile.locator(".tile-delete").click()
+        await self.confirm(accept)
+
+    async def sync(self, timeout=180000):
+        """Presses "Synchronisieren" and waits for the end of the transfer (see transfer())."""
+        return await self.transfer(lambda: self.click("#btnSyncGallery"), timeout=timeout)
 
     async def transfer(self, trigger, timeout=120000):
         """Runs `trigger` (the clicks that start an upload or a flash) and waits for the blocking

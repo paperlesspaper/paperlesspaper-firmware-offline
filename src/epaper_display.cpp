@@ -1,11 +1,8 @@
 #include "epaper_display.h"
 #include <Arduino.h>
-#include <SerialFlash.h>
+#include "storage.h"
 #include <WiFi.h>
 #include <qrcode.h>
-
-// Externs from main.cpp
-extern SerialFlashFile saveFile;
 
 DisplayInfo displayInfos = {
     .version = false,
@@ -282,47 +279,40 @@ void displayOverlays(DisplayType &display, DisplayInfo displayData, bool invertC
    }
 }
 
-int setImageFromFS_7inch(String fileName) {
-   epaperIsUpdating = true;
-   saveFile = SerialFlash.open(fileName.c_str());
-   if (!saveFile) {
-      Serial.println("[BMP] File missing");
-      epaperIsUpdating = false;
+// Offset of the pixel data in a stored picture: a BMP file or the bare display payload. -1: not usable.
+static int storedImageOffset(StoreFile &imageFile) {
+   uint8_t magic[2] = {0, 0};
+   int offsetData = 0;
+   if (!imageFile.seek(0) || imageFile.read(magic, 2) != 2) {
+      Serial.println("[BMP] Stored picture is empty");
       return -1;
    }
-
-   uint16_t width = EPD_WIDTH;
-   uint16_t height = EPD_HEIGHT;
-   int offsetData = 0;
-
-   // Check if the file is a standard BMP (starts with 'BM')
-   uint8_t magic[2] = {0xFF, 0xFF};
-   if (saveFile.read(magic, 2) == 2 && !(magic[0] == 0xFF && magic[1] == 0xFF)) {
-      if (magic[0] == 'B' && magic[1] == 'M') {
-         // It's a standard BMP file. Read the pixel data offset at byte 0x0A
-         saveFile.seek(0x0A);
-         uint32_t bmpOffset = 0;
-         saveFile.read((uint8_t *)&bmpOffset, 4);
-         offsetData = bmpOffset;
-         Serial.printf("[BMP] Detected Windows BMP. Pixel Data starts at offset: %d\n", offsetData);
-      }
-      else {
-         Serial.println("[BMP] Detected RAW payload (no BM magic). Reading from byte 0.");
-      }
+   if (magic[0] == 'B' && magic[1] == 'M') {
+      // It's a standard BMP file. Read the pixel data offset at byte 0x0A
+      uint32_t bmpOffset = 0;
+      imageFile.seek(0x0A);
+      imageFile.read((uint8_t *)&bmpOffset, 4);
+      offsetData = bmpOffset;
+      Serial.printf("[BMP] Detected Windows BMP. Pixel Data starts at offset: %d\n", offsetData);
    }
    else {
-      Serial.println("[BMP] Image slot is empty/erased");
-      saveFile.close();
-      epaperIsUpdating = false;
+      Serial.println("[BMP] Detected RAW payload (no BM magic). Reading from byte 0.");
+   }
+   if (offsetData < 0 || imageFile.size() < (uint32_t)offsetData + (EPD_WIDTH * EPD_HEIGHT / 2)) {
+      Serial.printf("[BMP] Image invalid or smaller than required payload!\n");
       return -1;
    }
+   return offsetData;
+}
 
-   Serial.printf("[BMP] Loading Image H: %d W: %d\n", height, width);
-
-   if (width > EPD_WIDTH || height > EPD_HEIGHT || offsetData < 0 ||
-       saveFile.size() < (uint32_t)offsetData + (EPD_WIDTH * EPD_HEIGHT / 2)) {
-      Serial.printf("[BMP] Image invalid or smaller than required payload!\n");
-      saveFile.close();
+#ifndef EPD_TYPE_13INCH
+int setImageFromRows(ImageRowRewind rewind, ImageRowReader readRow, void *context) {
+   epaperIsUpdating = true;
+   const int width = EPD_WIDTH;
+   const int height = EPD_HEIGHT;
+   const int bufferSize = width / 2;
+   uint8_t *lineBuffer = (uint8_t *)malloc(bufferSize);
+   if (!lineBuffer) {
       epaperIsUpdating = false;
       return -1;
    }
@@ -333,22 +323,14 @@ int setImageFromFS_7inch(String fileName) {
    display.setFullWindow();
    Serial.print("[EPD] Update Display... \n");
 
-   int bufferSize = width / 2;
-   uint8_t *lineBuffer = (uint8_t *)malloc(bufferSize);
-   if (!lineBuffer) {
-      saveFile.close();
-      epaperIsUpdating = false;
-      return -1;
-   }
-
+   bool ok = true;
    display.firstPage();
    do {
       display.fillScreen(GxEPD_WHITE);
-      saveFile.seek(offsetData);
-
-      for (int y = 0; y < height; y++) {
-         saveFile.read(lineBuffer, bufferSize);
-         for (int x = 0; x < width; x++) {
+      ok = rewind(context);
+      for (int y = 0; y < height && ok; y++) {
+         ok = readRow(context, lineBuffer, bufferSize);
+         for (int x = 0; x < width && ok; x++) {
             uint8_t colorData = lineBuffer[x / 2];
             uint8_t colorNibble = (x % 2 == 0) ? (colorData >> 4) : (colorData & 0x0F);
             if (colorNibble != 6) { // Optimization: display is already filled with WHITE (6)
@@ -356,20 +338,59 @@ int setImageFromFS_7inch(String fileName) {
             }
          }
       }
+      if (!ok)
+         break; // nothing is refreshed: the picture on the display stays
    }
    while (display.nextPage());
 
    free(lineBuffer);
-   saveFile.close();
+   if (!ok) {
+      Serial.println("[EPD] Picture not readable, display not refreshed");
+      display.powerOff();
+   }
    Serial.println("[EPD] End Draw...");
    epaperIsUpdating = false;
-   return 0;
+   return ok ? 0 : -1;
+}
+
+struct StoredRows
+{
+   StoreFile *file;
+   uint32_t offset;
+};
+
+static bool storedRowsRewind(void *context) {
+   StoredRows *rows = (StoredRows *)context;
+   return rows->file->seek(rows->offset);
+}
+
+static bool storedRowsRead(void *context, uint8_t *row, int len) {
+   return ((StoredRows *)context)->file->read(row, len) == (uint32_t)len;
+}
+#endif
+
+int setImageFromFS_7inch(String fileName) {
+#ifdef EPD_TYPE_13INCH
+   return -1;
+#else
+   StoreFile imageFile;
+   if (!imageFile.openRead(fileName.c_str())) {
+      Serial.println("[BMP] File missing");
+      return -1;
+   }
+   const int offsetData = storedImageOffset(imageFile);
+   if (offsetData < 0)
+      return -1;
+   Serial.printf("[BMP] Loading Image H: %d W: %d\n", EPD_HEIGHT, EPD_WIDTH);
+   StoredRows rows = {&imageFile, (uint32_t)offsetData};
+   return setImageFromRows(storedRowsRewind, storedRowsRead, &rows);
+#endif
 }
 
 int setImageFromFS_13inch(String fileName, bool doRefresh) {
    epaperIsUpdating = true;
-   saveFile = SerialFlash.open(fileName.c_str());
-   if (!saveFile) {
+   StoreFile imageFile;
+   if (!imageFile.openRead(fileName.c_str())) {
       Serial.println("[BMP] File missing");
       epaperIsUpdating = false;
       return -1;
@@ -377,41 +398,13 @@ int setImageFromFS_13inch(String fileName, bool doRefresh) {
 
    uint16_t width = EPD_WIDTH;
    uint16_t height = EPD_HEIGHT;
-   int offsetData = 0;
-
-   // Check if the file is a standard BMP (starts with 'BM')
-   uint8_t magic[2] = {0xFF, 0xFF};
-   saveFile.seek(0);
-   if (saveFile.read(magic, 2) == 2 && !(magic[0] == 0xFF && magic[1] == 0xFF)) {
-      if (magic[0] == 'B' && magic[1] == 'M') {
-         // It's a standard BMP file. Read the pixel data offset at byte 0x0A
-         saveFile.seek(0x0A);
-         uint32_t bmpOffset = 0;
-         saveFile.read((uint8_t *)&bmpOffset, 4);
-         offsetData = bmpOffset;
-         Serial.printf("[BMP] Detected Windows BMP. Pixel Data starts at offset: %d\n", offsetData);
-      }
-      else {
-         Serial.println("[BMP] Detected RAW payload (no BM magic). Reading from byte 4.");
-         offsetData = 0;
-      }
-   }
-   else {
-      Serial.println("[BMP] Image slot is empty/erased");
-      saveFile.close();
+   const int offsetData = storedImageOffset(imageFile);
+   if (offsetData < 0) {
       epaperIsUpdating = false;
       return -1;
    }
 
    Serial.printf("[BMP] Loading Image H: %d W: %d\n", height, width);
-
-   if (width > EPD_WIDTH || height > EPD_HEIGHT || offsetData < 0 ||
-       saveFile.size() < (uint32_t)offsetData + (EPD_WIDTH * EPD_HEIGHT / 2)) {
-      Serial.printf("[BMP] Image invalid or smaller than required payload!\n");
-      saveFile.close();
-      epaperIsUpdating = false;
-      return -1;
-   }
 
    display.enableQuickRefresh(displaySettings.displayQuickRefreshTime, false);
    display.init(115200);
@@ -440,7 +433,7 @@ int setImageFromFS_13inch(String fileName, bool doRefresh) {
 
          if (!chunkBuffer) {
             Serial.println("[BMP] Malloc for 64 chunks failed! Aborting.");
-            saveFile.close();
+            imageFile.close();
             epaperIsUpdating = false;
             return -1;
          }
@@ -469,13 +462,13 @@ int setImageFromFS_13inch(String fileName, bool doRefresh) {
             int srcHalf = rotate180 ? (1 - half) : half;
 
             int byteOffsetInImage = (lineInImage * 600) + (srcHalf * 300);
-            saveFile.seek(offsetData + byteOffsetInImage);
+            imageFile.seek(offsetData + byteOffsetInImage);
 
             if (rotate180) {
                uint8_t tempLine[300];
-               if (saveFile.read(tempLine, bytesPerHalfLine) != (uint32_t)bytesPerHalfLine) {
+               if (imageFile.read(tempLine, bytesPerHalfLine) != (uint32_t)bytesPerHalfLine) {
                   free(chunkBuffer);
-                  saveFile.close();
+                  imageFile.close();
                   epaperIsUpdating = false;
                   return -1;
                }
@@ -486,9 +479,9 @@ int setImageFromFS_13inch(String fileName, bool doRefresh) {
                }
             }
             else {
-               if (saveFile.read(chunkBuffer + i * bytesPerHalfLine, bytesPerHalfLine) != (uint32_t)bytesPerHalfLine) {
+               if (imageFile.read(chunkBuffer + i * bytesPerHalfLine, bytesPerHalfLine) != (uint32_t)bytesPerHalfLine) {
                   free(chunkBuffer);
-                  saveFile.close();
+                  imageFile.close();
                   epaperIsUpdating = false;
                   return -1;
                }
@@ -557,7 +550,7 @@ int setImageFromFS_13inch(String fileName, bool doRefresh) {
       display.refresh();
    }
 
-   saveFile.close();
+   imageFile.close();
    epaperIsUpdating = false;
    return 0;
 }

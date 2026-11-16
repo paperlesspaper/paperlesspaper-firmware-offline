@@ -67,6 +67,10 @@ void displaySetQuickRefresh(bool enable, int refreshTime = 0, int wipeTime = 0);
 void displaySetOverlayOption(DisplayInfoKey key, bool value);
 void displayTypeDetect();
 void displayOverlays(DisplayType &display, DisplayInfo displayData, bool invertColors, bool fullcolor = false);
+// Rows of a picture, top to bottom, EPD_WIDTH / 2 bytes each. The picture may be read several times.
+typedef bool (*ImageRowRewind)(void *context);
+typedef bool (*ImageRowReader)(void *context, uint8_t *row, int len);
+int setImageFromRows(ImageRowRewind rewind, ImageRowReader readRow, void *context); // 7.3" only
 int setImageFromFS_7inch(String fileName);
 int setImageFromFS_13inch(String fileName, bool doRefresh = true);
 int setImageFromFS(String fileName, bool doRefresh = true);

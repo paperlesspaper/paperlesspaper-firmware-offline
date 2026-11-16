@@ -1,4 +1,4 @@
-// Replaces navigator.bluetooth in the page under test.
+// Replaces navigator.bluetooth and navigator.serial in the page under test.
 //
 // The web UI talks to this object exactly as it talks to Chrome's Web Bluetooth. Every GATT
 // operation is forwarded to the test process (window.__bleBridge, see harness.py), which
@@ -9,8 +9,11 @@
 //   * readValue() also fires "characteristicvaluechanged"
 //   * operations on a disconnected device reject with a NetworkError that mentions "GATT"
 //   * gatt.disconnect() fires "gattserverdisconnected" on the device
+//
+// The serial port carries raw bytes: the page speaks the USB link on it, the test process answers
+// as the device does (simdevice.py). A port can only be opened once, as in Chrome.
 (() => {
-  const stats = { operations: 0, running: 0, maxParallel: 0, chooserCalls: 0 };
+  const stats = { operations: 0, running: 0, maxParallel: 0, chooserCalls: 0, portChooserCalls: 0, serialOpens: [] };
   window.__bleStats = stats;
 
   const toBase64 = (data) => {
@@ -151,10 +154,82 @@
     }
   }
 
+  // --- serial port ---------------------------------------------------------
+
+  async function serialCall(op, args = {}) {
+    const result = await window.__bleBridge(op, args);
+    if (result && result.error) throw new DOMException(result.error.message, result.error.name || "NetworkError");
+    return result || {};
+  }
+
+  class SerialPort {
+    constructor() {
+      this.readable = null;
+      this.writable = null;
+      this._controller = null;
+    }
+    getInfo() {
+      return { usbVendorId: 0x10c4, usbProductId: 0xea60 };
+    }
+    async open(options) {
+      if (this.readable) throw new DOMException("The port is already open.", "InvalidStateError");
+      await serialCall("serial_open", { baud: options.baudRate });
+      stats.serialOpens.push(options.baudRate);
+      this.readable = new ReadableStream({
+        start: (controller) => {
+          this._controller = controller;
+        },
+      });
+      this.writable = new WritableStream({
+        write: async (chunk) => {
+          await serialCall("serial_write", { data: toBase64(chunk) });
+        },
+      });
+    }
+    async close() {
+      if (!this.readable) throw new DOMException("The port is already closed.", "InvalidStateError");
+      if (this.readable.locked || this.writable.locked) throw new DOMException("Cannot close while the streams are locked.", "InvalidStateError");
+      this.readable = this.writable = this._controller = null;
+      await serialCall("serial_close");
+    }
+    async setSignals() {}
+    _receive(view) {
+      try {
+        if (this._controller) this._controller.enqueue(new Uint8Array(view.buffer));
+      } catch (e) {
+        // the reader was cancelled
+      }
+    }
+    _lost() {
+      try {
+        if (this._controller) this._controller.error(new DOMException("The device has been lost.", "NetworkError"));
+      } catch (e) {
+        // already closed
+      }
+    }
+  }
+
+  const port = new SerialPort();
+  const serial = {
+    async requestPort(options) {
+      stats.portChooserCalls++;
+      await serialCall("request_port", { filters: options?.filters || [] });
+      return port;
+    },
+    async getPorts() {
+      return [];
+    },
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  Object.defineProperty(navigator, "serial", { value: serial, configurable: true });
+
   let current = null;
 
   // Called by the test process: a notification of the device, or the device closed the link.
   window.__bleEvent = (event) => {
+    if (event.type === "serial") return port._receive(fromBase64(event.data));
+    if (event.type === "serial_lost") return port._lost();
     if (!current) return;
     if (event.type === "disconnected") {
       current.gatt._dropped();

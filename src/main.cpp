@@ -17,7 +17,6 @@
 #include "kxtj3-1057.h"
 #include <JPEGDEC.h>
 #include <SPI.h>
-#include <SerialFlash.h>
 #include <Update.h>
 #include <WiFiClientSecure.h>
 #include <Wire.h>
@@ -28,7 +27,10 @@
 
 #include "chunked_decoder.h"
 #include "epaper_display.h"
+#include "gallery.h"
+#include "storage.h"
 #include "types.h"
+#include "usb_link.h"
 
 #if DEBUG
 #define PRINTS(s)         \
@@ -93,6 +95,9 @@
 #define EEPROM_SIZE 2048          // EEPROM size
 #define EEPROM_SETTINGS_ADR 500   // start address to store settings
 #define BLE_BUFFER_SIZE 32768
+#define UPLOAD_MIN_WINDOW 4096    // smallest receive buffer of a gallery upload
+#define UPLOAD_HEAP_RESERVE 24576 // heap that stays free next to the receive buffer
+#define UPDATE_MIN_FREE_HEAP 102400 // less than this after the setup mode: a download over TLS may fail
 #define MAX_SETTING_STRING_LEN 128 // max characters of a string setting (EEPROM slot is 130 bytes)
 #define MAX_WIFI_SSID_LEN 32       // EEPROM 0-39
 #define MAX_WIFI_PASS_LEN 64       // EEPROM 40-105
@@ -121,10 +126,7 @@
 #define DL_FLASH_ERROR -8
 
 #define EEPROM_DISPLAY_CONTENT_ADR 230
-#define DISPLAY_PICTURE 0    // a picture, or unknown
-#define DISPLAY_SETUP_HINT 1 // "not set up yet"
-#define DISPLAY_ERROR_TEXT 2 // "picture download failed"
-#define DISPLAY_BATTERY_EMPTY 3
+#define EEPROM_WIPE_ADR 231 // 1: delete the stored pictures at the next start (factory reset)
 
 #define BAT_OFF_VALUE 4000 // mV (4 cells): below this the frame only sleeps when it runs on batteries
 
@@ -189,13 +191,18 @@ Ticker perdiodicLedOff;
 Ticker periodicAccCheck;
 Ticker tickerStatupCounter;
 Ticker onceDisplay;
-SerialFlashFile saveFile;
-SerialFlashFile rawOutFile;
-SerialFlashFile jpgInFile;
-SerialFlashFile bleFile;
+StoreFile saveFile;
+StoreFile rawOutFile;
+StoreFile jpgInFile;
 SdFs sd;
 RTC_DATA_ATTR timeval previousWakeup = timeval{.tv_sec = 0, .tv_usec = 0};
 RTC_DATA_ATTR uint8_t failedUpdates = 0;
+// What the setup mode had done when the frame restarted itself for the update (see setup()).
+// Not initialised at a restart: valid only with RESUME_MAGIC in its upper half.
+RTC_NOINIT_ATTR uint32_t resumeState;
+#define RESUME_MAGIC 0x52450000UL
+#define RESUME_PICTURE_SHOWN 1UL
+#define RESUME_SHOW_PENDING 2UL
 JPEGDEC jpeg;
 
 NimBLECharacteristic *wifiConnectedCharacteristic;
@@ -229,6 +236,7 @@ volatile bool applyInProgress = false; // the display is being refreshed from th
 bool bleDisplayBusy = false;           // an upload START was refused for that reason
 bool batteryEmpty = false;
 bool bleImageApplied = false;
+bool galleryShowPending = false; // showing a picture failed in setup mode
 volatile bool forceExitSetup = false;
 volatile bool isBleClientConnected = false;
 bool buttonWake = false; // true if wakeup via reset button
@@ -246,6 +254,7 @@ int16_t err_curr[IMG_WIDTH * 3];
 int16_t err_next[IMG_WIDTH * 3];
 char CLIENT_ID[20];
 uint8_t *bleWriteBuffer = nullptr;
+uint32_t bleWindowSize = BLE_BUFFER_SIZE; // bytes a client sends before a FLUSH
 
 void ledBlink(int timeout, bool on, int dimValue = 100);
 void debugFS(void);
@@ -267,6 +276,8 @@ void runSetupMode();
 int processHttpDownload(String fileName);
 bool sdInit(void);
 void accUpdateOrient();
+void notifyCharacteristic(NimBLECharacteristic *characteristic);
+static bool uploadActive();
 
 uint32_t calcCRC32(const uint8_t *data, size_t len) {
    return crc32_le(0, data, len);
@@ -282,44 +293,47 @@ const uint32_t acep_palette[7] = {
     0xFFFFFF  // 6: White
 };
 
-void snapColor(int &r, int &g, int &b) {
+// Colours close to a display colour become that colour: JPEG noise in plain areas must not
+// be dithered. True if the pixel was changed to a display colour.
+bool snapColor(int &r, int &g, int &b) {
    int t = 25; // Aggressive threshold for snapping to pure colors
    if (r < t && g < t && b < t) {
       r = 0;
       g = 0;
       b = 0;
-      return;
+      return true;
    } // Black
    if (r > 255 - t && g > 255 - t && b > 255 - t) {
       r = 255;
       g = 255;
       b = 255;
-      return;
+      return true;
    } // White
    if (r > 255 - t && g < t && b < t) {
       r = 255;
       g = 0;
       b = 0;
-      return;
+      return true;
    } // Red
    if (r < (t + 10) && g > 255 - (t + 10) && b < (t + 10)) {
       r = 0;
       g = 255;
       b = 0;
-      return;
+      return true;
    } // Green
    if (r < t && g < t && b > 255 - t) {
       r = 0;
       g = 0;
       b = 255;
-      return;
+      return true;
    } // Blue
    if (r > 255 - (t + 25) && g > 255 - (t + 25) && b < (t + 25)) {
       r = 255;
       g = 255;
       b = 0;
-      return;
+      return true;
    } // Yellow
+   return false;
 }
 
 uint8_t findClosestColor(int r, int g, int b) {
@@ -342,8 +356,7 @@ uint8_t findClosestColor(int r, int g, int b) {
 }
 
 void *myOpen(const char *filename, int32_t *size) {
-   jpgInFile = SerialFlash.open(filename);
-   if (jpgInFile) {
+   if (jpgInFile.openRead(filename)) {
       *size = (lastDownloadedBytes > 0 && lastDownloadedBytes <= jpgInFile.size())
                   ? (int32_t)lastDownloadedBytes
                   : (int32_t)jpgInFile.size();
@@ -378,288 +391,57 @@ void prepareSpiBusForFlash() {
    digitalWrite(EPD_CS_S, HIGH);
 }
 
-bool waitFlashReady(uint32_t timeoutMs = 10000) {
-   unsigned long start = millis();
-   while (!SerialFlash.ready()) {
-      if (millis() - start > timeoutMs) {
-         Serial.println("[FLASH] ERROR: Timeout waiting for SerialFlash ready!");
-         return false;
-      }
-      delay(1);
-   }
-   return true;
+// Opens a file in the flash for writing. An existing file is replaced.
+static bool openOutputFile(const char *name, StoreFile &file) {
+   if (file.openWrite(name))
+      return true;
+   Serial.printf("[FLASH] ERROR: %s cannot be written\n", name);
+   return false;
 }
 
-bool waitFlashIdle(uint32_t timeoutMs = 10000) {
-   unsigned long startMs = millis();
-   uint32_t fastPolls = 0;
-   while (!SerialFlash.ready()) {
-      if (millis() - startMs > timeoutMs) {
-         Serial.println("[FLASH] ERROR: Timeout waiting for SerialFlash idle!");
-         return false;
-      }
-      if (fastPolls < 40) {
-         delayMicroseconds(50);
-         fastPolls++;
-      }
-      else {
-         delay(1);
-      }
-   }
-   return true;
+static void discardFile(StoreFile &file, const char *name) {
+   file.close();
+   Storage::remove(name);
 }
 
-static bool writeAndVerifyRangeRaw(uint32_t startAddr, const uint8_t *buf, uint32_t len) {
-   uint8_t verifyBuf[256];
-   uint32_t off = 0;
-   while (off < len) {
-      uint32_t pageAddr = startAddr + off;
-      uint32_t maxInPage = 256 - (pageAddr & 0xFF);
-      uint32_t chunk = (len - off < maxInPage) ? (len - off) : maxInPage;
-      bool ok = false;
-      for (int attempt = 0; attempt < 3; attempt++) {
-         if (!waitFlashIdle())
-            return false;
-         SerialFlash.write(pageAddr, buf + off, chunk);
-         if (!waitFlashIdle())
-            return false;
-         SerialFlash.read(pageAddr, verifyBuf, chunk);
-         if (memcmp(buf + off, verifyBuf, chunk) == 0) {
-            ok = true;
-            break;
-         }
-         delay(1);
-      }
-      if (!ok)
-         return false;
-      off += chunk;
-   }
-   return true;
-}
-
-bool writeAndVerifyFlash(SerialFlashFile &file, uint32_t fileOffset, const uint8_t *data, uint32_t len) {
-   if (!file || fileOffset + len > file.size())
-      return false;
-   prepareSpiBusForFlash();
-   uint32_t flashStart = file.getFlashAddress();
-   uint32_t baseAddr = flashStart + fileOffset;
-   uint8_t verifyBuf[256];
-   uint32_t pos = 0;
-   int blockRecoveries = 0;
-   while (pos < len) {
-      uint32_t pageAddr = baseAddr + pos;
-      uint32_t maxInPage = 256 - (pageAddr & 0xFF);
-      uint32_t chunk = (len - pos < maxInPage) ? (len - pos) : maxInPage;
-      bool pageOk = false;
-      for (int attempt = 0; attempt < 3; attempt++) {
-         if (!waitFlashIdle())
-            return false;
-         SerialFlash.write(pageAddr, data + pos, chunk);
-         if (!waitFlashIdle())
-            return false;
-         SerialFlash.read(pageAddr, verifyBuf, chunk);
-         if (memcmp(data + pos, verifyBuf, chunk) == 0) {
-            pageOk = true;
-            break;
-         }
-         Serial.printf("[FLASH] WARN: Page verify mismatch at 0x%08X (attempt %d), retrying...\n",
-                       pageAddr, attempt + 1);
-         delay(1);
-      }
-      if (!pageOk) {
-         uint32_t bs = SerialFlash.blockSize();
-         if (bs == 0)
-            bs = 65536;
-         uint32_t blockBase = pageAddr & ~(bs - 1);
-         if (blockRecoveries < 2 && blockBase >= flashStart && (blockBase + bs) <= (flashStart + file.size())) {
-            Serial.printf("[FLASH] WARN: Re-erasing 64KB block 0x%08X to heal NOR 0-bit glitch at 0x%08X...\n",
-                          blockBase, pageAddr);
-            if (blockBase >= baseAddr) {
-               SerialFlash.eraseBlock(blockBase);
-               if (!waitFlashIdle())
-                  return false;
-               pos = blockBase - baseAddr;
-               blockRecoveries++;
-               continue;
-            }
-            else {
-               uint32_t priorLen = baseAddr - blockBase;
-               uint8_t *backup = (uint8_t *)malloc(priorLen);
-               if (backup != nullptr) {
-                  if (!waitFlashIdle()) {
-                     free(backup);
-                     return false;
-                  }
-                  SerialFlash.read(blockBase, backup, priorLen);
-                  SerialFlash.eraseBlock(blockBase);
-                  if (!waitFlashIdle()) {
-                     free(backup);
-                     return false;
-                  }
-                  bool restored = writeAndVerifyRangeRaw(blockBase, backup, priorLen);
-                  free(backup);
-                  if (restored) {
-                     pos = 0;
-                     blockRecoveries++;
-                     continue;
-                  }
-               }
-            }
-         }
-         Serial.printf("[FLASH] ERROR: Page verify failed permanently at 0x%08X!\n", pageAddr);
-         return false;
-      }
-      pos += chunk;
-   }
-   file.seek(fileOffset + len);
-   return true;
-}
-
-bool verifyFlashSlotCrc(SerialFlashFile &file, uint32_t totalLen, uint8_t *scratchBuf, uint32_t scratchSize, uint32_t &outCrc) {
-   if (!file || totalLen == 0 || totalLen > file.size() || scratchBuf == nullptr || scratchSize == 0)
-      return false;
-   prepareSpiBusForFlash();
-   if (!waitFlashIdle())
-      return false;
-   uint32_t baseAddr = file.getFlashAddress();
-   uint32_t crc = 0;
-   uint32_t pos = 0;
-   while (pos < totalLen) {
-      uint32_t chunk = (totalLen - pos < scratchSize) ? (totalLen - pos) : scratchSize;
-      SerialFlash.read(baseAddr + pos, scratchBuf, chunk);
-      crc = crc32_le(crc, scratchBuf, chunk);
-      pos += chunk;
-   }
-   outCrc = crc;
-   return true;
-}
-
-void discardFlashSlot(SerialFlashFile &file) {
-   if (file) {
-      prepareSpiBusForFlash();
-      if (file.getFlashAddress() > 0) {
-         SerialFlash.eraseBlock(file.getFlashAddress());
-      }
-      else {
-         file.erase();
-      }
-      waitFlashReady();
-      file.close();
-      file = SerialFlashFile();
-   }
-}
-
-bool prepareFlashSlot(const char *name, uint32_t requiredSize, SerialFlashFile &outFile, bool eraseSlot = true) {
-   prepareSpiBusForFlash();
-   uint32_t targetSize = (requiredSize > IMAGE_SLOT_SIZE) ? requiredSize : IMAGE_SLOT_SIZE;
-   if (!waitFlashReady())
-      return false;
-   outFile = SerialFlash.open(name);
-   if (!outFile || outFile.size() < targetSize) {
-      if (outFile) {
-         SerialFlash.remove(outFile);
-         outFile.close();
-      }
-      if (!SerialFlash.createErasable(name, targetSize)) {
-         Serial.println("[FLASH] Slot allocation failed, resetting SerialFlash directory...");
-         SerialFlash.eraseBlock(0);
-         if (!waitFlashReady())
-            return false;
-         if (strcmp(name, "tmp.bmp") != 0) {
-            SerialFlash.createErasable("tmp.bmp", IMAGE_SLOT_SIZE);
-            SerialFlashFile picture = SerialFlash.open("tmp.bmp");
-            if (picture) {
-               SerialFlash.eraseBlock(picture.getFlashAddress());
-               if (!waitFlashReady())
-                  return false;
-            }
-         }
-         if (!SerialFlash.createErasable(name, targetSize)) {
-            Serial.println("[FLASH] ERROR: Failed to allocate SerialFlash slot!");
-            return false;
-         }
-      }
-      outFile = SerialFlash.open(name);
-   }
-   if (!outFile)
-      return false;
-   uint32_t bs = SerialFlash.blockSize();
-   if (bs == 0)
-      bs = 65536;
-   uint32_t baseAddr = outFile.getFlashAddress();
-   uint32_t totalLen = outFile.size();
-   for (uint32_t off = 0; eraseSlot && off < totalLen; off += bs) {
-      if (!waitFlashReady())
-         return false;
-      SerialFlash.eraseBlock(baseAddr + off);
-      if (!waitFlashReady())
-         return false;
-   }
-   outFile.seek(0);
-   return true;
-}
-
-struct RawSlot
+// A downloaded file is stored as it arrives (saveFile), up to a size limit.
+struct RawDownload
 {
-   uint32_t written = 0;       // bytes of the file stored so far
-   uint32_t erased = 0;        // bytes from the start of the slot that are erased
-   uint32_t blockSize = 65536; // erase unit of the flash
-   bool overflow = false;      // the file is larger than the slot
+   uint32_t written = 0;
+   uint32_t limit = 0;
+   bool overflow = false; // the file is larger than the limit
 };
-RawSlot rawSlot;
+RawDownload rawDownload;
 
-static uint32_t downloadSlotSize() {
-   uint8_t id[5] = {0, 0, 0, 0, 0};
-   SerialFlash.readID(id);
-   const uint32_t capacity = SerialFlash.capacity(id);
-   uint32_t bs = SerialFlash.blockSize();
-   if (bs == 0)
-      bs = 65536;
-   // the flash also holds the directory (first block) and the picture slot (tmp.bmp)
-   const uint32_t reserved = bs + ((IMAGE_SLOT_SIZE + bs - 1) / bs) * bs;
-   uint32_t size = (capacity > reserved) ? ((capacity - reserved) / bs) * bs : 0;
-   if (size > MAX_DOWNLOAD_SIZE)
-      size = MAX_DOWNLOAD_SIZE;
-   if (size < IMAGE_SLOT_SIZE)
-      size = IMAGE_SLOT_SIZE;
-   return size;
+// Largest file that can be downloaded now: the flash must also hold the picture made from it.
+static uint32_t downloadLimit(bool pictureStored) {
+   const uint32_t reserve = (pictureStored ? 0 : IMAGE_SLOT_SIZE) + 65536;
+   const uint32_t freeNow = Storage::freeBytes();
+   const uint32_t limit = (freeNow > reserve) ? freeNow - reserve : 0;
+   return (limit > MAX_DOWNLOAD_SIZE) ? MAX_DOWNLOAD_SIZE : limit;
 }
 
-static void rawSlotBegin() {
-   rawSlot = RawSlot();
-   const uint32_t bs = SerialFlash.blockSize();
-   if (bs != 0)
-      rawSlot.blockSize = bs;
-   saveFile.seek(0);
+static void rawDownloadBegin(uint32_t limit) {
+   rawDownload = RawDownload();
+   rawDownload.limit = limit;
 }
 
-// Appends bytes of the downloaded file to the slot (saveFile).
+// Appends bytes of the downloaded file (saveFile).
 static bool rawSlotWrite(const uint8_t *data, uint32_t len) {
    if (len == 0)
       return true;
-   if (len > saveFile.size() - rawSlot.written) {
-      rawSlot.overflow = true;
+   if (len > rawDownload.limit - rawDownload.written) {
+      rawDownload.overflow = true;
       return false;
-   }
-   while (rawSlot.erased < rawSlot.written + len) {
-      if (!waitFlashReady())
-         return false;
-      SerialFlash.eraseBlock(saveFile.getFlashAddress() + rawSlot.erased);
-      if (!waitFlashReady())
-         return false;
-      rawSlot.erased += rawSlot.blockSize;
    }
    if (saveFile.write(data, len) != len)
       return false;
-   rawSlot.written += len;
+   rawDownload.written += len;
    return true;
 }
 
 bool hasValidFlashImage(const char *name = "tmp.bmp") {
-   SerialFlashFile f = SerialFlash.open(name);
-   uint8_t magic[2] = {0xFF, 0xFF};
-   return f && f.size() >= (uint32_t)(EPD_WIDTH * EPD_HEIGHT / 2) &&
-          f.read(magic, 2) == 2 && !(magic[0] == 0xFF && magic[1] == 0xFF);
+   return Storage::fileSize(name) >= (int32_t)(EPD_WIDTH * EPD_HEIGHT / 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -740,6 +522,10 @@ static bool convBegin(int pictureW, int pictureH) {
 
 // Dithers the picture row in conv.rowRgb (Floyd-Steinberg) and writes it as one display row.
 // The error is only spread inside the picture, so the white margin stays clean.
+// - Rows alternate their direction (serpentine), which avoids diagonal trails.
+// - A pixel in a display colour is shown as it is and takes no error: plain areas stay
+//   without dots, also next to coloured ones.
+// - The four parts of an error add up to the error exactly.
 static void convWriteRow() {
    if (conv.rowsWritten >= IMG_HEIGHT)
       return;
@@ -748,49 +534,45 @@ static void convWriteRow() {
    memset(out_row, 0x66, sizeof(out_row));
    const uint8_t *rgb = conv.rowRgb;
    const int lastX = conv.outW - 1;
+   const bool reverse = (conv.rowsWritten & 1) != 0;
+   const int step = reverse ? -1 : 1;
 
-   for (int x = 0; x <= lastX; x++) {
-      int orig_r = rgb[x * 3];
-      int orig_g = rgb[x * 3 + 1];
-      int orig_b = rgb[x * 3 + 2];
+   for (int i = 0; i <= lastX; i++) {
+      const int x = reverse ? lastX - i : i;
+      int r = rgb[x * 3];
+      int g = rgb[x * 3 + 1];
+      int b = rgb[x * 3 + 2];
 
-      // Clean white & black threshold to prevent noise from JPEG artifacts
-      snapColor(orig_r, orig_g, orig_b);
-
-      int r = orig_r + err_curr[x * 3];
-      int g = orig_g + err_curr[x * 3 + 1];
-      int b = orig_b + err_curr[x * 3 + 2];
-
-      r = (r < 0) ? 0 : (r > 255) ? 255
-                                  : r;
-      g = (g < 0) ? 0 : (g > 255) ? 255
-                                  : g;
-      b = (b < 0) ? 0 : (b > 255) ? 255
-                                  : b;
+      if (!snapColor(r, g, b)) {
+         r += err_curr[x * 3];
+         g += err_curr[x * 3 + 1];
+         b += err_curr[x * 3 + 2];
+         r = (r < 0) ? 0 : (r > 255) ? 255
+                                     : r;
+         g = (g < 0) ? 0 : (g > 255) ? 255
+                                     : g;
+         b = (b < 0) ? 0 : (b > 255) ? 255
+                                     : b;
+      }
 
       uint8_t best = findClosestColor(r, g, b);
-      int err_r = r - (int)((acep_palette[best] >> 16) & 0xFF);
-      int err_g = g - (int)((acep_palette[best] >> 8) & 0xFF);
-      int err_b = b - (int)(acep_palette[best] & 0xFF);
+      const int err[3] = {r - (int)((acep_palette[best] >> 16) & 0xFF), g - (int)((acep_palette[best] >> 8) & 0xFF),
+                          b - (int)(acep_palette[best] & 0xFF)};
 
-      if (x < lastX) {
-         err_curr[(x + 1) * 3] += (err_r * 7) >> 4;
-         err_curr[(x + 1) * 3 + 1] += (err_g * 7) >> 4;
-         err_curr[(x + 1) * 3 + 2] += (err_b * 7) >> 4;
-      }
-      if (x > 0) {
-         err_next[(x - 1) * 3] += (err_r * 3) >> 4;
-         err_next[(x - 1) * 3 + 1] += (err_g * 3) >> 4;
-         err_next[(x - 1) * 3 + 2] += (err_b * 3) >> 4;
-      }
-      err_next[x * 3] += (err_r * 5) >> 4;
-      err_next[x * 3 + 1] += (err_g * 5) >> 4;
-      err_next[x * 3 + 2] += (err_b * 5) >> 4;
-
-      if (x < lastX) {
-         err_next[(x + 1) * 3] += (err_r * 1) >> 4;
-         err_next[(x + 1) * 3 + 1] += (err_g * 1) >> 4;
-         err_next[(x + 1) * 3 + 2] += (err_b * 1) >> 4;
+      const int ahead = x + step;
+      const int behind = x - step;
+      for (int c = 0; c < 3; c++) {
+         const int e7 = err[c] * 7 / 16;
+         const int e3 = err[c] * 3 / 16;
+         const int e5 = err[c] * 5 / 16;
+         const int e1 = err[c] - e7 - e3 - e5;
+         if (ahead >= 0 && ahead <= lastX) {
+            err_curr[ahead * 3 + c] += e7;
+            err_next[ahead * 3 + c] += e1;
+         }
+         if (behind >= 0 && behind <= lastX)
+            err_next[behind * 3 + c] += e3;
+         err_next[x * 3 + c] += e5;
       }
 
       const int px = conv.offX + x;
@@ -807,11 +589,10 @@ static void convWriteRow() {
 }
 
 // Writes the white rows below the picture and closes the display image.
-static void convFinish() {
+static bool convFinish() {
    convWriteWhiteRows(IMG_HEIGHT);
    convRelease();
-   waitFlashReady();
-   rawOutFile.close();
+   return rawOutFile.close();
 }
 
 // --- JPEG ---
@@ -826,7 +607,67 @@ int jpgDecW = 0;              // size the decoder delivers (after its own 1/2, 1
 int jpgDecH = 0;
 int jpgNextRow = 0; // next picture row to write
 
+// A picture that is decoded smaller than it is shown (a progressive JPEG: 1/8) is enlarged
+// smoothly. The strip then holds the decoded pixels (jpgDecW per row), and every picture row
+// is blended from the two decoded rows and columns around it.
+bool jpgSmooth = false;
+uint16_t *jpgPrevRow = nullptr; // decoded row above the strip
+uint16_t *jpgMapX = nullptr;    // per picture column: the decoded column left of it
+uint8_t *jpgFracX = nullptr;    // ... and the weight of the column right of that (0 .. 255)
+
+// Position of the centre of picture pixel `out` among `decSize` decoded pixels, 8 bit fraction.
+static int32_t jpgSourcePos(int out, int outSize, int decSize) {
+   const int32_t pos = (int32_t)(((int64_t)(2 * out + 1) * decSize * 128) / outSize) - 128;
+   return (pos < 0) ? 0 : pos;
+}
+
+static void jpgFlushSmooth(bool last) {
+   if (jpgStripH <= 0)
+      return;
+   const int lastDec = jpgStripY + jpgStripH - 1;
+   while (jpgNextRow < conv.outH) {
+      const int32_t pos = jpgSourcePos(jpgNextRow, conv.outH, jpgDecH);
+      int y0 = pos >> 8;
+      int y1 = y0 + 1;
+      const int fy = pos & 0xFF;
+      if (y1 > lastDec) {
+         if (!last && y1 < jpgDecH)
+            break; // the row below comes with the next strip
+         y1 = lastDec;
+      }
+      if (y0 > lastDec)
+         y0 = lastDec;
+      const uint16_t *top = (y0 < jpgStripY) ? jpgPrevRow : jpgStrip + (y0 - jpgStripY) * jpgDecW;
+      const uint16_t *bottom = (y1 < jpgStripY) ? jpgPrevRow : jpgStrip + (y1 - jpgStripY) * jpgDecW;
+      uint8_t *dst = conv.rowRgb;
+      for (int x = 0; x < conv.outW; x++) {
+         const int x0 = jpgMapX[x];
+         const int x1 = (x0 + 1 < jpgDecW) ? x0 + 1 : x0;
+         const int fx = jpgFracX[x];
+         const uint16_t c[4] = {top[x0], top[x1], bottom[x0], bottom[x1]};
+         static const uint8_t shift[3] = {8, 3, 0}; // red, green, blue of RGB565, as 8 bit values
+         static const uint8_t mask[3] = {0xF8, 0xFC, 0xF8};
+         for (int ch = 0; ch < 3; ch++) {
+            int v[4];
+            for (int k = 0; k < 4; k++)
+               v[k] = (ch == 2) ? ((c[k] << 3) & mask[ch]) : ((c[k] >> shift[ch]) & mask[ch]);
+            const int upper = v[0] + (((v[1] - v[0]) * fx) >> 8);
+            const int lower = v[2] + (((v[3] - v[2]) * fx) >> 8);
+            *dst++ = (uint8_t)(upper + (((lower - upper) * fy) >> 8));
+         }
+      }
+      convWriteRow();
+      jpgNextRow++;
+   }
+   memcpy(jpgPrevRow, jpgStrip + (jpgStripH - 1) * jpgDecW, (size_t)jpgDecW * sizeof(uint16_t));
+   jpgStripH = 0;
+}
+
 void jpgFlushStrip() {
+   if (jpgSmooth) {
+      jpgFlushSmooth(false);
+      return;
+   }
    for (int y = 0; y < jpgStripH; y++) {
       const int decY = jpgStripY + y;
       // every picture row that takes its pixels from this decoded row
@@ -861,6 +702,12 @@ int JPEGDraw(JPEGDRAW *pDraw) {
       return 1;
    jpgStripH = h;
 
+   if (jpgSmooth) {
+      for (int y = 0; y < h; y++)
+         memcpy(jpgStrip + y * jpgDecW + x0, pDraw->pPixels + y * pDraw->iWidth, (size_t)w * sizeof(uint16_t));
+      return 1;
+   }
+
    // picture columns that take their pixel from this block (decoded columns x0 .. x0 + w - 1)
    int ox = (int)(((int64_t)x0 * conv.outW + jpgDecW - 1) / jpgDecW);
    for (; ox < conv.outW; ox++) {
@@ -879,11 +726,11 @@ int JPEGDraw(JPEGDRAW *pDraw) {
 }
 
 static bool convertJpeg(const char *rawFileName, const char *outFileName) {
-   if (!prepareFlashSlot(outFileName, IMAGE_SLOT_SIZE, rawOutFile))
+   if (!openOutputFile(outFileName, rawOutFile))
       return false;
    if (!jpeg.open(rawFileName, myOpen, myClose, myRead, mySeek, JPEGDraw)) {
       Serial.printf("[IMAGE] JPEG not readable (decoder error %d)\n", jpeg.getLastError());
-      discardFlashSlot(rawOutFile);
+      discardFile(rawOutFile, outFileName);
       return false;
    }
 
@@ -895,7 +742,8 @@ static bool convertJpeg(const char *rawFileName, const char *outFileName) {
    if (ok) {
       if (jpeg.getJPEGType() == JPEG_MODE_PROGRESSIVE) {
          // JPEGDEC only decodes the first scan of a progressive JPEG: 1/8 of the resolution
-         Serial.println("[IMAGE] Progressive JPEG: decoded at 1/8 resolution, use a baseline JPEG for full quality");
+         Serial.println("[IMAGE] Progressive JPEG: only 1/8 of its resolution can be decoded, the picture is enlarged smoothly. "
+                        "Use a baseline JPEG for full quality");
          shift = 3;
       }
       else {
@@ -909,10 +757,24 @@ static bool convertJpeg(const char *rawFileName, const char *outFileName) {
       // an MCU row is 16 pixel rows high if the colour is subsampled vertically, otherwise 8
       const int mcuRows = ((jpeg.getSubSample() & 0x0F) == 2) ? 16 : 8;
       jpgStripRows = mcuRows >> shift;
-      jpgStrip = (uint16_t *)malloc((size_t)jpgStripRows * conv.outW * sizeof(uint16_t));
-      if (!jpgStrip) {
+      jpgSmooth = jpgDecW < conv.outW && jpgDecW > 0;
+      jpgStrip = (uint16_t *)malloc((size_t)jpgStripRows * (jpgSmooth ? jpgDecW : conv.outW) * sizeof(uint16_t));
+      if (jpgSmooth) {
+         jpgPrevRow = (uint16_t *)malloc((size_t)jpgDecW * sizeof(uint16_t));
+         jpgMapX = (uint16_t *)malloc((size_t)conv.outW * sizeof(uint16_t));
+         jpgFracX = (uint8_t *)malloc((size_t)conv.outW);
+      }
+      if (!jpgStrip || (jpgSmooth && (!jpgPrevRow || !jpgMapX || !jpgFracX))) {
          Serial.println("[IMAGE] OOM allocating JPEG strip buffer");
          ok = false;
+      }
+      else if (jpgSmooth) {
+         for (int x = 0; x < conv.outW; x++) {
+            const int32_t pos = jpgSourcePos(x, conv.outW, jpgDecW);
+            const int x0 = pos >> 8;
+            jpgMapX[x] = (uint16_t)((x0 < jpgDecW) ? x0 : jpgDecW - 1);
+            jpgFracX[x] = (uint8_t)(pos & 0xFF);
+         }
       }
    }
 
@@ -922,7 +784,9 @@ static bool convertJpeg(const char *rawFileName, const char *outFileName) {
       jpgStripH = 0;
       jpgNextRow = 0;
       ok = (jpeg.decode(0, 0, scaleOptions[shift]) == 1);
-      if (ok)
+      if (ok && jpgSmooth)
+         jpgFlushSmooth(true);
+      else if (ok)
          jpgFlushStrip();
       else
          Serial.printf("[IMAGE] JPEG decoding failed (decoder error %d)\n", jpeg.getLastError());
@@ -930,22 +794,28 @@ static bool convertJpeg(const char *rawFileName, const char *outFileName) {
 
    jpeg.close();
    free(jpgStrip);
+   free(jpgPrevRow);
+   free(jpgMapX);
+   free(jpgFracX);
    jpgStrip = nullptr;
+   jpgPrevRow = nullptr;
+   jpgMapX = nullptr;
+   jpgFracX = nullptr;
+   jpgSmooth = false;
 
    if (!ok) {
       convRelease();
-      discardFlashSlot(rawOutFile);
+      discardFile(rawOutFile, outFileName);
       return false;
    }
-   convFinish();
-   return true;
+   return convFinish();
 }
 
 // --- BMP and raw display images ---
 
 // Copies a file that already is a display image (pre-dithered BMP of the display size, raw payload).
-static bool copyDisplayImage(SerialFlashFile &inFile, const char *outFileName) {
-   if (!prepareFlashSlot(outFileName, IMAGE_SLOT_SIZE, rawOutFile))
+static bool copyDisplayImage(StoreFile &inFile, const char *outFileName) {
+   if (!openOutputFile(outFileName, rawOutFile))
       return false;
    inFile.seek(0);
    uint8_t buf[2048];
@@ -960,9 +830,7 @@ static bool copyDisplayImage(SerialFlashFile &inFile, const char *outFileName) {
       rawOutFile.write(buf, bytesRead);
       remaining -= bytesRead;
    }
-   waitFlashReady();
-   rawOutFile.close();
-   return true;
+   return rawOutFile.close();
 }
 
 static uint16_t readLe16(const uint8_t *p) {
@@ -974,7 +842,7 @@ static uint32_t readLe32(const uint8_t *p) {
 }
 
 // Uncompressed BMP with 4, 24 or 32 bit per pixel, any size, stored top-down or bottom-up.
-static bool convertBmp(SerialFlashFile &inFile, const char *outFileName) {
+static bool convertBmp(StoreFile &inFile, const char *outFileName) {
    uint8_t header[54];
    inFile.seek(0);
    if (inFile.read(header, sizeof(header)) != sizeof(header))
@@ -1031,13 +899,13 @@ static bool convertBmp(SerialFlashFile &inFile, const char *outFileName) {
       Serial.println("[IMAGE] OOM allocating BMP row buffer");
       return false;
    }
-   if (!prepareFlashSlot(outFileName, IMAGE_SLOT_SIZE, rawOutFile)) {
+   if (!openOutputFile(outFileName, rawOutFile)) {
       free(srcRow);
       return false;
    }
    if (!convBegin(width, height)) {
       free(srcRow);
-      discardFlashSlot(rawOutFile);
+      discardFile(rawOutFile, outFileName);
       return false;
    }
 
@@ -1074,16 +942,15 @@ static bool convertBmp(SerialFlashFile &inFile, const char *outFileName) {
 
    if (!ok) {
       convRelease();
-      discardFlashSlot(rawOutFile);
+      discardFile(rawOutFile, outFileName);
       return false;
    }
-   convFinish();
-   return true;
+   return convFinish();
 }
 
 bool processImageFile(const char *rawFileName, const char *outFileName) {
-   SerialFlashFile inFile = SerialFlash.open(rawFileName);
-   if (!inFile)
+   StoreFile inFile;
+   if (!inFile.openRead(rawFileName))
       return false;
    uint8_t magic[2] = {0, 0};
    inFile.read(magic, 2);
@@ -1152,7 +1019,7 @@ void WiFiEvent(WiFiEvent_t event) {
          if (wifiSettings.bleInitOk) {
             uint8_t val = 1;
             wifiConnectedCharacteristic->setValue(&val, 1);
-            wifiConnectedCharacteristic->notify();
+            notifyCharacteristic(wifiConnectedCharacteristic);
 
             if (wifiInfoCharacteristic) {
                JsonDocument doc;
@@ -1162,7 +1029,7 @@ void WiFiEvent(WiFiEvent_t event) {
                String json;
                serializeJson(doc, json);
                wifiInfoCharacteristic->setValue(json.c_str());
-               wifiInfoCharacteristic->notify();
+               notifyCharacteristic(wifiInfoCharacteristic);
             }
          }
       }
@@ -1176,11 +1043,11 @@ void WiFiEvent(WiFiEvent_t event) {
          if (wifiSettings.bleInitOk) {
             uint8_t val = 0;
             wifiConnectedCharacteristic->setValue(&val, 1);
-            wifiConnectedCharacteristic->notify();
+            notifyCharacteristic(wifiConnectedCharacteristic);
 
             if (wifiInfoCharacteristic) {
                wifiInfoCharacteristic->setValue("{}");
-               wifiInfoCharacteristic->notify();
+               notifyCharacteristic(wifiInfoCharacteristic);
             }
          }
       }
@@ -1201,13 +1068,17 @@ void rebootIntoRomBootloader() {
    esp_restart();
 }
 
+// A byte of the serial line that is not part of a USB session.
+void serialBootloaderByte(int received) {
+   if ((received == 'B' || received == 'b') && systemData.usbConnected && !uploadActive()) {
+      Serial.println("[MAIN] Bootloader command 'B' received via Serial!");
+      rebootIntoRomBootloader();
+   }
+}
+
 void checkSerialBootloaderCommand() {
    while (Serial.available()) {
-      const int received = Serial.read();
-      if ((received == 'B' || received == 'b') && systemData.usbConnected) {
-         Serial.println("[MAIN] Bootloader command 'B' received via Serial!");
-         rebootIntoRomBootloader();
-      }
+      serialBootloaderByte(Serial.read());
    }
 }
 
@@ -1487,15 +1358,80 @@ String getRedirect(String url, bool sendAuth = true) {
 
 // loadImageFromWeb removed from here since it's defined later
 
-uint16_t getBleMaxChunkPayload(NimBLEConnInfo &connInfo) {
-   uint16_t mtu = pServer ? pServer->getPeerMTU(connInfo.getConnHandle()) : blePeerMtu;
-   if (mtu < 23)
-      mtu = blePeerMtu;
-   if (mtu < 23)
-      mtu = 247;
-   uint16_t maxAtt = (mtu - 3 > 512) ? 512 : (mtu - 3);
-   uint16_t payload = (maxAtt > 496 + 4) ? 496 : ((maxAtt > 4) ? ((maxAtt - 4) & ~1) : 20);
-   return payload;
+// ---------------------------------------------------------------------------
+// Transfers and commands of the client
+// ---------------------------------------------------------------------------
+
+enum GalleryUpload : uint8_t
+{
+   GAL_UPLOAD_NONE,
+   GAL_UPLOAD_PICTURE,
+   GAL_UPLOAD_ORDER
+};
+volatile uint8_t galleryUpload = GAL_UPLOAD_NONE;
+uint8_t *orderBuffer = nullptr; // ids of a play order that is being uploaded
+uint16_t orderExpected = 0;
+uint32_t orderReceived = 0;
+bool bleNoSpace = false;
+NimBLECharacteristic *galleryStateCharacteristic = nullptr;
+
+// Tells the clients (Bluetooth and USB) that the value of a characteristic has changed.
+void notifyCharacteristic(NimBLECharacteristic *characteristic) {
+   if (characteristic && pServer && pServer->getConnectedCount() > 0)
+      characteristic->notify();
+   UsbLink::notify(characteristic);
+}
+
+void publishGalleryState() {
+   if (!galleryStateCharacteristic)
+      return;
+   galleryStateCharacteristic->setValue(Gallery::stateJson().c_str());
+   notifyCharacteristic(galleryStateCharacteristic);
+}
+
+static bool uploadActive() {
+   return galleryUpload != GAL_UPLOAD_NONE || fwUpdateInProgress;
+}
+
+static void freeUploadBuffer() {
+   if (bleWriteBuffer != nullptr) {
+      free(bleWriteBuffer);
+      bleWriteBuffer = nullptr;
+   }
+}
+
+// Ends a gallery upload without storing anything.
+static void abortGalleryUpload() {
+   if (galleryUpload == GAL_UPLOAD_PICTURE)
+      Gallery::abortPut();
+   free(orderBuffer);
+   orderBuffer = nullptr;
+   galleryUpload = GAL_UPLOAD_NONE;
+   if (!fwUpdateInProgress) {
+      freeUploadBuffer();
+      bleWriteBufferPos = 0;
+   }
+}
+
+// The client is gone: nothing of an unfinished transfer is kept.
+void abortTransfers() {
+   if (uploadActive())
+      Serial.println("\n[BLE] Transfer interrupted, discarding it.");
+   abortGalleryUpload();
+   Gallery::closeRead();
+   if (fwUpdateInProgress) {
+      Update.abort();
+      fwUpdateInProgress = false;
+   }
+   freeUploadBuffer();
+   bleWriteBufferPos = 0;
+   bleExpectedSeq = 0;
+   bleExpectedFwBytes = 0;
+   bleSeqError = false;
+   bleUploadError = false;
+   bleNoSpace = false;
+   bleDisplayBusy = false;
+   bleProtocolV2 = false;
 }
 
 class ServerCallbacks : public NimBLEServerCallbacks
@@ -1517,25 +1453,8 @@ class ServerCallbacks : public NimBLEServerCallbacks
       Serial.printf("\n[BLE] Client disconnected");
       isBleClientConnected = false;
       lastDisconnectTime = millis();
-      if (bleFile) {
-         Serial.println("\n[BLE] Upload interrupted by disconnect; discarding slot.");
-         discardFlashSlot(bleFile);
-      }
-      if (fwUpdateInProgress) {
-         Update.abort();
-         fwUpdateInProgress = false;
-      }
-      if (bleWriteBuffer != nullptr) {
-         free(bleWriteBuffer);
-         bleWriteBuffer = nullptr;
-      }
-      bleWriteBufferPos = 0;
-      bleExpectedSeq = 0;
-      bleExpectedFwBytes = 0;
-      bleSeqError = false;
-      bleUploadError = false;
-      bleDisplayBusy = false;
-      bleProtocolV2 = false;
+      if (!UsbLink::active()) // a client on the USB line keeps its transfer
+         abortTransfers();
       if (wifiSettings.bleInitOk) {
          Serial.printf("\n[BLE] restart advertising...\n[");
          NimBLEDevice::startAdvertising();
@@ -1556,492 +1475,622 @@ static bool bleValueFits(const NimBLEAttValue &val, size_t maxLen, const char *n
    return false;
 }
 
-class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
-{
-   void onRead(NimBLECharacteristic *pCharacteristic, NimBLEConnInfo &connInfo) override {
-      bleLastActivity = millis();
-      std::string uuidStr = pCharacteristic->getUUID().toString();
-      if (uuidStr == "10000004-0000-0000-0000-000000000001") {
-         uint16_t currentPos = bleWriteBufferPos;
-         uint16_t statusPos = bleDisplayBusy ? 0xFFFD : (bleUploadError ? 0xFFFF : (bleSeqError ? 0xFFFE : currentPos));
-         uint32_t respCrc = 0;
-         if (!bleUploadError && !bleSeqError) {
-            if (bleWriteBuffer != nullptr && currentPos > 0) {
-               respCrc = calcCRC32(bleWriteBuffer, currentPos);
-            }
-            else if (!bleFile && !fwUpdateInProgress) {
-               respCrc = bleFinalFlashCrc;
-            }
-         }
-         uint16_t maxPayload = getBleMaxChunkPayload(connInfo);
-         uint8_t resp[8];
-         resp[0] = statusPos & 0xFF;
-         resp[1] = (statusPos >> 8) & 0xFF;
-         resp[2] = respCrc & 0xFF;
-         resp[3] = (respCrc >> 8) & 0xFF;
-         resp[4] = (respCrc >> 16) & 0xFF;
-         resp[5] = (respCrc >> 24) & 0xFF;
-         resp[6] = maxPayload & 0xFF;
-         resp[7] = (maxPayload >> 8) & 0xFF;
-         pCharacteristic->setValue(resp, 8);
+// State of a new upload. False: no memory for the receive buffer.
+// flexible: a smaller buffer will do, the client reads its size from the status (gallery uploads).
+static bool startUpload(bool flexible) {
+   bleUploadError = false;
+   bleSeqError = false;
+   bleNoSpace = false;
+   bleExpectedSeq = 0;
+   bleExpectedFwBytes = 0;
+   bleBytesReceived = 0;
+   bleWriteBufferPos = 0;
+   bleRunningCrc = 0;
+   bleFinalFlashCrc = 0;
+   bleProtocolV2 = false;
+   freeUploadBuffer();
+   const uint32_t freeHeap = ESP.getFreeHeap();
+   const uint32_t largest = ESP.getMaxAllocHeap();
+   for (bleWindowSize = BLE_BUFFER_SIZE; bleWindowSize >= UPLOAD_MIN_WINDOW; bleWindowSize /= 2) {
+      // the file system, Bluetooth and WiFi need the rest
+      const bool fits = !flexible || (largest >= bleWindowSize && freeHeap >= bleWindowSize + UPLOAD_HEAP_RESERVE);
+      if (fits)
+         bleWriteBuffer = (uint8_t *)malloc(bleWindowSize);
+      if (bleWriteBuffer != nullptr || !flexible)
+         break;
+   }
+   Serial.printf("[BLE] Upload buffer: %u bytes (heap free %u, largest block %u)\n", bleWriteBuffer ? (unsigned)bleWindowSize : 0u,
+                 (unsigned)freeHeap, (unsigned)largest);
+   if (bleWriteBuffer == nullptr) {
+      Serial.println("[BLE] ERROR: Failed to allocate memory for the upload buffer!");
+      bleWindowSize = BLE_BUFFER_SIZE;
+      bleUploadError = true;
+      return false;
+   }
+   return true;
+}
+
+// Stores the received window of a gallery upload.
+static bool storeGalleryWindow() {
+   if (bleWriteBufferPos == 0)
+      return true;
+   bool ok;
+   if (galleryUpload == GAL_UPLOAD_PICTURE) {
+      ok = Gallery::writePut(bleWriteBuffer, bleWriteBufferPos);
+   }
+   else {
+      ok = orderBuffer != nullptr && orderReceived + bleWriteBufferPos <= (uint32_t)orderExpected * 4;
+      if (ok) {
+         memcpy(orderBuffer + orderReceived, bleWriteBuffer, bleWriteBufferPos);
+         orderReceived += bleWriteBufferPos;
+      }
+   }
+   if (!ok)
+      return false;
+   bleRunningCrc = crc32_le(bleRunningCrc, bleWriteBuffer, bleWriteBufferPos);
+   bleBytesReceived += bleWriteBufferPos;
+   bleWriteBufferPos = 0;
+   bleExpectedSeq = 0;
+   return true;
+}
+
+static bool parseGalleryId(const String &text, uint32_t &id) {
+   if (text.length() != 8)
+      return false;
+   char *end = nullptr;
+   id = (uint32_t)strtoul(text.c_str(), &end, 16);
+   return end == text.c_str() + 8;
+}
+
+// GAL_... and READ:... (README, "Gallery"). The result is read with the status.
+static void handleGalleryCommand(const String &cmd) {
+   bleUploadError = false;
+   bleSeqError = false;
+   bleNoSpace = false;
+   // The display is being refreshed from a picture file: files must not change now.
+   if (applyPending || applyInProgress) {
+      Serial.println("[BLE] Gallery command refused: display refresh in progress.");
+      bleDisplayBusy = true;
+      return;
+   }
+   bleDisplayBusy = false;
+   if (!uploadActive())
+      bleWriteBufferPos = 0; // may hold the error mark of a failed firmware update
+   uint32_t id = 0;
+
+   if (cmd.startsWith("GAL_PUT:")) {
+      const int comma = cmd.indexOf(',', 8);
+      if (comma < 0 || !parseGalleryId(cmd.substring(8, comma), id)) {
+         bleUploadError = true;
          return;
       }
-      NimBLEAttValue attrVal = pCharacteristic->getValue();
-      Serial.printf("%s : onRead(), value: %s\n",
-                    uuidStr.c_str(),
-                    attrVal.c_str());
-   };
-
-   void onWrite(NimBLECharacteristic *pCharacteristic, NimBLEConnInfo &connInfo) override {
-      bleLastActivity = millis();
-      std::string uuidStr = pCharacteristic->getUUID().toString();
-      NimBLEAttValue attrVal = pCharacteristic->getValue();
-      const uint8_t *pData = attrVal.data();
-      size_t dataLen = attrVal.length();
-
-      // Serial.printf("%s : onWrite(), value len: %d\n", uuidStr.c_str(), dataLen);
-
-      // Für String-Werte eine sichere Konvertierung mit dem richtigen c_str()
-      if (uuidStr == "a62eed84-7b0d-11ed-a1eb-0242ac120002") {
-         if (!bleValueFits(attrVal, MAX_WIFI_PASS_LEN, "WiFi password"))
-            return;
-         wifiSettings.pss = attrVal.c_str();
-         pCharacteristic->setValue(""); // do not keep the password in the GATT table
-         Serial.printf("[BLE] Set wifi PASS (%u chars)\n", (unsigned)wifiSettings.pss.length());
-         wifiSettings.isDeployWifi = true;
+      const uint32_t size = (uint32_t)strtoul(cmd.c_str() + comma + 1, nullptr, 10);
+      if (fwUpdateInProgress) {
+         Update.abort();
+         fwUpdateInProgress = false;
       }
-      else if (uuidStr == "090b0ef2-7b0d-11ed-a1eb-0242ac120002") {
-         if (!bleValueFits(attrVal, MAX_WIFI_SSID_LEN, "WiFi SSID"))
-            return;
-         wifiSettings.ssid = attrVal.c_str();
-         Serial.printf("[BLE] Set wifi SSID: %s\n", wifiSettings.ssid.c_str());
+      abortGalleryUpload();
+      if (!startUpload(true))
+         return;
+      const uint16_t status = Gallery::beginPut(id, size);
+      if (status != 0) {
+         freeUploadBuffer();
+         bleNoSpace = (status == STATUS_NO_SPACE);
+         bleUploadError = !bleNoSpace;
+         return;
       }
-      else if (uuidStr == "10000001-0000-0000-0000-000000000001") {
-         if (!bleValueFits(attrVal, MAX_SETTING_STRING_LEN, "Download URL"))
-            return;
-         settings.downloadUrl = attrVal.c_str();
-         settings.lastModified = ""; // Reset lastModified um Download zu erzwingen
-         Serial.printf("[BLE] Set URL: %s\n", settings.downloadUrl.c_str());
-         if (settings.downloadUrl.length() > 0) {
-            settings.imageMode = 1;
-         }
+      galleryUpload = GAL_UPLOAD_PICTURE;
+      Serial.printf("[BLE] Gallery upload STARTED: %08x, %u bytes\n", (unsigned)id, (unsigned)size);
+   }
+   else if (cmd.startsWith("GAL_ORDER:")) {
+      const long n = strtol(cmd.c_str() + 10, nullptr, 10);
+      if (n < 0 || n > GALLERY_MAX_ITEMS) {
+         bleUploadError = true;
+         return;
       }
-      else if (uuidStr == "10000007-0000-0000-0000-000000000001") {
-         if (!bleValueFits(attrVal, MAX_SETTING_STRING_LEN, "HTTP user"))
-            return;
-         settings.httpAuthUser = attrVal.c_str();
-         Serial.printf("[BLE] Set HTTP Auth user: %s\n", settings.httpAuthUser.c_str());
+      if (fwUpdateInProgress) {
+         Update.abort();
+         fwUpdateInProgress = false;
       }
-      else if (uuidStr == "10000008-0000-0000-0000-000000000001") {
-         if (!bleValueFits(attrVal, MAX_SETTING_STRING_LEN, "HTTP password"))
-            return;
-         settings.httpAuthPassword = attrVal.c_str();
-         pCharacteristic->setValue("");
-         Serial.println("[BLE] Set HTTP Auth password");
+      abortGalleryUpload();
+      if (!startUpload(true))
+         return;
+      orderBuffer = (uint8_t *)malloc((size_t)n * 4 + 4);
+      if (orderBuffer == nullptr) {
+         freeUploadBuffer();
+         bleUploadError = true;
+         return;
       }
-      else if (uuidStr == "10000002-0000-0000-0000-000000000001") {
-         int newMode = atoi(attrVal.c_str());
-         if (newMode != 0 && newMode != 1) {
-            Serial.printf("[BLE] ERROR: Invalid Image Mode %d, ignored.\n", newMode);
-            return;
-         }
-         settings.imageMode = newMode;
-         Serial.printf("[BLE] Set Image Mode: %d\n", settings.imageMode);
+      orderExpected = (uint16_t)n;
+      orderReceived = 0;
+      galleryUpload = GAL_UPLOAD_ORDER;
+   }
+   else if (cmd.startsWith("GAL_DEL:")) {
+      if (!parseGalleryId(cmd.substring(8), id)) {
+         bleUploadError = true;
+         return;
       }
-      else if (uuidStr == "10000005-0000-0000-0000-000000000001") {
-         long newTimeout = strtol(attrVal.c_str(), nullptr, 10);
-         if (newTimeout < MIN_SLEEP_TIMEOUT || newTimeout > MAX_SLEEP_TIMEOUT) {
-            Serial.printf("[BLE] ERROR: Timeout %ld out of range (%d-%d), ignored.\n", newTimeout, MIN_SLEEP_TIMEOUT, MAX_SLEEP_TIMEOUT);
-            return;
-         }
-         settings.timeout = (int)newTimeout;
-         Serial.printf("[BLE] Set Timeout/Sleep: %d\n", settings.timeout);
+      abortGalleryUpload();
+      Gallery::remove(id);
+      publishGalleryState();
+   }
+   else if (cmd == "GAL_CLEAR") {
+      abortGalleryUpload();
+      Gallery::clear();
+      publishGalleryState();
+   }
+   else if (cmd.startsWith("GAL_SET:")) {
+      const int comma = cmd.indexOf(',', 8);
+      if (comma < 0) {
+         bleUploadError = true;
+         return;
       }
-      else if (uuidStr == "10000006-0000-0000-0000-000000000001") {
-         String strVal = attrVal.c_str();
+      Gallery::setPlay(cmd.charAt(8) == '1', cmd.charAt(comma + 1) == '1');
+      publishGalleryState();
+   }
+   else if (cmd.startsWith("GAL_SHOW:")) {
+      if (!parseGalleryId(cmd.substring(9), id) || !Gallery::select(id)) {
+         bleUploadError = true;
+         return;
       }
-      else if (uuidStr == "1000000a-0000-0000-0000-000000000001") {
-         String val = attrVal.c_str();
-         settings.chargerMode = (val == "1" || val == "true");
-         Serial.printf("[BLE] Charger Mode updated to: %d\n", settings.chargerMode);
-         saveSettingsToFlash(EEPROM_SETTINGS_ADR);
-         chargeMode(settings.chargerMode);
-      }
-      else if (uuidStr == "1000000c-0000-0000-0000-000000000001") {
-         String val = attrVal.c_str();
-         settings.autoRotation = (val == "1" || val == "true");
-         Serial.printf("[BLE] Auto Rotation updated to: %d\n", settings.autoRotation);
+      if (settings.imageMode != 0) {
+         settings.imageMode = 0;
          saveSettingsToFlash(EEPROM_SETTINGS_ADR);
       }
-      else if (uuidStr == "1000000b-0000-0000-0000-000000000001") {
-         if (!bleValueFits(attrVal, MAX_SETTING_STRING_LEN, "Settings URL"))
+      applyPending = true;
+   }
+   else if (cmd.startsWith("READ:")) {
+      String what = cmd.substring(5);
+      uint32_t offset = 0;
+      const int comma = what.indexOf(',');
+      if (comma >= 0) {
+         offset = (uint32_t)strtoul(what.c_str() + comma + 1, nullptr, 10);
+         what = what.substring(0, comma);
+      }
+      uint32_t length = 0;
+      bool ok = false;
+      if (what == "list")
+         ok = Gallery::openRead(Gallery::READ_LIST, 0, offset, length);
+      else if (what.startsWith("thumb:") && parseGalleryId(what.substring(6), id))
+         ok = Gallery::openRead(Gallery::READ_THUMB, id, offset, length);
+      else if (what.startsWith("pic:") && parseGalleryId(what.substring(4), id))
+         ok = Gallery::openRead(Gallery::READ_PICTURE, id, offset, length);
+      if (!ok) {
+         bleUploadError = true;
+         return;
+      }
+      bleFinalFlashCrc = length; // reported in the value field of the status
+   }
+   else {
+      bleUploadError = true;
+   }
+}
+
+static uint16_t maxChunkPayload(uint16_t mtu) {
+   if (mtu < 23)
+      mtu = blePeerMtu;
+   if (mtu < 23)
+      mtu = 247;
+   uint16_t maxAtt = (mtu - 3 > 512) ? 512 : (mtu - 3);
+   uint16_t payload = (maxAtt > 496 + 4) ? 496 : ((maxAtt > 4) ? ((maxAtt - 4) & ~1) : 20);
+   return payload;
+}
+
+// A client reads a characteristic. mtu: of the connection, 0 if unknown.
+void gattRead(NimBLECharacteristic *pCharacteristic, uint16_t mtu) {
+   bleLastActivity = millis();
+   std::string uuidStr = pCharacteristic->getUUID().toString();
+   if (uuidStr == "10000004-0000-0000-0000-000000000001") {
+      uint16_t currentPos = bleWriteBufferPos;
+      uint16_t statusPos = bleDisplayBusy ? STATUS_DISPLAY_BUSY
+                                          : (bleNoSpace ? STATUS_NO_SPACE
+                                                        : (bleUploadError ? STATUS_UPLOAD_ERROR : (bleSeqError ? STATUS_SEQ_ERROR : currentPos)));
+      uint32_t respCrc = 0;
+      if (!bleUploadError && !bleSeqError && !bleNoSpace) {
+         if (bleWriteBuffer != nullptr && currentPos > 0) {
+            respCrc = calcCRC32(bleWriteBuffer, currentPos);
+         }
+         else if (!uploadActive()) {
+            respCrc = bleFinalFlashCrc;
+         }
+         else {
+            respCrc = bleWindowSize; // empty buffer of a running upload: how much it takes
+         }
+      }
+      uint16_t maxPayload = maxChunkPayload(mtu);
+      uint8_t resp[8];
+      resp[0] = statusPos & 0xFF;
+      resp[1] = (statusPos >> 8) & 0xFF;
+      resp[2] = respCrc & 0xFF;
+      resp[3] = (respCrc >> 8) & 0xFF;
+      resp[4] = (respCrc >> 16) & 0xFF;
+      resp[5] = (respCrc >> 24) & 0xFF;
+      resp[6] = maxPayload & 0xFF;
+      resp[7] = (maxPayload >> 8) & 0xFF;
+      pCharacteristic->setValue(resp, 8);
+      return;
+   }
+   if (uuidStr == "1000000f-0000-0000-0000-000000000001") {
+      // next chunk of the stream opened with READ:..., small enough for one answer
+      static uint8_t chunk[GALLERY_READ_CHUNK];
+      const uint16_t maxLen = (mtu >= 23 && mtu - 1 < GALLERY_READ_CHUNK) ? (mtu - 1) : GALLERY_READ_CHUNK;
+      const uint32_t n = (applyPending || applyInProgress) ? 0 : Gallery::readChunk(chunk, maxLen);
+      pCharacteristic->setValue(chunk, n);
+      return;
+   }
+}
+
+// A client has written a characteristic.
+void gattWrite(NimBLECharacteristic *pCharacteristic) {
+   bleLastActivity = millis();
+   std::string uuidStr = pCharacteristic->getUUID().toString();
+   NimBLEAttValue attrVal = pCharacteristic->getValue();
+   const uint8_t *pData = attrVal.data();
+   size_t dataLen = attrVal.length();
+
+   if (uuidStr == "a62eed84-7b0d-11ed-a1eb-0242ac120002") {
+      if (!bleValueFits(attrVal, MAX_WIFI_PASS_LEN, "WiFi password"))
+         return;
+      wifiSettings.pss = attrVal.c_str();
+      pCharacteristic->setValue(""); // do not keep the password in the GATT table
+      Serial.printf("[BLE] Set wifi PASS (%u chars)\n", (unsigned)wifiSettings.pss.length());
+      wifiSettings.isDeployWifi = true;
+   }
+   else if (uuidStr == "090b0ef2-7b0d-11ed-a1eb-0242ac120002") {
+      if (!bleValueFits(attrVal, MAX_WIFI_SSID_LEN, "WiFi SSID"))
+         return;
+      wifiSettings.ssid = attrVal.c_str();
+      Serial.printf("[BLE] Set wifi SSID: %s\n", wifiSettings.ssid.c_str());
+   }
+   else if (uuidStr == "10000001-0000-0000-0000-000000000001") {
+      if (!bleValueFits(attrVal, MAX_SETTING_STRING_LEN, "Download URL"))
+         return;
+      settings.downloadUrl = attrVal.c_str();
+      settings.lastModified = ""; // Reset lastModified um Download zu erzwingen
+      Serial.printf("[BLE] Set URL: %s\n", settings.downloadUrl.c_str());
+      if (settings.downloadUrl.length() > 0) {
+         settings.imageMode = 1;
+      }
+   }
+   else if (uuidStr == "10000007-0000-0000-0000-000000000001") {
+      if (!bleValueFits(attrVal, MAX_SETTING_STRING_LEN, "HTTP user"))
+         return;
+      settings.httpAuthUser = attrVal.c_str();
+      Serial.printf("[BLE] Set HTTP Auth user: %s\n", settings.httpAuthUser.c_str());
+   }
+   else if (uuidStr == "10000008-0000-0000-0000-000000000001") {
+      if (!bleValueFits(attrVal, MAX_SETTING_STRING_LEN, "HTTP password"))
+         return;
+      settings.httpAuthPassword = attrVal.c_str();
+      pCharacteristic->setValue("");
+      Serial.println("[BLE] Set HTTP Auth password");
+   }
+   else if (uuidStr == "10000002-0000-0000-0000-000000000001") {
+      int newMode = atoi(attrVal.c_str());
+      if (newMode != 0 && newMode != 1) {
+         Serial.printf("[BLE] ERROR: Invalid Image Mode %d, ignored.\n", newMode);
+         return;
+      }
+      settings.imageMode = newMode;
+      Serial.printf("[BLE] Set Image Mode: %d\n", settings.imageMode);
+   }
+   else if (uuidStr == "10000005-0000-0000-0000-000000000001") {
+      long newTimeout = strtol(attrVal.c_str(), nullptr, 10);
+      if (newTimeout < MIN_SLEEP_TIMEOUT || newTimeout > MAX_SLEEP_TIMEOUT) {
+         Serial.printf("[BLE] ERROR: Timeout %ld out of range (%d-%d), ignored.\n", newTimeout, MIN_SLEEP_TIMEOUT, MAX_SLEEP_TIMEOUT);
+         return;
+      }
+      settings.timeout = (int)newTimeout;
+      Serial.printf("[BLE] Set Timeout/Sleep: %d\n", settings.timeout);
+   }
+   else if (uuidStr == "10000006-0000-0000-0000-000000000001") {
+      String strVal = attrVal.c_str();
+   }
+   else if (uuidStr == "1000000a-0000-0000-0000-000000000001") {
+      String val = attrVal.c_str();
+      settings.chargerMode = (val == "1" || val == "true");
+      Serial.printf("[BLE] Charger Mode updated to: %d\n", settings.chargerMode);
+      saveSettingsToFlash(EEPROM_SETTINGS_ADR);
+      chargeMode(settings.chargerMode);
+   }
+   else if (uuidStr == "1000000c-0000-0000-0000-000000000001") {
+      String val = attrVal.c_str();
+      settings.autoRotation = (val == "1" || val == "true");
+      Serial.printf("[BLE] Auto Rotation updated to: %d\n", settings.autoRotation);
+      saveSettingsToFlash(EEPROM_SETTINGS_ADR);
+   }
+   else if (uuidStr == "1000000b-0000-0000-0000-000000000001") {
+      if (!bleValueFits(attrVal, MAX_SETTING_STRING_LEN, "Settings URL"))
+         return;
+      settings.settingsUrl = attrVal.c_str();
+      Serial.printf("[BLE] Set Settings URL: %s\n", settings.settingsUrl.c_str());
+      settings.settingsLastModified = ""; // Reset cache on new URL
+   }
+   else if (uuidStr == "10000009-0000-0000-0000-000000000001") {
+      String strVal = attrVal.c_str();
+      settings.motionWakeup = (strVal == "1" || strVal == "true");
+      Serial.printf("[BLE] Set Motion Wakeup: %d\n", settings.motionWakeup);
+   }
+   else if (uuidStr == "10000004-0000-0000-0000-000000000001") {
+      String cmd = attrVal.c_str();
+      Serial.printf("[BLE] Upload CMD: %s\n", cmd.c_str());
+      if (cmd == "SCAN_WIFI") {
+         wifiScanRequested = true;
+         Serial.println("[BLE] WiFi Scan requested via BLE.");
+      }
+      else if (cmd == "EXIT_SETUP") {
+         Serial.println("[BLE] EXIT_SETUP received. Forcing exit...");
+         forceExitSetup = true;
+      }
+      else if (cmd == "V2") {
+         bleProtocolV2 = true;
+         Serial.println("[BLE] Protocol V2 negotiated.");
+      }
+      else if (cmd.startsWith("GAL_") || cmd.startsWith("READ:")) {
+         handleGalleryCommand(cmd);
+      }
+      else if (cmd == "FLUSH") {
+         if (bleSeqError || bleUploadError) {
+            Serial.println("[BLE] ERROR: FLUSH rejected due to prior sequence/upload error!");
+            bleUploadError = true;
             return;
-         settings.settingsUrl = attrVal.c_str();
-         Serial.printf("[BLE] Set Settings URL: %s\n", settings.settingsUrl.c_str());
-         settings.settingsLastModified = ""; // Reset cache on new URL
-      }
-      else if (uuidStr == "10000009-0000-0000-0000-000000000001") {
-         String strVal = attrVal.c_str();
-         settings.motionWakeup = (strVal == "1" || strVal == "true");
-         Serial.printf("[BLE] Set Motion Wakeup: %d\n", settings.motionWakeup);
-      }
-      else if (uuidStr == "10000004-0000-0000-0000-000000000001") {
-         String cmd = attrVal.c_str();
-         Serial.printf("[BLE] Upload CMD: %s\n", cmd.c_str());
-         if (cmd == "SCAN_WIFI") {
-            wifiScanRequested = true;
-            Serial.println("[BLE] WiFi Scan requested via BLE.");
          }
-         else if (cmd == "EXIT_SETUP") {
-            Serial.println("[BLE] EXIT_SETUP received. Forcing exit...");
-            forceExitSetup = true;
-         }
-         else if (cmd == "V2") {
-            bleProtocolV2 = true;
-            Serial.println("[BLE] Protocol V2 negotiated.");
-         }
-         else if (cmd == "START") {
-            // The display is being refreshed from the picture slot: it must not be erased now.
-            if (applyPending || applyInProgress) {
-               Serial.println("[BLE] Upload START refused: display refresh in progress.");
-               bleDisplayBusy = true;
+         if (fwUpdateInProgress && bleWriteBufferPos > 0) {
+            if (bleBytesReceived == 0 && bleWriteBuffer[0] != 0xE9) {
+               Serial.printf("[BLE] ERROR: Invalid ESP32 firmware magic byte 0x%02X!\n", bleWriteBuffer[0]);
+               Update.abort();
+               fwUpdateInProgress = false;
+               bleUploadError = true;
                return;
             }
-            bleDisplayBusy = false;
+            if (bleExpectedFwBytes > 0 && (bleBytesReceived + bleWriteBufferPos) > bleExpectedFwBytes) {
+               Serial.println("[BLE] ERROR: Firmware write exceeds declared FW_SIZE!");
+               Update.abort();
+               fwUpdateInProgress = false;
+               bleUploadError = true;
+               return;
+            }
+            size_t written = Update.write(bleWriteBuffer, bleWriteBufferPos);
+            if (written != bleWriteBufferPos) {
+               Serial.println("[BLE] ERROR: Update.write failed during FLUSH!");
+               Update.printError(Serial);
+               Update.abort();
+               fwUpdateInProgress = false;
+               bleUploadError = true;
+               return;
+            }
+            bleRunningCrc = crc32_le(bleRunningCrc, bleWriteBuffer, bleWriteBufferPos);
+            bleBytesReceived += bleWriteBufferPos;
+            bleWriteBufferPos = 0;
+            bleExpectedSeq = 0;
+         }
+         else if (galleryUpload != GAL_UPLOAD_NONE && !storeGalleryWindow()) {
+            Serial.println("[BLE] ERROR: Storing the upload failed during FLUSH!");
+            bleUploadError = true;
+            return;
+         }
+      }
+      else if (cmd == "CLEAR") {
+         bleWriteBufferPos = 0;
+         bleExpectedSeq = 0;
+         bleSeqError = false;
+         Serial.println("[BLE] Buffer CLEARED due to packet loss!");
+      }
+      else if (cmd == "END" || cmd.startsWith("END:")) {
+         bool hasExpectedCrc = cmd.startsWith("END:") && cmd.length() > 4;
+         uint32_t expectedTotalCrc = hasExpectedCrc ? (uint32_t)strtoul(cmd.c_str() + 4, nullptr, 16) : 0;
+
+         if (galleryUpload != GAL_UPLOAD_NONE) {
+            bool ok = !bleUploadError && !bleSeqError && storeGalleryWindow();
+            if (ok && hasExpectedCrc && bleRunningCrc != expectedTotalCrc) {
+               Serial.printf("[BLE] ERROR: End-to-end CRC mismatch! Device=0x%08X, Client=0x%08X\n", bleRunningCrc, expectedTotalCrc);
+               ok = false;
+            }
+            if (galleryUpload == GAL_UPLOAD_PICTURE) {
+               if (ok)
+                  ok = Gallery::endPut(bleRunningCrc); // reads the stored file back and compares
+               else
+                  Gallery::abortPut();
+            }
+            else {
+               ok = ok && orderReceived == (uint32_t)orderExpected * 4 && Gallery::setOrder(orderBuffer, orderExpected);
+            }
+            free(orderBuffer);
+            orderBuffer = nullptr;
+            galleryUpload = GAL_UPLOAD_NONE;
+            bleWriteBufferPos = 0;
+            if (ok)
+               bleFinalFlashCrc = bleRunningCrc;
+            else
+               bleUploadError = true;
+            publishGalleryState();
+         }
+         else {
+            bleUploadError = true;
+         }
+         freeUploadBuffer();
+         Serial.printf("[BLE] Upload ENDED. Bytes: %u, FlashCRC: 0x%08X (%s)\n",
+                       bleBytesReceived, bleFinalFlashCrc, bleUploadError ? "ERROR" : "OK");
+      }
+      else if (cmd == "SAVE_SETTINGS") {
+         Serial.println("[BLE] SAVE_SETTINGS received.");
+         storeSleepTimeMem(settings.timeout);
+         saveSettingsToFlash(EEPROM_SETTINGS_ADR);
+      }
+      else if (cmd == "RESET") {
+         Serial.println("[BLE] Settings RESET received.");
+         abortGalleryUpload();
+         resetAll(true);
+         // Restart from the main loop (as after a firmware update), so that this write is still
+         // answered. A restart in here made the client report a failed reset.
+         fwRebootScheduledAt = millis();
+         fwRebootPending = true;
+      }
+      else if (cmd == "START_FW" || cmd.startsWith("START_FW:")) {
+         abortGalleryUpload();
+         if (fwUpdateInProgress) {
+            Update.abort();
+            fwUpdateInProgress = false;
+         }
+         fwRebootPending = false;
+         bleDisplayBusy = false;
+         const uint32_t declaredSize = (cmd.startsWith("START_FW:") && cmd.length() > 9)
+                                           ? (uint32_t)strtoul(cmd.c_str() + 9, nullptr, 10)
+                                           : 0;
+         if (!startUpload(false))
+            return;
+         bleExpectedFwBytes = declaredSize;
+
+         if (cmd.startsWith("START_FW:") && (bleExpectedFwBytes < 65536 || bleExpectedFwBytes > MAX_OTA_FW_SIZE)) {
+            Serial.printf("[BLE] ERROR: Invalid firmware size %u (max %lu)!\n", bleExpectedFwBytes, (unsigned long)MAX_OTA_FW_SIZE);
+            freeUploadBuffer();
+            bleUploadError = true;
+            return;
+         }
+
+         tickerFailsave.detach();
+         size_t beginSize = (bleExpectedFwBytes > 0) ? (size_t)bleExpectedFwBytes : (size_t)UPDATE_SIZE_UNKNOWN;
+         if (!Update.begin(beginSize)) {
+            Update.printError(Serial);
+            freeUploadBuffer();
+            bleUploadError = true;
+         }
+         else {
+            fwUpdateInProgress = true;
+            Serial.println("[BLE] Firmware Update STARTED.");
+         }
+      }
+      else if (cmd.startsWith("FW_SIZE:")) {
+         uint32_t fwSize = (cmd.length() > 8) ? (uint32_t)strtoul(cmd.c_str() + 8, nullptr, 10) : 0;
+         if (!fwUpdateInProgress || bleBytesReceived > 0 || fwSize < 65536 || fwSize > MAX_OTA_FW_SIZE) {
+            Serial.printf("[BLE] ERROR: Rejected FW_SIZE %u (max %lu)!\n", fwSize, (unsigned long)MAX_OTA_FW_SIZE);
             if (fwUpdateInProgress) {
                Update.abort();
                fwUpdateInProgress = false;
             }
-            if (bleFile) {
-               bleFile.close();
-               bleFile = SerialFlashFile();
-            }
-            bleUploadError = false;
-            bleSeqError = false;
-            bleExpectedSeq = 0;
-            bleExpectedFwBytes = 0;
-            bleBytesReceived = 0;
-            bleWriteBufferPos = 0;
-            bleRunningCrc = 0;
-            bleFinalFlashCrc = 0;
-            bleProtocolV2 = false;
-
-            if (bleWriteBuffer == nullptr) {
-               bleWriteBuffer = (uint8_t *)malloc(BLE_BUFFER_SIZE);
-            }
-            if (bleWriteBuffer == nullptr) {
-               Serial.println("[BLE] ERROR: Failed to allocate memory for image buffer!");
-               bleUploadError = true;
-               return;
-            }
-            if (!prepareFlashSlot("tmp.bmp", IMAGE_SLOT_SIZE, bleFile)) {
-               free(bleWriteBuffer);
-               bleWriteBuffer = nullptr;
-               bleUploadError = true;
-               return;
-            }
-            Serial.println("[BLE] Upload STARTED.");
+            bleUploadError = true;
+            return;
          }
-         else if (cmd == "FLUSH") {
-            if (bleSeqError || bleUploadError) {
-               Serial.println("[BLE] ERROR: FLUSH rejected due to prior sequence/upload error!");
+         Update.abort();
+         if (!Update.begin(fwSize)) {
+            Update.printError(Serial);
+            fwUpdateInProgress = false;
+            bleUploadError = true;
+            return;
+         }
+         bleExpectedFwBytes = fwSize;
+         Serial.printf("[BLE] Firmware target size set to %u bytes.\n", bleExpectedFwBytes);
+      }
+      else if (cmd == "END_FW" || cmd.startsWith("END_FW:")) {
+         bool hasExpectedCrc = cmd.startsWith("END_FW:") && cmd.length() > 7;
+         uint32_t expectedTotalCrc = hasExpectedCrc ? (uint32_t)strtoul(cmd.c_str() + 7, nullptr, 16) : 0;
+
+         if (!fwUpdateInProgress) {
+            bleUploadError = true;
+         }
+         if (fwUpdateInProgress && !bleUploadError && !bleSeqError && bleWriteBufferPos > 0) {
+            if (bleBytesReceived == 0 && bleWriteBuffer[0] != 0xE9) {
                bleUploadError = true;
-               return;
             }
-            if (fwUpdateInProgress && bleWriteBufferPos > 0) {
-               if (bleBytesReceived == 0 && bleWriteBuffer[0] != 0xE9) {
-                  Serial.printf("[BLE] ERROR: Invalid ESP32 firmware magic byte 0x%02X!\n", bleWriteBuffer[0]);
-                  Update.abort();
-                  fwUpdateInProgress = false;
-                  bleUploadError = true;
-                  return;
-               }
-               if (bleExpectedFwBytes > 0 && (bleBytesReceived + bleWriteBufferPos) > bleExpectedFwBytes) {
-                  Serial.println("[BLE] ERROR: Firmware write exceeds declared FW_SIZE!");
-                  Update.abort();
-                  fwUpdateInProgress = false;
-                  bleUploadError = true;
-                  return;
-               }
-               size_t written = Update.write(bleWriteBuffer, bleWriteBufferPos);
-               if (written != bleWriteBufferPos) {
-                  Serial.println("[BLE] ERROR: Update.write failed during FLUSH!");
-                  Update.printError(Serial);
-                  Update.abort();
-                  fwUpdateInProgress = false;
-                  bleUploadError = true;
-                  return;
-               }
-               bleRunningCrc = crc32_le(bleRunningCrc, bleWriteBuffer, bleWriteBufferPos);
-               bleBytesReceived += bleWriteBufferPos;
-               bleWriteBufferPos = 0;
-               bleExpectedSeq = 0;
+            else if (bleExpectedFwBytes > 0 && (bleBytesReceived + bleWriteBufferPos) > bleExpectedFwBytes) {
+               bleUploadError = true;
             }
-            else if (bleFile && bleWriteBufferPos > 0) {
-               if (!writeAndVerifyFlash(bleFile, bleBytesReceived, bleWriteBuffer, bleWriteBufferPos)) {
-                  Serial.println("[BLE] ERROR: Flash write/verify failed during FLUSH!");
-                  bleUploadError = true;
-                  return;
-               }
-               bleRunningCrc = crc32_le(bleRunningCrc, bleWriteBuffer, bleWriteBufferPos);
-               bleBytesReceived += bleWriteBufferPos;
-               bleWriteBufferPos = 0;
-               bleExpectedSeq = 0;
-            }
-         }
-         else if (cmd == "CLEAR") {
-            bleWriteBufferPos = 0;
-            bleExpectedSeq = 0;
-            bleSeqError = false;
-            Serial.println("[BLE] Buffer CLEARED due to packet loss!");
-         }
-         else if (cmd == "END" || cmd.startsWith("END:")) {
-            const uint32_t expectedImageBytes = (EPD_WIDTH * EPD_HEIGHT / 2);
-            bool hasExpectedCrc = cmd.startsWith("END:") && cmd.length() > 4;
-            uint32_t expectedTotalCrc = hasExpectedCrc ? (uint32_t)strtoul(cmd.c_str() + 4, nullptr, 16) : 0;
-
-            if (bleFile) {
-               if (!bleUploadError && !bleSeqError && bleWriteBufferPos > 0) {
-                  if (!writeAndVerifyFlash(bleFile, bleBytesReceived, bleWriteBuffer, bleWriteBufferPos)) {
-                     bleUploadError = true;
-                  }
-                  else {
-                     bleRunningCrc = crc32_le(bleRunningCrc, bleWriteBuffer, bleWriteBufferPos);
-                     bleBytesReceived += bleWriteBufferPos;
-                  }
-                  bleWriteBufferPos = 0;
-               }
-
-               uint32_t flashCrc = 0;
-               bool flashVerifyOk = false;
-               if (!bleUploadError && !bleSeqError && bleBytesReceived == expectedImageBytes && bleWriteBuffer != nullptr) {
-                  flashVerifyOk = verifyFlashSlotCrc(bleFile, bleBytesReceived, bleWriteBuffer, BLE_BUFFER_SIZE, flashCrc);
-                  if (flashVerifyOk && flashCrc != bleRunningCrc) {
-                     Serial.printf("[BLE] ERROR: Flash readback CRC mismatch! Flash=0x%08X, RAM=0x%08X\n",
-                                   flashCrc, bleRunningCrc);
-                     flashVerifyOk = false;
-                  }
-                  if (flashVerifyOk && hasExpectedCrc && flashCrc != expectedTotalCrc) {
-                     Serial.printf("[BLE] ERROR: End-to-end CRC mismatch! Flash=0x%08X, Client=0x%08X\n",
-                                   flashCrc, expectedTotalCrc);
-                     flashVerifyOk = false;
-                  }
-               }
-
-               if (bleUploadError || bleSeqError || bleBytesReceived != expectedImageBytes || !flashVerifyOk) {
-                  Serial.printf("[BLE] WARNING: Invalid BLE payload (%u / %u bytes, verify=%d, err=%d). Discarding!\n",
-                                bleBytesReceived, expectedImageBytes, flashVerifyOk, bleUploadError || bleSeqError);
-                  discardFlashSlot(bleFile);
-                  bleUploadError = true;
-               }
-               else {
-                  bleFinalFlashCrc = flashCrc;
-                  bleFile.close();
-                  bleFile = SerialFlashFile();
-                  settings.imageMode = 0;
-                  settings.lastModified = "";
-                  saveSettingsToFlash(EEPROM_SETTINGS_ADR);
-               }
+            else if (Update.write(bleWriteBuffer, bleWriteBufferPos) != bleWriteBufferPos) {
+               bleUploadError = true;
             }
             else {
-               bleUploadError = true;
+               bleRunningCrc = crc32_le(bleRunningCrc, bleWriteBuffer, bleWriteBufferPos);
+               bleBytesReceived += bleWriteBufferPos;
             }
-            if (bleWriteBuffer != nullptr) {
-               free(bleWriteBuffer);
-               bleWriteBuffer = nullptr;
-            }
-            Serial.printf("[BLE] Upload ENDED. Bytes: %u, FlashCRC: 0x%08X (%s)\n",
-                          bleBytesReceived, bleFinalFlashCrc, bleUploadError ? "ERROR" : "OK");
+            bleWriteBufferPos = 0;
          }
-         else if (cmd == "APPLY") {
-            Serial.println("[BLE] Settings APPLY received.");
-            applyPending = true;
+         if (bleExpectedFwBytes > 0 && bleBytesReceived != bleExpectedFwBytes) {
+            Serial.printf("[BLE] ERROR: Firmware size mismatch! Received=%u, Expected=%u\n",
+                          bleBytesReceived, bleExpectedFwBytes);
+            bleUploadError = true;
          }
-         else if (cmd == "SAVE_SETTINGS") {
-            Serial.println("[BLE] SAVE_SETTINGS received.");
-            storeSleepTimeMem(settings.timeout);
-            saveSettingsToFlash(EEPROM_SETTINGS_ADR);
+         if (hasExpectedCrc && bleRunningCrc != expectedTotalCrc) {
+            Serial.printf("[BLE] ERROR: Firmware CRC mismatch! Device=0x%08X, Client=0x%08X\n",
+                          bleRunningCrc, expectedTotalCrc);
+            bleUploadError = true;
          }
-         else if (cmd == "RESET") {
-            Serial.println("[BLE] Settings RESET received.");
-            resetAll(true);
-            // Restart from the main loop (as after a firmware update), so that this write is still
-            // answered. A restart in here made the client report a failed reset.
+         bool updateEndOk = (!bleUploadError && !bleSeqError && bleBytesReceived >= 65536)
+                                ? Update.end(bleExpectedFwBytes == 0)
+                                : false;
+         fwUpdateInProgress = false;
+         freeUploadBuffer();
+         if (updateEndOk) {
+            bleFinalFlashCrc = bleRunningCrc;
+            bleWriteBufferPos = 0;
             fwRebootScheduledAt = millis();
             fwRebootPending = true;
+            Serial.printf("[BLE] Firmware Update SUCCESS (Bytes: %u, CRC: 0x%08X). Rebooting shortly...\n",
+                          bleBytesReceived, bleFinalFlashCrc);
          }
-         else if (cmd == "START_FW" || cmd.startsWith("START_FW:")) {
-            if (bleFile) {
-               discardFlashSlot(bleFile);
-            }
-            if (fwUpdateInProgress) {
-               Update.abort();
-               fwUpdateInProgress = false;
-            }
-            fwRebootPending = false;
-            bleDisplayBusy = false;
-            bleUploadError = false;
-            bleSeqError = false;
-            bleExpectedSeq = 0;
-            bleExpectedFwBytes = (cmd.startsWith("START_FW:") && cmd.length() > 9)
-                                     ? (uint32_t)strtoul(cmd.c_str() + 9, nullptr, 10)
-                                     : 0;
-            bleBytesReceived = 0;
-            bleWriteBufferPos = 0;
-            bleRunningCrc = 0;
-            bleFinalFlashCrc = 0;
-            bleProtocolV2 = false;
-
-            if (cmd.startsWith("START_FW:") && (bleExpectedFwBytes < 65536 || bleExpectedFwBytes > MAX_OTA_FW_SIZE)) {
-               Serial.printf("[BLE] ERROR: Invalid firmware size %u (max %lu)!\n", bleExpectedFwBytes, (unsigned long)MAX_OTA_FW_SIZE);
-               bleUploadError = true;
-               return;
-            }
-
-            if (bleWriteBuffer == nullptr) {
-               bleWriteBuffer = (uint8_t *)malloc(BLE_BUFFER_SIZE);
-            }
-            if (bleWriteBuffer == nullptr) {
-               Serial.println("[BLE] ERROR: Failed to allocate memory for firmware buffer!");
-               bleUploadError = true;
-               return;
-            }
-            tickerFailsave.detach();
-            size_t beginSize = (bleExpectedFwBytes > 0) ? (size_t)bleExpectedFwBytes : (size_t)UPDATE_SIZE_UNKNOWN;
-            if (!Update.begin(beginSize)) {
-               Update.printError(Serial);
-               free(bleWriteBuffer);
-               bleWriteBuffer = nullptr;
-               bleUploadError = true;
-            }
-            else {
-               fwUpdateInProgress = true;
-               Serial.println("[BLE] Firmware Update STARTED.");
-            }
-         }
-         else if (cmd.startsWith("FW_SIZE:")) {
-            uint32_t fwSize = (cmd.length() > 8) ? (uint32_t)strtoul(cmd.c_str() + 8, nullptr, 10) : 0;
-            if (!fwUpdateInProgress || bleBytesReceived > 0 || fwSize < 65536 || fwSize > MAX_OTA_FW_SIZE) {
-               Serial.printf("[BLE] ERROR: Rejected FW_SIZE %u (max %lu)!\n", fwSize, (unsigned long)MAX_OTA_FW_SIZE);
-               if (fwUpdateInProgress) {
-                  Update.abort();
-                  fwUpdateInProgress = false;
-               }
-               bleUploadError = true;
-               return;
-            }
+         else {
+            Update.printError(Serial);
             Update.abort();
-            if (!Update.begin(fwSize)) {
-               Update.printError(Serial);
-               fwUpdateInProgress = false;
-               bleUploadError = true;
-               return;
-            }
-            bleExpectedFwBytes = fwSize;
-            Serial.printf("[BLE] Firmware target size set to %u bytes.\n", bleExpectedFwBytes);
-         }
-         else if (cmd == "END_FW" || cmd.startsWith("END_FW:")) {
-            bool hasExpectedCrc = cmd.startsWith("END_FW:") && cmd.length() > 7;
-            uint32_t expectedTotalCrc = hasExpectedCrc ? (uint32_t)strtoul(cmd.c_str() + 7, nullptr, 16) : 0;
-
-            if (!fwUpdateInProgress) {
-               bleUploadError = true;
-            }
-            if (fwUpdateInProgress && !bleUploadError && !bleSeqError && bleWriteBufferPos > 0) {
-               if (bleBytesReceived == 0 && bleWriteBuffer[0] != 0xE9) {
-                  bleUploadError = true;
-               }
-               else if (bleExpectedFwBytes > 0 && (bleBytesReceived + bleWriteBufferPos) > bleExpectedFwBytes) {
-                  bleUploadError = true;
-               }
-               else if (Update.write(bleWriteBuffer, bleWriteBufferPos) != bleWriteBufferPos) {
-                  bleUploadError = true;
-               }
-               else {
-                  bleRunningCrc = crc32_le(bleRunningCrc, bleWriteBuffer, bleWriteBufferPos);
-                  bleBytesReceived += bleWriteBufferPos;
-               }
-               bleWriteBufferPos = 0;
-            }
-            if (bleExpectedFwBytes > 0 && bleBytesReceived != bleExpectedFwBytes) {
-               Serial.printf("[BLE] ERROR: Firmware size mismatch! Received=%u, Expected=%u\n",
-                             bleBytesReceived, bleExpectedFwBytes);
-               bleUploadError = true;
-            }
-            if (hasExpectedCrc && bleRunningCrc != expectedTotalCrc) {
-               Serial.printf("[BLE] ERROR: Firmware CRC mismatch! Device=0x%08X, Client=0x%08X\n",
-                             bleRunningCrc, expectedTotalCrc);
-               bleUploadError = true;
-            }
-            bool updateEndOk = (!bleUploadError && !bleSeqError && bleBytesReceived >= 65536)
-                                   ? Update.end(bleExpectedFwBytes == 0)
-                                   : false;
-            fwUpdateInProgress = false;
-            if (bleWriteBuffer != nullptr) {
-               free(bleWriteBuffer);
-               bleWriteBuffer = nullptr;
-            }
-            if (updateEndOk) {
-               bleFinalFlashCrc = bleRunningCrc;
-               bleWriteBufferPos = 0;
-               fwRebootScheduledAt = millis();
-               fwRebootPending = true;
-               Serial.printf("[BLE] Firmware Update SUCCESS (Bytes: %u, CRC: 0x%08X). Rebooting shortly...\n",
-                             bleBytesReceived, bleFinalFlashCrc);
-            }
-            else {
-               Update.printError(Serial);
-               Update.abort();
-               Serial.println("[BLE] Firmware Update FAILED.");
-               bleUploadError = true;
-               bleWriteBufferPos = 0xFFFF;
-            }
+            Serial.println("[BLE] Firmware Update FAILED.");
+            bleUploadError = true;
+            bleWriteBufferPos = 0xFFFF;
          }
       }
-      else if (uuidStr == "10000003-0000-0000-0000-000000000001") {
-         if ((bleFile || fwUpdateInProgress) && pData && bleWriteBuffer != nullptr && !bleUploadError) {
-            if (bleProtocolV2) {
-               if (bleSeqError || dataLen <= 1)
-                  return;
-               uint8_t seq = pData[0];
-               if (seq != bleExpectedSeq) {
-                  Serial.printf("[BLE] Seq Error! Expected %u, got %u\n", bleExpectedSeq, seq);
-                  bleSeqError = true;
-                  return;
-               }
-               bleExpectedSeq++;
-               size_t actualDataLen = dataLen - 1;
-               if (bleWriteBufferPos + actualDataLen <= BLE_BUFFER_SIZE) {
-                  memcpy(bleWriteBuffer + bleWriteBufferPos, pData + 1, actualDataLen);
+   }
+   else if (uuidStr == "10000003-0000-0000-0000-000000000001") {
+      if (uploadActive() && pData && bleWriteBuffer != nullptr && !bleUploadError) {
+         if (bleProtocolV2) {
+            if (bleSeqError || dataLen <= 1)
+               return;
+            uint8_t seq = pData[0];
+            if (seq != bleExpectedSeq) {
+               Serial.printf("[BLE] Seq Error! Expected %u, got %u\n", bleExpectedSeq, seq);
+               bleSeqError = true;
+               return;
+            }
+            bleExpectedSeq++;
+            size_t actualDataLen = dataLen - 1;
+            if (bleWriteBufferPos + actualDataLen <= bleWindowSize) {
+               memcpy(bleWriteBuffer + bleWriteBufferPos, pData + 1, actualDataLen);
+               bleWriteBufferPos += actualDataLen;
+            }
+            else {
+               Serial.println("[BLE] ERROR: RAM buffer overflow in V2!");
+               bleSeqError = true;
+            }
+         }
+         else if (dataLen > 4) {
+            uint32_t packetCrc = pData[0] | (pData[1] << 8) | (pData[2] << 16) | (pData[3] << 24);
+            size_t actualDataLen = dataLen - 4;
+            uint32_t calculatedCrc = calcCRC32(pData + 4, actualDataLen);
+
+            if (packetCrc == calculatedCrc) {
+               if (bleWriteBufferPos + actualDataLen <= bleWindowSize) {
+                  memcpy(bleWriteBuffer + bleWriteBufferPos, pData + 4, actualDataLen);
                   bleWriteBufferPos += actualDataLen;
                }
                else {
-                  Serial.println("[BLE] ERROR: RAM buffer overflow in V2!");
+                  Serial.println("[BLE] ERROR: RAM buffer overflow! Checkpoint logic failed.");
                   bleSeqError = true;
                }
             }
-            else if (dataLen > 4) {
-               uint32_t packetCrc = pData[0] | (pData[1] << 8) | (pData[2] << 16) | (pData[3] << 24);
-               size_t actualDataLen = dataLen - 4;
-               uint32_t calculatedCrc = calcCRC32(pData + 4, actualDataLen);
-
-               if (packetCrc == calculatedCrc) {
-                  if (bleWriteBufferPos + actualDataLen <= BLE_BUFFER_SIZE) {
-                     memcpy(bleWriteBuffer + bleWriteBufferPos, pData + 4, actualDataLen);
-                     bleWriteBufferPos += actualDataLen;
-                  }
-                  else {
-                     Serial.println("[BLE] ERROR: RAM buffer overflow! Checkpoint logic failed.");
-                     bleSeqError = true;
-                  }
-               }
-               else {
-                  Serial.printf("[BLE] CRC Error! Expected 0x%08X, got 0x%08X\n", calculatedCrc, packetCrc);
-                  bleSeqError = true;
-               }
+            else {
+               Serial.printf("[BLE] CRC Error! Expected 0x%08X, got 0x%08X\n", calculatedCrc, packetCrc);
+               bleSeqError = true;
             }
          }
       }
+   }
+}
+
+class CharacteristicCallbacks : public NimBLECharacteristicCallbacks
+{
+   void onRead(NimBLECharacteristic *pCharacteristic, NimBLEConnInfo &connInfo) override {
+      uint16_t mtu = pServer ? pServer->getPeerMTU(connInfo.getConnHandle()) : blePeerMtu;
+      gattRead(pCharacteristic, mtu);
+   };
+
+   void onWrite(NimBLECharacteristic *pCharacteristic, NimBLEConnInfo &connInfo) override {
+      gattWrite(pCharacteristic);
    };
 
    void onStatus(NimBLECharacteristic *pCharacteristic, int code) override {
@@ -2070,6 +2119,7 @@ static String systemInfoJson(bool isCharging, bool setupTimeout = false) {
    sysDoc["charging"] = isCharging;
    sysDoc["version"] = SOFTWARE_VERSION;
    sysDoc["fw"] = "offline";
+   sysDoc["gallery"] = 1; // the gallery commands are available
 #ifdef EPD_TYPE_13INCH
    sysDoc["display"] = "13";
 #else
@@ -2170,6 +2220,8 @@ bool BleInit(String deviceId, bool enable) {
    NimBLECharacteristic *chargerModeCharacteristic = epaperSettingsService->createCharacteristic("1000000a-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
    NimBLECharacteristic *autoRotationCharacteristic = epaperSettingsService->createCharacteristic("1000000c-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
    NimBLECharacteristic *fwVersionCharacteristic = epaperSettingsService->createCharacteristic("1000000d-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ);
+   galleryStateCharacteristic = epaperSettingsService->createCharacteristic("1000000e-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+   NimBLECharacteristic *readDataCharacteristic = epaperSettingsService->createCharacteristic("1000000f-0000-0000-0000-000000000001", NIMBLE_PROPERTY::READ);
 
    wifiSsidCharacteristic->setCallbacks(&chrCallbacks);
    wifiPwCharacteristic->setCallbacks(&chrCallbacks);
@@ -2185,6 +2237,7 @@ bool BleInit(String deviceId, bool enable) {
    motionWakeupCharacteristic->setCallbacks(&chrCallbacks);
    chargerModeCharacteristic->setCallbacks(&chrCallbacks);
    autoRotationCharacteristic->setCallbacks(&chrCallbacks);
+   readDataCharacteristic->setCallbacks(&chrCallbacks);
 
    // Services are started when the server is started
 
@@ -2214,6 +2267,11 @@ bool BleInit(String deviceId, bool enable) {
    chargerModeCharacteristic->setValue(settings.chargerMode ? "1" : "0");
    autoRotationCharacteristic->setValue(settings.autoRotation ? "1" : "0");
    fwVersionCharacteristic->setValue(SOFTWARE_VERSION);
+   galleryStateCharacteristic->setValue(Gallery::stateJson().c_str());
+
+   UsbLink::addService(deviceDataService);
+   UsbLink::addService(wifiDataService);
+   UsbLink::addService(epaperSettingsService);
 
    pAdvertising = NimBLEDevice::getAdvertising();
    pAdvertising->setName(deviceId.c_str());
@@ -2312,17 +2370,26 @@ int downloadAndSaveFile(String fileName, String url) {
          if (chunked)
             len = -1; // the end is marked by the last chunk
 
-         if (!prepareFlashSlot(fileName.c_str(), downloadSlotSize(), saveFile, false)) {
-            http.end();
-            return DL_FLASH_ERROR;
+         Storage::remove(fileName.c_str()); // the previous download
+         uint32_t limit = downloadLimit(hasValidFlashImage("tmp.bmp"));
+#ifndef EPD_TYPE_13INCH
+         // The gallery is not shown while pictures are downloaded: its space is taken when it is needed.
+         if (Gallery::count() > 0 && ((len > 0) ? (uint32_t)len > limit : limit < MAX_DOWNLOAD_SIZE)) {
+            Serial.println("[DL] Not enough free flash, deleting the gallery.");
+            Gallery::clear();
+            limit = downloadLimit(hasValidFlashImage("tmp.bmp"));
          }
-         if (len > 0 && (uint32_t)len > saveFile.size()) {
-            Serial.printf("[DL] File too large (%d bytes, at most %u), not downloaded.\n", len, (unsigned)saveFile.size());
-            saveFile.close();
+#endif
+         if (len > 0 && (uint32_t)len > limit) {
+            Serial.printf("[DL] File too large (%d bytes, at most %u), not downloaded.\n", len, (unsigned)limit);
             http.end();
             return DL_TOO_LARGE;
          }
-         rawSlotBegin();
+         if (!openOutputFile(fileName.c_str(), saveFile)) {
+            http.end();
+            return DL_FLASH_ERROR;
+         }
+         rawDownloadBegin(limit);
          Serial.printf("[DL] Download Size: %d%s\n", len, chunked ? " (chunked)" : "");
          int buff_size = 2048;
          unsigned char *buff = (unsigned char *)malloc(buff_size);
@@ -2333,7 +2400,7 @@ int downloadAndSaveFile(String fileName, String url) {
          }
          if (buff == nullptr) {
             Serial.println("[DL] ERROR: Failed to allocate memory for download buffer!");
-            discardFlashSlot(saveFile);
+            discardFile(saveFile, fileName.c_str());
             http.end();
             return DL_NO_MEMORY;
          }
@@ -2359,7 +2426,7 @@ int downloadAndSaveFile(String fileName, String url) {
                   }
                   const bool stored = chunked ? chunkDecoder.feed(buff, c, rawSlotWrite) : rawSlotWrite(buff, c);
                   if (!stored) {
-                     Serial.println(rawSlot.overflow ? "[DL] File does not fit into the flash" : "[DL] Body not readable or flash write failed");
+                     Serial.println(rawDownload.overflow ? "[DL] File does not fit into the flash" : "[DL] Body not readable or flash write failed");
                      dlFailed = true;
                      break;
                   }
@@ -2389,17 +2456,17 @@ int downloadAndSaveFile(String fileName, String url) {
 
          free(buff);
 
-         lastDownloadedBytes = rawSlot.written;
-         if (rawSlot.overflow) {
-            Serial.printf("[DL] File too large (more than %u bytes), discarding.\n", (unsigned)saveFile.size());
-            discardFlashSlot(saveFile);
+         lastDownloadedBytes = rawDownload.written;
+         if (rawDownload.overflow) {
+            Serial.printf("[DL] File too large (more than %u bytes), discarding.\n", (unsigned)rawDownload.limit);
+            discardFile(saveFile, fileName.c_str());
             http.end();
             return DL_TOO_LARGE;
          }
          const bool complete = chunked ? chunkDecoder.done() : (httpFileSize <= 0 || lastDownloadedBytes == (uint32_t)httpFileSize);
-         if (dlFailed || WiFi.status() != WL_CONNECTED || lastDownloadedBytes == 0 || !complete || !waitFlashReady()) {
+         if (dlFailed || WiFi.status() != WL_CONNECTED || lastDownloadedBytes == 0 || !complete || !saveFile.close()) {
             Serial.printf("[DL] Download incomplete (%u / %d bytes), discarding.\n", lastDownloadedBytes, httpFileSize);
-            discardFlashSlot(saveFile);
+            discardFile(saveFile, fileName.c_str());
             http.end();
             return DL_INCOMPLETE;
          }
@@ -2924,7 +2991,7 @@ bool accIntSet(int sensity) {
 }
 
 void recheckAccOrient(int setOrientValue) {
-   if (stopAccRecheck || isEpaperActive() || !settings.autoRotation || bleFile || fwUpdateInProgress)
+   if (stopAccRecheck || isEpaperActive() || !settings.autoRotation || uploadActive())
       return;
    int accCheck = accInit(true);
    if (accCheck >= 0 && accCheck != readIntFromFlash(220)) {
@@ -2997,10 +3064,6 @@ bool resetAll(bool resetWifi) {
    Serial.printf("[MAIN] Reset - WIFI %d \n", resetWifi);
    writeIntToFlash(0, 220);          // restore screen orient to default
    storeSleepTimeMem(DEFAULT_SLEEP); // restore sleep mem store to default
-   if (SerialFlash.exists("tmp.bmp")) {
-      SerialFlashFile f = SerialFlash.open("tmp.bmp");
-      discardFlashSlot(f);
-   }
    settings.downloadUrl = "";
    settings.lastModified = "";
    settings.settingsLastModified = "";
@@ -3018,6 +3081,7 @@ bool resetAll(bool resetWifi) {
       wifiSettings.wifiRetries = 0;
       EepromClear();
    }
+   EEPROM.write(EEPROM_WIPE_ADR, 1); // the pictures are deleted at the next start, not in this task
    saveSettingsToFlash(EEPROM_SETTINGS_ADR);
    return true;
 }
@@ -3099,28 +3163,35 @@ bool updateDisplayAsync(String functionName) {
 void logImageSlotCrc(const char *name) {
    if (!DEBUG_FLAG)
       return;
-   prepareSpiBusForFlash();
-   SerialFlashFile f = SerialFlash.open(name);
    const uint32_t payloadLen = (EPD_WIDTH * EPD_HEIGHT / 2);
    const uint32_t scratchSize = 4096;
    uint8_t *scratch = (uint8_t *)malloc(scratchSize);
+   StoreFile f;
    uint32_t crc = 0;
-   if (f && scratch != nullptr && verifyFlashSlotCrc(f, payloadLen, scratch, scratchSize, crc)) {
+   uint32_t done = 0;
+   if (scratch != nullptr && f.openRead(name)) {
+      while (done < payloadLen) {
+         const uint32_t n = f.read(scratch, (payloadLen - done < scratchSize) ? (payloadLen - done) : scratchSize);
+         if (n == 0)
+            break;
+         crc = crc32_le(crc, scratch, n);
+         done += n;
+      }
+   }
+   if (done == payloadLen) {
       Serial.printf("[IMAGE] Slot CRC: 0x%08X (%s, %u bytes)\n", crc, name, payloadLen);
    }
    else {
       Serial.printf("[IMAGE] Slot CRC: unavailable (%s)\n", name);
    }
    free(scratch);
-   if (f)
-      f.close();
 }
 
 static uint8_t displayContent() {
    return EEPROM.read(EEPROM_DISPLAY_CONTENT_ADR);
 }
 
-static void setDisplayContent(uint8_t content) {
+void setDisplayContent(uint8_t content) {
    if (EEPROM.read(EEPROM_DISPLAY_CONTENT_ADR) != content) {
       EEPROM.write(EEPROM_DISPLAY_CONTENT_ADR, content);
       EEPROM.commit();
@@ -3146,15 +3217,18 @@ static void showNotice(uint8_t content, const char *text, const char *text2 = ""
 void runSetupMode() {
    Serial.println("[MAIN] Setup Mode Triggered");
    prepareSpiBusForFlash();
+   UsbLink::begin(); // a client can also connect over the USB serial line
 
    unsigned long setupModeStart = millis();
    unsigned long bleConnectedTime = 0;
    bool bleWasConnected = false;
    bool initialWifiCheckDone = false;
+   // A press of the button shows the next picture of the gallery, with or without the interval.
+   bool advanceOnPress = settings.imageMode == 0 && Gallery::count() > 1;
 
    // Wait for completion, disconnect, or timeout
    while (true) {
-      bool isBleTransferActive = (bool)bleFile || fwUpdateInProgress;
+      bool isBleTransferActive = uploadActive();
 
       if (!isBleTransferActive && wifiScanRequested) {
          wifiScanRequested = false;
@@ -3180,12 +3254,13 @@ void runSetupMode() {
          }
          if (wifiScanCharacteristic) {
             wifiScanCharacteristic->setValue(wifiSsidScan.c_str());
-            wifiScanCharacteristic->notify();
+            notifyCharacteristic(wifiScanCharacteristic);
          }
          Serial.println("[NETWORK] Scan completed and notified.");
       }
 
-      if (pServer->getConnectedCount() > 0) {
+      const bool clientConnected = pServer->getConnectedCount() > 0 || UsbLink::active();
+      if (clientConnected) {
          if (!bleWasConnected) {
             bleWasConnected = true;
             bleConnectedTime = millis();
@@ -3210,11 +3285,11 @@ void runSetupMode() {
          if (wifiSettings.bleInitOk && wifiConnectedCharacteristic) {
             uint8_t val = 0;
             wifiConnectedCharacteristic->setValue(&val, 1);
-            wifiConnectedCharacteristic->notify();
+            notifyCharacteristic(wifiConnectedCharacteristic);
 
             if (wifiInfoCharacteristic) {
                wifiInfoCharacteristic->setValue(String("{}").c_str());
-               wifiInfoCharacteristic->notify();
+               notifyCharacteristic(wifiInfoCharacteristic);
             }
          }
 
@@ -3242,18 +3317,27 @@ void runSetupMode() {
          }
       }
 
+      // Not before 3.5 s after the start: a second press (next picture at once) restarts the frame.
+      if (advanceOnPress && millis() > 3500 && !isBleTransferActive) {
+         advanceOnPress = false;
+         if (Gallery::next())
+            applyPending = true;
+      }
+
       if (applyPending) {
          applyInProgress = true;
          applyPending = false;
-         bleImageApplied = true;
-         Serial.println("[MAIN] Applying new image within setup mode...");
+         Serial.println("[MAIN] Showing the gallery picture within setup mode...");
          powerSupplyDisplay(true);
          if (settings.autoRotation) {
             accUpdateOrient();
          }
-         logImageSlotCrc("tmp.bmp");
-         showStoredImage("tmp.bmp");
+         // Not enough memory next to Bluetooth and WiFi: the picture follows after the setup mode.
+         galleryShowPending = Gallery::showCurrent() != 0;
+         bleImageApplied = !galleryShowPending;
          applyInProgress = false;
+         lastDisconnectTime = millis(); // the time to connect starts again once the picture is there
+         publishGalleryState();
       }
 
       if (fwRebootPending && (millis() - fwRebootScheduledAt >= 1200)) {
@@ -3264,15 +3348,12 @@ void runSetupMode() {
          ESP.restart();
       }
 
-      if (!isBleTransferActive)
-         checkSerialBootloaderCommand();
-
       if (forceExitSetup) {
          Serial.println("[MAIN] Manual exit requested via Web UI. Switching to fetch/refresh mode.");
          break;
       }
 
-      if (!isBleClientConnected) {
+      if (!isBleClientConnected && !UsbLink::active()) {
          if (millis() - lastDisconnectTime > SETUP_MODE_TIMEOUT * 1000) {
             Serial.printf("[MAIN] No BLE connection for %ds. Switching to fetch/refresh mode.\n", SETUP_MODE_TIMEOUT);
             break;
@@ -3288,7 +3369,7 @@ void runSetupMode() {
          Serial.printf("[MAIN] BLE client idle for %d s on battery power. Leaving setup mode.\n", SETUP_IDLE_TIMEOUT);
          if (systemInfoCharacteristic) {
             systemInfoCharacteristic->setValue(systemInfoJson(systemData.charging, true).c_str());
-            systemInfoCharacteristic->notify();
+            notifyCharacteristic(systemInfoCharacteristic);
          }
          delay(500);
          break;
@@ -3306,14 +3387,13 @@ void runSetupMode() {
 
          if (systemInfoCharacteristic) {
             systemInfoCharacteristic->setValue(systemInfoJson(isCharging).c_str());
-            if (pServer->getConnectedCount() > 0) {
-               systemInfoCharacteristic->notify();
-            }
+            notifyCharacteristic(systemInfoCharacteristic);
          }
       }
 
       delay(100);
    }
+   UsbLink::end();
 }
 
 // Connects to the stored WiFi. A failed attempt is not repeated in the same wake-up.
@@ -3343,6 +3423,7 @@ int processHttpDownload(String fileName) {
             Serial.println("[IMAGE] Failed to process image file");
             dlSuccess = -1;
          }
+         Storage::remove("tmp_raw.bin"); // only the picture made from it is kept
       }
       WiFi.setSleep(true);
    }
@@ -3616,6 +3697,7 @@ void setup() {
    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
    pinMode(LED_PIN, OUTPUT);
    digitalWrite(LED_PIN, LOW);
+   Serial.setRxBufferSize(USB_LINK_RX_BUFFER);
    Serial.begin(115200);
    Serial.println("[MAIN] test mode check..."); // flashers wait for this line, then send 'B'
    analogReadResolution(12);
@@ -3645,12 +3727,20 @@ void setup() {
    systemData.wakeupCause = getWakeupReason();
    tickerFailsave.once_ms(FAILSAVE_TIMER * 1000, timeoutFailsafe, 0);
 
+   // The frame restarted itself after the setup mode: it goes on where that ended.
+   if (esp_reset_reason() == ESP_RST_SW && (resumeState & 0xFFFF0000UL) == RESUME_MAGIC) {
+      bleImageApplied = (resumeState & RESUME_PICTURE_SHOWN) != 0;
+      galleryShowPending = (resumeState & RESUME_SHOW_PENDING) != 0;
+   }
+   resumeState = 0;
+
    if (systemData.wakeupCause == wakeup_reason_t::BUTTON) {
       buttonWake = true;
       startupCounter(false);
    }
 
    EepromInit(EEPROM_SIZE);
+   const bool wipePending = EEPROM.read(EEPROM_WIPE_ADR) == 1; // read before the memory is set up anew
    // pinMode(DISP_POWER, INPUT); // USB TEST PINS TODO: only paper 7
    pinMode(INT_PIN, INPUT);
    pinMode(BUSY_PIN, INPUT);
@@ -3697,10 +3787,17 @@ void setup() {
 
    SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN); // SCK(), MISO(),MOSI(), SS()
    SPI.setFrequency(DISPLAY_SPI_SPEED);
-   SerialFlash.begin(CS_FLASH_PIN, DISPLAY_SPI_SPEED); // proceed even if begin() fails
    powerSupplyDisplay(true);
    prepareSpiBusForFlash();
-   SerialFlash.begin(CS_FLASH_PIN, FLASH_SPI_SPEED); // proceed even if begin() fails
+   Storage::begin(CS_FLASH_PIN, FLASH_SPI_SPEED); // proceed even if it fails
+   if (wipePending) {
+      Serial.println("[MAIN] Factory reset: deleting the stored pictures.");
+      Gallery::clear();
+      Storage::remove("tmp.bmp");
+      Storage::remove("tmp_raw.bin");
+      EEPROM.write(EEPROM_WIPE_ADR, 0);
+      EEPROM.commit();
+   }
    initEpaperDisplay(SPI);
    powerSupplyDisplay(false);
    chargeMode(settings.chargerMode);
@@ -3722,6 +3819,7 @@ void setup() {
 
    if (buttonWake && !settings.skipSetupMode && !batteryEmpty) {
       tickerFailsave.detach();
+      Gallery::begin(true); // also compares the list with the stored files
       BleInit(CLIENT_ID, true);
       // updateDisplayAsync("connect_bt");
       runSetupMode();
@@ -3733,6 +3831,21 @@ void setup() {
 
       Serial.println("[MAIN] Setup Mode Completed or Timeout");
       BleInit(CLIENT_ID, false); // Stop BLE advertising to save memory
+
+      // Bluetooth keeps its memory until the next start. A download (TLS) needs more than may be
+      // left: the update then runs after a restart, which skips the setup mode.
+      const bool usesNetwork = wifiSettings.ssid.length() > 0 &&
+                               (settings.settingsUrl.length() > 0 || (settings.imageMode == 1 && settings.downloadUrl.length() > 0));
+      if (usesNetwork && ESP.getFreeHeap() < UPDATE_MIN_FREE_HEAP) {
+         Serial.printf("[MAIN] %u bytes of heap free after the setup mode: restarting for the update.", (unsigned)ESP.getFreeHeap());
+         Serial.println();
+         saveSettingsToFlash(EEPROM_SETTINGS_ADR);
+         storeSleepTimeMem(settings.timeout);
+         resumeState = RESUME_MAGIC | (bleImageApplied ? RESUME_PICTURE_SHOWN : 0) | (galleryShowPending ? RESUME_SHOW_PENDING : 0);
+         Serial.flush();
+         delay(50);
+         ESP.restart();
+      }
       // Always proceed to loop to fetch URL or refresh picture
       downloadStart = true;
       delay(200);
@@ -3795,9 +3908,9 @@ void loop() {
       String fileName = "tmp.bmp";
       int dlSuccess = 0;
 
-      // Fallback: If in BLE mode but the file is missing and we have a download URL configured, switch to URL mode
-      if (settings.imageMode == 0 && !hasValidFlashImage(fileName.c_str()) && settings.downloadUrl.length() > 0) {
-         Serial.println("[IMAGE] BLE mode active but tmp.bmp is missing. Fallback to URL mode.");
+      // Fallback: gallery mode without pictures, but a download URL is configured: switch to URL mode
+      if (settings.imageMode == 0 && Gallery::count() == 0 && settings.downloadUrl.length() > 0) {
+         Serial.println("[IMAGE] Gallery mode active but the gallery is empty. Fallback to URL mode.");
          settings.imageMode = 1;
          saveSettingsToFlash(EEPROM_SETTINGS_ADR);
       }
@@ -3807,9 +3920,9 @@ void loop() {
       }
 
       const bool canDownload = wifiSettings.ssid.length() > 0 && settings.downloadUrl.length() > 0;
-      const bool hasPicture = hasValidFlashImage(fileName.c_str());
+      const bool hasPicture = (settings.imageMode == 0) ? Gallery::count() > 0 : hasValidFlashImage(fileName.c_str());
       if ((settings.imageMode == 1 && !canDownload) || (settings.imageMode == 0 && !hasPicture)) {
-         Serial.println("[MAIN] Not set up: nothing to download and no picture sent over Bluetooth.");
+         Serial.println("[MAIN] Not set up: nothing to download and no pictures in the gallery.");
          if (!hasPicture) { // a stored picture stays on the display
             showNotice(DISPLAY_SETUP_HINT, "Not set up: press button, connect via Bluetooth",
                        "paperlesspaper.github.io/paperlesspaper-firmware-offline");
@@ -3820,38 +3933,58 @@ void loop() {
          gotToDeepSleep(pollSettings ? max(60, regularSleep) : 0, false, false);
       }
 
-      if (settings.imageMode == 1) { // URL Mode
-         dlSuccess = processHttpDownload(fileName);
-      }
-      else { // BLE Mode (Mode 0)
-         Serial.println("[IMAGE] Using BLE uncompressed tmp.bmp");
+      if (settings.imageMode == 0) { // Gallery
+         WiFi.disconnect(true);
+         waitDisplayComplete(false);
+         delay(25);
+         // Next picture: at the interval, or after two presses of the button. (After one press the
+         // setup mode has shown it already.)
+         const bool advance = !bleImageApplied &&
+                              (settings.forceDownload || (systemData.wakeupCause == wakeup_reason_t::TIMER && Gallery::autoSwitch()));
+         int shown = 0;
+         if (advance) {
+            shown = -1;
+            for (uint16_t attempt = 0; attempt < Gallery::count() && shown != 0; attempt++) { // a damaged picture is skipped
+               if (!Gallery::next())
+                  break;
+               shown = Gallery::showCurrent();
+            }
+         }
+         else if (galleryShowPending || (!bleImageApplied && displayContent() != DISPLAY_PICTURE)) {
+            // a notice is on the display, or the setup mode could not show the picture
+            shown = Gallery::showCurrent();
+            if (shown != 0 && Gallery::next())
+               shown = Gallery::showCurrent();
+         }
+         if (shown != 0)
+            showNotice(DISPLAY_ERROR_TEXT, "Error: Picture not readable, please sync the gallery again");
+
+         debugFS();
+         Serial.println("[MAIN] End of Update");
+         const int gallerySleep = (settings.timeout > 0) ? systemData.sleepPrediction : DEFAULT_SLEEP;
+         gotToDeepSleep(Gallery::autoSwitch() ? gallerySleep : 0, false, false);
       }
 
+      // URL mode
+      dlSuccess = processHttpDownload(fileName);
       waitDisplayComplete(false);
       delay(25);
 
       int setSuccess = 0;
-      if (dlSuccess == 0 || dlSuccess == 1) { // 0 = downloaded/ok, 1 = not modified
-         if (settings.imageMode == 0 && bleImageApplied) {
-            Serial.println("[IMAGE] Image was already applied during setup mode, skipping refresh.");
-            setSuccess = 0;
-         }
-         else if (dlSuccess == 0 || settings.imageMode == 0) {
-            WiFi.disconnect(true);
-            logImageSlotCrc(fileName.c_str());
-            setSuccess = showStoredImage(fileName);
-            if (setSuccess == 0 && dlSuccess == 0 && settings.imageMode == 1) {
-               if (settings.lastModified != tempLastModified) {
-                  settings.lastModified = tempLastModified;
-                  saveSettingsToFlash(EEPROM_SETTINGS_ADR);
-               }
-               tempLastModified = "";
+      if (dlSuccess == 0) {
+         WiFi.disconnect(true);
+         logImageSlotCrc(fileName.c_str());
+         setSuccess = showStoredImage(fileName);
+         if (setSuccess == 0) {
+            if (settings.lastModified != tempLastModified) {
+               settings.lastModified = tempLastModified;
+               saveSettingsToFlash(EEPROM_SETTINGS_ADR);
             }
+            tempLastModified = "";
          }
-         else {
-            Serial.println("[IMAGE] Not rendering, image not modified");
-            setSuccess = 0;
-         }
+      }
+      else if (dlSuccess == 1) {
+         Serial.println("[IMAGE] Not rendering, image not modified");
       }
       else {
          showNotice(DISPLAY_ERROR_TEXT, "Error: Picture download failed, please try again");
@@ -3867,12 +4000,8 @@ void loop() {
 
       debugFS();
       Serial.println("[MAIN] End of Update");
-      if (settings.imageMode == 0) {
-         gotToDeepSleep(0, false, false);
-      }
-      bool doMotionWake = (settings.imageMode == 1) ? settings.motionWakeup : false;
       int nextSleep = (settings.timeout > 0) ? systemData.sleepPrediction : DEFAULT_SLEEP;
-      if (settings.imageMode == 1 && (dlSuccess < 0 || setSuccess < 0)) {
+      if (dlSuccess < 0 || setSuccess < 0) {
          if (failedUpdates < 255)
             failedUpdates++;
          nextSleep = retryDelaySeconds(failedUpdates, nextSleep);
@@ -3880,13 +4009,13 @@ void loop() {
       }
       else {
          failedUpdates = 0;
-         if (settings.imageMode == 1 && serverSleepSeconds > 0) {
+         if (serverSleepSeconds > 0) {
             int elapsed = (millis() - serverSleepReceivedMs) / 1000;
             nextSleep = max(60, serverSleepSeconds - elapsed);
             Serial.printf("[SLEEP] Server-directed wake in %d seconds\n", nextSleep);
          }
       }
-      gotToDeepSleep(nextSleep, false, doMotionWake);
+      gotToDeepSleep(nextSleep, false, settings.motionWakeup);
    }
 
    // Keep alive for setup mode / BLE configs

@@ -1,0 +1,9 @@
+{
+  "name": "littlefs",
+  "version": "2.11.3",
+  "description": "The little filesystem (littlefs-project/littlefs v2.11.3, unchanged sources)",
+  "license": "BSD-3-Clause",
+  "build": {
+    "flags": ["-DLFS_NO_DEBUG", "-DLFS_NO_WARN", "-DLFS_NO_ASSERT"]
+  }
+}

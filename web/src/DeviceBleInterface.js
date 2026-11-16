@@ -1,6 +1,19 @@
+import { STATUS_NO_SPACE, STATUS_DISPLAY_BUSY, STATUS_SEQ_ERROR, STATUS_UPLOAD_ERROR, hexId } from "./galleryFormat.js";
+import { UsbLinkDevice } from "./usbLink.js";
+
 export const MAX_OTA_FW_SIZE = 0x1d0000; // 1.900.544 Bytes (app0/app1 in part.csv)
 export const MIN_OTA_FW_SIZE = 65536;
 const DISPLAY_BUSY_WAIT_S = 90; // a display refresh takes up to about 45 s
+const READ_SLICE_CHUNKS = 24; // chunks of a stream read in one go, then other GATT work gets its turn
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** An error the caller handles by its code: "NO_SPACE", "BUSY". */
+function codedError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
 
 export async function validateEsp32FirmwareBinary(buffer) {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
@@ -69,6 +82,8 @@ export class DeviceBleInterface {
     this.SETTINGS_URL_UUID = "1000000b-0000-0000-0000-000000000001"; // READ/WRITE
     this.AUTO_ROTATION_UUID = "1000000c-0000-0000-0000-000000000001"; // READ/WRITE
     this.FIRMWARE_VERSION_UUID = "1000000d-0000-0000-0000-000000000001"; // READ
+    this.GALLERY_STATE_UUID = "1000000e-0000-0000-0000-000000000001"; // READ/NOTIFY
+    this.READ_DATA_UUID = "1000000f-0000-0000-0000-000000000001"; // READ
 
     this.DEVICE_DATA_SERVICE_UUID = "7f74170e-7b0e-11ed-a1eb-0242ac120002";
     this.WIFI_SCAN_UUID = "5131a3fc-7b0e-11ed-a1eb-0242ac120002";
@@ -76,12 +91,14 @@ export class DeviceBleInterface {
     this.WIFI_INFO_UUID = "4c578d4d-7b0e-11ed-a1eb-0242ac120002";
     this.SYSTEM_INFO_UUID = "60000001-7b0e-11ed-a1eb-0242ac120002";
 
-    this.bleDevice = null;
+    this.bleDevice = null; // BluetoothDevice, or a UsbLinkDevice of the same shape
+    this.transport = "ble"; // "ble" | "usb"
     this.settingsService = null;
     this.wifiService = null;
     this.deviceDataService = null;
     this.deviceFirmwareVersion = null;
     this.deviceFirmwareType = null;
+    this.gallerySupported = false; // the firmware reports "gallery": 1
     this.isConnected = false;
     this.isPaperL = false;
     this._boundHandleDisconnect = () => this.handleDisconnect();
@@ -115,6 +132,7 @@ export class DeviceBleInterface {
     this.onSettingsLoaded = () => {};
     this.onUploadProgress = () => {};
     this.onFirmwareVersionCheck = () => {};
+    this.onGalleryStateChange = () => {};
   }
 
   encodeText(text) {
@@ -144,6 +162,11 @@ export class DeviceBleInterface {
     return typeof navigator !== "undefined" && "bluetooth" in navigator && Boolean(navigator.bluetooth);
   }
 
+  /** The USB link needs Web Serial (Chrome, Edge or Opera on a PC). */
+  static isUsbSupported() {
+    return typeof navigator !== "undefined" && "serial" in navigator && Boolean(navigator.serial);
+  }
+
   _setState(state) {
     if (this.connectionState === state) return;
     this.connectionState = state;
@@ -162,8 +185,9 @@ export class DeviceBleInterface {
     return run;
   }
 
-  async connect() {
-    if (!DeviceBleInterface.isSupported()) {
+  /** usbPort: a serial port of Web Serial. With it the device is connected over USB instead of Bluetooth. */
+  async connect({ usbPort = null } = {}) {
+    if (!usbPort && !DeviceBleInterface.isSupported()) {
       this.onStatusChange("Dieser Browser unterstützt kein Web Bluetooth. Nutze Chrome, Edge oder Opera.", "err");
       return;
     }
@@ -187,18 +211,24 @@ export class DeviceBleInterface {
           this.deviceDataService = null;
           this.onDisconnected();
         }
+        await this.bleDevice.gatt?.closed?.(); // USB: the serial port is free again
       }
       this._setState("connecting");
-      this.onStatusChange("Fordere Bluetooth-Kopplung an...", "busy");
-      this.bleDevice = await navigator.bluetooth.requestDevice({
-        filters: [{ namePrefix: "epd" }],
-        optionalServices: [this.SETTINGS_SERVICE_UUID, this.WIFI_SERVICE_UUID, this.DEVICE_DATA_SERVICE_UUID],
-      });
+      this.transport = usbPort ? "usb" : "ble";
+      if (usbPort) {
+        this.bleDevice = new UsbLinkDevice(usbPort);
+      } else {
+        this.onStatusChange("Fordere Bluetooth-Kopplung an...", "busy");
+        this.bleDevice = await navigator.bluetooth.requestDevice({
+          filters: [{ namePrefix: "epd" }],
+          optionalServices: [this.SETTINGS_SERVICE_UUID, this.WIFI_SERVICE_UUID, this.DEVICE_DATA_SERVICE_UUID],
+        });
+      }
 
       this.isPaperL = this.detectIsPaperL();
       this.bleDevice.addEventListener("gattserverdisconnected", this._boundHandleDisconnect);
 
-      await this.connectToGatt(this.isPaperL);
+      await this.connectToGatt(usbPort ? undefined : this.isPaperL);
     } catch (error) {
       console.error(error);
       this._setState("disconnected");
@@ -217,20 +247,24 @@ export class DeviceBleInterface {
     if (!this.bleDevice || this._connecting) return;
     if (this.bleDevice.gatt.connected && this.isConnected) return;
 
+    const usb = this.transport === "usb";
     const resolvedIsPaperL = typeof isPaperL === "boolean" ? isPaperL : this.detectIsPaperL();
     this.isPaperL = resolvedIsPaperL;
     this._connecting = true;
 
     try {
       this._setState(this.reconnectAttempts > 0 ? "reconnecting" : "connecting");
-      this.onStatusChange(`Verbinde zu GATT Server... ${this.reconnectAttempts > 0 ? `(Versuch ${this.reconnectAttempts})` : ""}`, "busy");
+      const attempt = this.reconnectAttempts > 0 ? `(Versuch ${this.reconnectAttempts})` : "";
+      this.onStatusChange(usb ? `Verbinde per USB... Schläft das E-Paper, drücke einmal die Reset-Taste. ${attempt}` : `Verbinde zu GATT Server... ${attempt}`, "busy");
       const server = await this.bleDevice.gatt.connect();
       if (this.manualDisconnect) throw new Error("Verbindungsaufbau abgebrochen");
+      if (usb) this.isPaperL = this.detectIsPaperL(); // the name is known since the device answered
       this.reconnectAttempts = 0;
 
       this.onStatusChange("Lade Services...", "busy");
       this.deviceFirmwareVersion = null;
       this.deviceFirmwareType = null;
+      this.gallerySupported = false;
       this.settingsService = await server.getPrimaryService(this.SETTINGS_SERVICE_UUID);
       this.wifiService = await server.getPrimaryService(this.WIFI_SERVICE_UUID);
       this.deviceDataService = await server.getPrimaryService(this.DEVICE_DATA_SERVICE_UUID);
@@ -238,6 +272,7 @@ export class DeviceBleInterface {
       await this.readAllSettings();
       await this.setupWifiListeners();
       await this.setupSystemListeners();
+      await this.setupGalleryListeners();
 
       if (!this.deviceFirmwareVersion) {
         try {
@@ -281,7 +316,12 @@ export class DeviceBleInterface {
         this.reconnectAttempts++;
         if (this.reconnectAttempts <= 12) {
           this._setState("reconnecting");
-          this.onStatusChange(`Verbindungsfehler. Reconnect in 5s... (${this.reconnectAttempts}/12)`, "warn");
+          this.onStatusChange(
+            usb
+              ? `${error?.message || "Keine Antwort über USB."} Neuer Versuch in 5s... (${this.reconnectAttempts}/12)`
+              : `Verbindungsfehler. Reconnect in 5s... (${this.reconnectAttempts}/12)`,
+            "warn",
+          );
           this._clearReconnect();
           this.reconnectInterval = setTimeout(() => {
             this.connectToGatt(this.isPaperL);
@@ -375,6 +415,20 @@ export class DeviceBleInterface {
     }
   }
 
+  /** Ends a USB session but leaves the device in setup mode: the serial port is free for the flasher. */
+  async releaseUsb() {
+    if (this.transport !== "usb" || !this.bleDevice) return;
+    this.manualDisconnect = true;
+    this._clearReconnect();
+    if (this.bleDevice.gatt.connected || this._connecting) {
+      this.bleDevice.gatt.disconnect();
+    } else if (this.connectionState !== "disconnected") {
+      this._setState("disconnected");
+      this.onDisconnected();
+    }
+    await this.bleDevice.gatt.closed();
+  }
+
   async readAllSettings() {
     this.onStatusChange("Lese Geräteeinstellungen...", "busy");
     const settings = {};
@@ -387,6 +441,10 @@ export class DeviceBleInterface {
       const timeoutChar = await this.settingsService.getCharacteristic(this.TIMEOUT_UUID);
       const timeoutVal = await timeoutChar.readValue();
       settings.timeout = new TextDecoder().decode(timeoutVal).replace(/\0/g, "");
+
+      const modeChar = await this.settingsService.getCharacteristic(this.MODE_UUID);
+      const mode = parseInt(new TextDecoder().decode(await modeChar.readValue()), 10);
+      if (Number.isFinite(mode)) settings.imageMode = mode; // 0 = gallery, 1 = download URL
 
       try {
         const httpAuthUserChar = await this.settingsService.getCharacteristic(this.HTTP_AUTH_USER_UUID);
@@ -532,6 +590,7 @@ export class DeviceBleInterface {
             if (parsed && typeof parsed.fw === "string" && parsed.fw.trim()) {
               this.deviceFirmwareType = parsed.fw.trim();
             }
+            if (parsed && "gallery" in parsed) this.gallerySupported = parsed.gallery === 1 || parsed.gallery === true;
             if (parsed && (parsed.display === "13" || parsed.display === 13 || parsed.display === "epd13")) {
               this.isPaperL = true;
             } else if (parsed && (parsed.display === "7" || parsed.display === 7 || parsed.display === "epd7")) {
@@ -612,10 +671,6 @@ export class DeviceBleInterface {
       if (isConnected) {
         this.onWifiStatusChange(true);
         this.onStatusChange("WLAN gespeichert & Erfolgreich Verbunden! ✅", "ok");
-        try {
-          const modeChar = await this.settingsService.getCharacteristic(this.MODE_UUID);
-          await modeChar.writeValue(this.encodeText("1"));
-        } catch (err) {}
         return true;
       } else {
         this.onWifiStatusChange(false);
@@ -754,52 +809,257 @@ export class DeviceBleInterface {
     }
   }
 
-  async uploadData(buffer, isFirmware = false) {
+  // --- gallery -------------------------------------------------------------
+
+  _parseJson(view) {
+    try {
+      const text = new TextDecoder().decode(view).replace(/\0/g, "");
+      return text.length > 1 ? JSON.parse(text) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async setupGalleryListeners() {
+    if (!this.gallerySupported) return;
+    try {
+      const stateChar = await this.settingsService.getCharacteristic(this.GALLERY_STATE_UUID);
+      const report = (data) => {
+        const parsed = this._parseJson(data);
+        if (parsed) this.onGalleryStateChange(parsed);
+        return Boolean(parsed);
+      };
+      await stateChar.startNotifications();
+      let reading = true; // readValue() fires this event as well
+      stateChar.addEventListener("characteristicvaluechanged", (event) => {
+        if (reading || report(event.target.value)) return;
+        // cut off by a small MTU: read the whole value
+        reading = true;
+        this._enqueue(() => stateChar.readValue())
+          .then(report, () => {})
+          .finally(() => {
+            reading = false;
+          });
+      });
+      report(await stateChar.readValue());
+      reading = false;
+    } catch (e) {
+      console.warn("Gallery state could not be read:", e);
+    }
+  }
+
+  _requireGallery() {
+    if (!this.settingsService) throw new Error("Keine Verbindung zum E-Paper.");
+    if (!this.gallerySupported) throw new Error("Die Firmware des E-Paper kennt die Galerie noch nicht. Bitte zuerst die Firmware aktualisieren.");
+  }
+
+  /** Writes a command and reads its status. */
+  async _command(cmdChar, text) {
+    await cmdChar.writeValue(this.encodeText(text));
+    const view = await cmdChar.readValue();
+    return {
+      pos: view.getUint16(0, true),
+      value: view.byteLength >= 6 ? view.getUint32(2, true) : 0,
+      maxPayload: view.byteLength >= 8 ? view.getUint16(6, true) : 0,
+    };
+  }
+
+  /**
+   * A gallery command. While the display is refreshed the device answers "busy": the command is
+   * repeated until it is taken. quiet: give up at once instead, with the error code "BUSY".
+   */
+  async _galleryCommand(cmdChar, text, { quiet = false } = {}) {
+    for (let waited = 0; ; waited += 2) {
+      const status = await this._command(cmdChar, text);
+      if (status.pos !== STATUS_DISPLAY_BUSY) return status;
+      if (quiet) throw codedError("BUSY", "Das E-Paper aktualisiert gerade das Display.");
+      if (waited >= DISPLAY_BUSY_WAIT_S) {
+        throw new Error("Das E-Paper aktualisiert noch das Display. Bitte in einer Minute erneut versuchen.");
+      }
+      this.onStatusChange("Das E-Paper aktualisiert noch das Display – danach geht es weiter…", "busy");
+      await sleep(2000);
+    }
+  }
+
+  /** One gallery command without data. */
+  _gallerySimple(text, failMessage) {
+    return this._enqueue(async () => {
+      this._requireGallery();
+      const cmdChar = await this.settingsService.getCharacteristic(this.UPLOAD_CMD_UUID);
+      const status = await this._galleryCommand(cmdChar, text);
+      if (status.pos >= STATUS_NO_SPACE) throw new Error(failMessage);
+      return status;
+    });
+  }
+
+  galleryDelete(id) {
+    return this._gallerySimple(`GAL_DEL:${id}`, "Das Bild konnte auf dem E-Paper nicht gelöscht werden.");
+  }
+
+  gallerySet(shuffle, auto) {
+    return this._gallerySimple(`GAL_SET:${shuffle ? 1 : 0},${auto ? 1 : 0}`, "Die Wiedergabe-Einstellungen konnten nicht gespeichert werden.");
+  }
+
+  galleryClear() {
+    return this._gallerySimple("GAL_CLEAR", "Die Galerie auf dem E-Paper konnte nicht gelöscht werden.");
+  }
+
+  galleryShow(id) {
+    return this._gallerySimple(`GAL_SHOW:${id}`, "Das E-Paper kennt dieses Bild nicht.");
+  }
+
+  readGalleryState() {
+    return this._enqueue(async () => {
+      this._requireGallery();
+      const stateChar = await this.settingsService.getCharacteristic(this.GALLERY_STATE_UUID);
+      return this._parseJson(await stateChar.readValue());
+    });
+  }
+
+  /**
+   * Reads a stream of the device ("list", "thumb:<id>", "pic:<id>"). A long stream is read in
+   * slices, so that other GATT work is not held up; every slice resumes at its offset.
+   */
+  async readStream(what, { onProgress = null, quiet = false } = {}) {
+    const parts = [];
+    let received = 0;
+    let total = null;
+    while (total === null || received < total) {
+      await this._enqueue(async () => {
+        this._requireGallery();
+        const cmdChar = await this.settingsService.getCharacteristic(this.UPLOAD_CMD_UUID);
+        const dataChar = await this.settingsService.getCharacteristic(this.READ_DATA_UUID);
+        const status = await this._galleryCommand(cmdChar, received ? `READ:${what},${received}` : `READ:${what}`, { quiet });
+        if (status.pos >= STATUS_NO_SPACE) throw new Error("Das E-Paper kann diese Daten nicht liefern.");
+        total = status.value;
+        for (let i = 0; i < READ_SLICE_CHUNKS && received < total; i++) {
+          const view = await dataChar.readValue();
+          if (view.byteLength === 0) throw new Error("Das E-Paper hat die Übertragung vorzeitig beendet.");
+          parts.push(new Uint8Array(view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength)));
+          received += view.byteLength;
+        }
+      });
+      if (onProgress && total) onProgress(Math.min(received, total), total);
+    }
+    const bytes = new Uint8Array(received);
+    let offset = 0;
+    for (const part of parts) {
+      bytes.set(part, offset);
+      offset += part.length;
+    }
+    return total < received ? bytes.subarray(0, total) : bytes;
+  }
+
+  /** Pictures on the device in play order: [{ id, size, thumbLen }] */
+  async readGalleryList(options) {
+    const bytes = await this.readStream("list", options);
+    let parsed = null;
+    try {
+      parsed = JSON.parse(new TextDecoder().decode(bytes));
+    } catch (e) {
+      throw new Error("Die Bilderliste des E-Paper ist ungültig.");
+    }
+    return (parsed?.items || []).map(([id, size, thumbLen]) => ({ id: String(id).toLowerCase(), size: Number(size) || 0, thumbLen: Number(thumbLen) || 0 }));
+  }
+
+  readGalleryThumb(id, options) {
+    return this.readStream(`thumb:${id}`, options);
+  }
+
+  readGalleryPicture(id, onProgress) {
+    return this.readStream(`pic:${id}`, { onProgress });
+  }
+
+  /** onProgress(fraction 0..1). Rejects with the code "NO_SPACE" if the picture does not fit. */
+  galleryPut(id, container, { onProgress = null, label = "Sende Bild" } = {}) {
+    return this._enqueue(() => this._upload(container, { start: `GAL_PUT:${id},${container.length}`, onProgress, label }));
+  }
+
+  /** ids: the play order. */
+  galleryOrder(ids) {
+    const bytes = new Uint8Array(ids.length * 4);
+    const view = new DataView(bytes.buffer);
+    ids.forEach((id, index) => view.setUint32(index * 4, parseInt(id, 16) >>> 0, true));
+    return this._enqueue(() => this._upload(bytes, { start: `GAL_ORDER:${ids.length}`, label: "Übertrage die Reihenfolge" }));
+  }
+
+  /** Stores the update interval alone (the other settings keep the values of the device). */
+  saveTimeout(seconds) {
+    return this._enqueue(async () => {
+      if (!this.settingsService) throw new Error("Keine Verbindung zum E-Paper.");
+      const timeoutChar = await this.settingsService.getCharacteristic(this.TIMEOUT_UUID);
+      await timeoutChar.writeValue(this.encodeText(String(seconds)));
+      const cmdChar = await this.settingsService.getCharacteristic(this.UPLOAD_CMD_UUID);
+      await cmdChar.writeValue(this.encodeText("SAVE_SETTINGS"));
+    });
+  }
+
+  /** 0 = gallery, 1 = URL download, null if unknown. */
+  readImageMode() {
+    return this._enqueue(async () => {
+      if (!this.settingsService) return null;
+      try {
+        const modeChar = await this.settingsService.getCharacteristic(this.MODE_UUID);
+        const mode = parseInt(new TextDecoder().decode(await modeChar.readValue()), 10);
+        return Number.isFinite(mode) ? mode : null;
+      } catch (e) {
+        return null;
+      }
+    });
+  }
+
+  // --- upload (firmware, gallery) ------------------------------------------
+
+  /**
+   * Sends data in windows that the device confirms one by one.
+   * start: the command that opens a gallery upload (GAL_PUT, GAL_ORDER). Without it the data is
+   * a firmware; only that one still knows the first protocol of old builds (2 byte status).
+   */
+  async _upload(buffer, { start = null, onProgress = null, label = "Sende Daten" } = {}) {
     if (!this.settingsService) {
       // Silently returning here looked like a successful upload to the caller.
       throw new Error("Keine Verbindung zum E-Paper.");
     }
+    const isFirmware = !start;
+    const progress = (percent) => {
+      if (isFirmware) this.onUploadProgress("firmware", percent);
+      else if (onProgress) onProgress(percent / 100);
+    };
 
     try {
-      this.onUploadProgress(isFirmware ? "firmware" : "image", 0);
+      progress(0);
       const dataBytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
 
       if (isFirmware) {
         this.onStatusChange("Prüfe Firmware-Datei...", "busy");
         await validateEsp32FirmwareBinary(dataBytes);
       } else {
-        try {
-          const modeChar = await this.settingsService.getCharacteristic(this.MODE_UUID);
-          await modeChar.writeValue(this.encodeText("0"));
-        } catch (err) {
-          console.warn("Modus konnte nicht auf BLE gesetzt werden:", err);
-        }
+        this._requireGallery();
       }
 
       const dataChar = await this.settingsService.getCharacteristic(this.UPLOAD_DATA_UUID);
       const cmdChar = await this.settingsService.getCharacteristic(this.UPLOAD_CMD_UUID);
 
-      this.onStatusChange(isFirmware ? "Starte Firmware Update..." : "Öffne Flash Puffer...", "busy");
-      await cmdChar.writeValue(this.encodeText(isFirmware ? "START_FW" : "START"));
-
-      let initView = await cmdChar.readValue();
-      let initStatus = initView.getUint16(0, true);
-      // 0xFFFD: the device still draws the previous picture and cannot take a new one yet.
-      for (let waited = 0; initStatus === 0xfffd; waited += 2) {
-        if (waited >= DISPLAY_BUSY_WAIT_S) {
-          throw new Error("Das E-Paper aktualisiert noch das Display. Bitte in einer Minute erneut senden.");
+      let useV2 = true;
+      let negotiatedPayload = 0;
+      let windowSize = 0; // bytes the device takes before a FLUSH, 0 = the usual 32 KB
+      if (isFirmware) {
+        this.onStatusChange("Starte Firmware Update...", "busy");
+        await cmdChar.writeValue(this.encodeText("START_FW"));
+        const initView = await cmdChar.readValue();
+        if (initView.getUint16(0, true) === STATUS_UPLOAD_ERROR) {
+          throw new Error("OTA-Partition auf dem Gerät konnte nicht geöffnet werden (Flash/RAM Fehler).");
         }
-        this.onStatusChange("Das E-Paper aktualisiert noch das Display – der Upload startet danach…", "busy");
-        await new Promise((r) => setTimeout(r, 2000));
-        await cmdChar.writeValue(this.encodeText("START"));
-        initView = await cmdChar.readValue();
-        initStatus = initView.getUint16(0, true);
-      }
-      if (initStatus === 0xffff) {
-        throw new Error(isFirmware ? "OTA-Partition auf dem Gerät konnte nicht geöffnet werden (Flash/RAM Fehler)." : "Geräte-Puffer konnte nicht initialisiert werden (Flash/RAM Fehler).");
+        useV2 = initView.byteLength >= 8;
+        if (useV2) negotiatedPayload = initView.getUint16(6, true);
+      } else {
+        const status = await this._galleryCommand(cmdChar, start);
+        if (status.pos === STATUS_NO_SPACE) throw codedError("NO_SPACE", "Auf dem E-Paper ist nicht genug Speicher frei.");
+        if (status.pos >= STATUS_SEQ_ERROR) throw new Error("Das E-Paper hat die Übertragung abgelehnt.");
+        negotiatedPayload = status.maxPayload;
+        windowSize = status.value;
       }
 
-      const useV2 = initView.byteLength >= 8;
       let chunkSize = 238;
       let checkpointSize = 19040;
       let burstSize = 1;
@@ -810,19 +1070,19 @@ export class DeviceBleInterface {
         if (isFirmware) {
           await cmdChar.writeValue(this.encodeText(`FW_SIZE:${dataBytes.length}`));
           const sizeView = await cmdChar.readValue();
-          if (sizeView.getUint16(0, true) === 0xffff) {
+          if (sizeView.getUint16(0, true) === STATUS_UPLOAD_ERROR) {
             throw new Error(`Firmware-Größe (${(dataBytes.length / 1024).toFixed(1)} KB) passt nicht in die OTA-Partition des Geräts.`);
           }
         }
-        const negotiatedPayload = initView.getUint16(6, true);
         chunkSize = negotiatedPayload >= 20 && negotiatedPayload <= 508 ? negotiatedPayload : 240;
-        checkpointSize = 32768; // 128 * 256B: exakte SPI-NOR-Flash-Page-Ausrichtung
+        // 128 * 256B: exakte SPI-NOR-Flash-Page-Ausrichtung. With little free memory the device asks for less.
+        checkpointSize = windowSize >= 1024 && windowSize <= 32768 ? windowSize : 32768;
         burstSize = 6;
         burstDelayMs = 1;
       }
 
       const totalCrc = this.calcCRC32(dataBytes);
-      const totalCrcHex = totalCrc.toString(16).padStart(8, "0");
+      const totalCrcHex = hexId(totalCrc);
       let offset = 0;
       let retryCount = 0;
 
@@ -864,7 +1124,7 @@ export class DeviceBleInterface {
             } else {
               await dataChar.writeValueWithoutResponse(packet);
               if (seq % burstSize === 0 && burstDelayMs > 0) {
-                await new Promise((r) => setTimeout(r, burstDelayMs));
+                await sleep(burstDelayMs);
               }
             }
           }
@@ -874,7 +1134,7 @@ export class DeviceBleInterface {
           }
           console.warn("BLE Sende-Warnung im Fenster, wiederhole Checkpoint:", sendErr);
           sendErrorOccurred = true;
-          await new Promise((r) => setTimeout(r, 40));
+          await sleep(40);
         }
 
         let isWindowValid = false;
@@ -884,8 +1144,8 @@ export class DeviceBleInterface {
           const statusView = await cmdChar.readValue();
           ramBytes = statusView.getUint16(0, true);
 
-          if (useV2 && ramBytes === 0xffff) {
-            throw new Error(isFirmware ? "Schreibfehler in der internen OTA-Partition während des Firmware-Uploads." : "Schreibfehler im externen Flash-Speicher während des Uploads.");
+          if (useV2 && ramBytes === STATUS_UPLOAD_ERROR) {
+            throw new Error(isFirmware ? "Schreibfehler in der internen OTA-Partition während des Firmware-Uploads." : "Schreibfehler im Speicher des E-Paper während des Uploads.");
           }
 
           if (useV2 && statusView.byteLength >= 6) {
@@ -902,10 +1162,10 @@ export class DeviceBleInterface {
 
         if (isWindowValid) {
           await cmdChar.writeValue(this.encodeText("FLUSH"));
-          if (isFirmware && useV2 && offset === 0) {
-            const firstFlushView = await cmdChar.readValue();
-            if (firstFlushView.getUint16(0, true) === 0xffff) {
-              throw new Error("Gerät hat den Firmware-Header beim Schreiben in die OTA-Partition abgelehnt.");
+          if (useV2 && (!isFirmware || offset === 0)) {
+            const flushView = await cmdChar.readValue();
+            if (flushView.getUint16(0, true) === STATUS_UPLOAD_ERROR) {
+              throw new Error(isFirmware ? "Gerät hat den Firmware-Header beim Schreiben in die OTA-Partition abgelehnt." : "Schreibfehler im Speicher des E-Paper während des Uploads.");
             }
           }
           offset = windowEnd;
@@ -916,7 +1176,7 @@ export class DeviceBleInterface {
           } else {
             burstDelayMs = Math.min(12, burstDelayMs + 2);
           }
-          await new Promise((r) => setTimeout(r, 30));
+          await sleep(30);
           await cmdChar.writeValue(this.encodeText("CLEAR"));
           retryCount++;
 
@@ -926,15 +1186,15 @@ export class DeviceBleInterface {
           this.onStatusChange(`Paketverlust korrigiert – wiederhole Checkpoint... (Versuch ${retryCount})`, "warn");
         }
 
-        let percent = Math.round((offset / dataBytes.length) * 100);
-        this.onUploadProgress(isFirmware ? "firmware" : "image", percent);
+        const percent = Math.round((offset / dataBytes.length) * 100);
+        progress(percent);
         if (isWindowValid) {
           // keep the "retrying checkpoint" warning visible instead of overwriting it right away
-          this.onStatusChange(`Sende ${isFirmware ? "Firmware" : "Daten"}... ${percent}%`, "busy");
+          this.onStatusChange(isFirmware ? `Sende Firmware... ${percent}%` : `${label}… ${percent}%`, "busy");
         }
       }
 
-      this.onUploadProgress(isFirmware ? "firmware" : "image", 100);
+      progress(100);
 
       if (isFirmware) {
         this.onStatusChange("Verifiziere Firmware im Flash (CRC32 & SHA-256)...", "busy");
@@ -946,7 +1206,7 @@ export class DeviceBleInterface {
           const statusVal = statusView.getUint16(0, true);
           const deviceCrc = statusView.byteLength >= 6 ? statusView.getUint32(2, true) : totalCrc;
 
-          if (statusVal === 0xffff || statusVal === 0xfffe || (useV2 && deviceCrc !== totalCrc)) {
+          if (statusVal === STATUS_UPLOAD_ERROR || statusVal === STATUS_SEQ_ERROR || (useV2 && deviceCrc !== totalCrc)) {
             throw new Error("Firmware-Integritätsprüfung auf dem Gerät fehlgeschlagen (CRC32/SHA-256 Mismatch). Alte Firmware bleibt aktiv.");
           }
         } catch (e) {
@@ -968,22 +1228,13 @@ export class DeviceBleInterface {
           }
         }, 800);
       } else {
-        this.onStatusChange("Prüfe & speichere im Flash...", "busy");
-        await cmdChar.writeValue(this.encodeText(useV2 ? `END:${totalCrcHex}` : "END"));
-        if (useV2) {
-          const endStatusView = await cmdChar.readValue();
-          const endStatus = endStatusView.getUint16(0, true);
-          const flashCrc = endStatusView.byteLength >= 6 ? endStatusView.getUint32(2, true) : totalCrc;
-          if (endStatus === 0xffff || flashCrc !== totalCrc) {
-            throw new Error(`Bild-Integritätsprüfung im Flash fehlgeschlagen (Flash-CRC 0x${flashCrc.toString(16)} != 0x${totalCrcHex}).`);
-          }
+        const status = await this._command(cmdChar, `END:${totalCrcHex}`);
+        if (status.pos >= STATUS_NO_SPACE || status.value !== totalCrc) {
+          throw new Error("Das E-Paper hat die Daten nicht übernommen (Prüfung nach der Übertragung fehlgeschlagen).");
         }
-        this.onStatusChange("Aktualisiere das Display...", "busy");
-        await new Promise((r) => setTimeout(r, 200));
-        await cmdChar.writeValue(this.encodeText("APPLY"));
-        this.onStatusChange("Upload abgeschlossen! 🚀", "ok");
       }
     } catch (error) {
+      if (error?.code === "NO_SPACE") throw error; // handled by the caller, not an error of the transfer
       console.error(error);
       this.onStatusChange(`Fehler beim ${isFirmware ? "Firmware " : ""}Upload: ` + error.message, "err");
       error.reported = true; // the status line already shows this error
@@ -991,13 +1242,9 @@ export class DeviceBleInterface {
     }
   }
 
-  async uploadImage(buffer) {
-    return this.uploadData(buffer, false);
-  }
-
   /** nextStep: what the user does after the restart, appended to the success message. */
-  async uploadFirmware(buffer, nextStep = "") {
+  uploadFirmware(buffer, nextStep = "") {
     this.otaNextStep = nextStep;
-    return this.uploadData(buffer, true);
+    return this._enqueue(() => this._upload(buffer));
   }
 }

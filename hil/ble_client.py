@@ -22,6 +22,8 @@ from .cloud import mask_uid, register_github_mask
 
 STATUS_UPLOAD_ERROR = 0xFFFF
 STATUS_SEQ_ERROR = 0xFFFE
+STATUS_DISPLAY_BUSY = 0xFFFD
+STATUS_NO_SPACE = 0xFFFC
 
 # Connection attempts per session and the base pause between them (2 s, 4 s, 6 s).
 CONNECT_ATTEMPTS = 4
@@ -179,15 +181,19 @@ class BleSession:
             if not last and sequence % burst_size == 0:
                 await asyncio.sleep(burst_delay)
 
-    async def upload(self, data, firmware, progress=None):
-        """Uploads an image payload or a firmware binary.
+    async def upload(self, data, firmware, progress=None, start=None):
+        """Uploads a firmware binary, or the data of a gallery upload begun with the command `start`.
 
         Returns the protocol that was used ("v2" or "legacy"). After a firmware
-        upload the device reboots on its own; an image still needs APPLY.
+        upload the device reboots on its own.
         """
         data = bytes(data)
-        await self.command("START_FW" if firmware else "START")
-        initial = await self.status()
+        initial = await self.gallery_command(start) if start else None
+        if initial is None:
+            await self.command("START_FW")
+            initial = await self.status()
+        if initial.position == STATUS_NO_SPACE:
+            raise BleError("Device has no room for this upload.")
         if initial.position == STATUS_UPLOAD_ERROR:
             raise BleError("Device could not open its upload buffer (flash or RAM error).")
 
@@ -200,7 +206,9 @@ class BleSession:
                     raise BleError(f"Device rejected the firmware size of {len(data)} bytes.")
             negotiated = initial.max_payload if 20 <= initial.max_payload <= 508 else 240
             chunk_size = min(negotiated, self._max_write() - 1)
-            checkpoint, burst_size, burst_delay = 32768, 6, 0.001
+            # an empty buffer of a gallery upload reports how much it takes
+            checkpoint = initial.crc if start and 1024 <= initial.crc <= 32768 else 32768
+            burst_size, burst_delay = 6, 0.001
         else:
             chunk_size = min(238, self._max_write() - 4)
             checkpoint, burst_size, burst_delay = 19040, 1, 0.006
@@ -240,8 +248,53 @@ class BleSession:
             if v2:
                 end = await self.status()
                 if end.position == STATUS_UPLOAD_ERROR or end.crc != total_crc:
-                    raise BleError("Device rejected the image: CRC of the stored data does not match.")
+                    raise BleError("Device rejected the upload: CRC of the stored data does not match.")
         return "v2" if v2 else "legacy"
+
+    # --- gallery ----------------------------------------------------------
+
+    async def gallery_command(self, text, busy_timeout=120):
+        """Sends a GAL_... / READ:... command and returns its status. Waits while the display is refreshed."""
+        end = asyncio.get_running_loop().time() + busy_timeout
+        while True:
+            await self.command(text)
+            status = await self.status()
+            if status.position != STATUS_DISPLAY_BUSY:
+                return status
+            if asyncio.get_running_loop().time() > end:
+                raise BleError(f"Display still busy after {busy_timeout} s ({text}).")
+            await asyncio.sleep(2)
+
+    async def gallery_state(self):
+        return json.loads(await self.read_text(settings.CHR_GALLERY_STATE))
+
+    async def read_stream(self, what):
+        """Reads a stream of the device: "list", "thumb:<id>" or "pic:<id>"."""
+        status = await self.gallery_command(f"READ:{what}")
+        if status.position == STATUS_UPLOAD_ERROR:
+            raise BleError(f"Device cannot open '{what}'.")
+        data = bytearray()
+        while len(data) < status.crc:
+            chunk = await self.read_bytes(settings.CHR_READ_DATA)
+            if not chunk:
+                raise BleError(f"Stream '{what}' ended after {len(data)} of {status.crc} bytes.")
+            data += chunk
+        return bytes(data)
+
+    async def gallery_list(self):
+        """Pictures in play order: [(id, file size, preview size), ...]"""
+        return [tuple(item) for item in json.loads(await self.read_stream("list"))["items"]]
+
+    async def gallery_put(self, container):
+        """Stores a picture file and returns its id."""
+        picture_id = f"{crc32(container):08x}"
+        await self.upload(container, firmware=False, start=f"GAL_PUT:{picture_id},{len(container)}")
+        return picture_id
+
+    async def gallery_order(self, ids):
+        data = b"".join(struct.pack("<I", int(i, 16)) for i in ids)
+        if data:
+            await self.upload(data, firmware=False, start=f"GAL_ORDER:{len(ids)}")
 
     async def _end_firmware(self, v2, total_crc):
         if not v2:

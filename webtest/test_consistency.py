@@ -1,7 +1,7 @@
 """The same limits and identifiers are written down in several places. They must agree.
 
-    firmware           src/main.cpp, src/types.h, src/epaper_display.h, part.csv
-    web UI             web/src/app.js (DEVICE_LIMITS), web/src/DeviceBleInterface.js
+    firmware           src/main.cpp, src/types.h, src/epaper_display.h, src/usb_link.*, part.csv
+    web UI             web/src/app.js (DEVICE_LIMITS), web/src/DeviceBleInterface.js, web/src/usbLink.js
     simulated device   webtest/simdevice.py
     hardware tests     hil/settings.py
 
@@ -85,6 +85,44 @@ def test_setting_limit(name):
     })
 
 
+GALLERY_CONSTANTS = [
+    "GALLERY_MAX_ITEMS", "GALLERY_HEADER_SIZE", "GALLERY_MAX_THUMB_SIZE", "GALLERY_SIZE_MARGIN",
+    "STATUS_NO_SPACE", "STATUS_DISPLAY_BUSY", "STATUS_SEQ_ERROR", "STATUS_UPLOAD_ERROR",
+]
+
+
+@pytest.mark.parametrize("name", GALLERY_CONSTANTS)
+def test_gallery_constant(name):
+    """Limits of a picture file and the status codes of the gallery commands."""
+    assert_equal(name, {
+        "firmware": firmware_define(name),
+        "web UI (galleryFormat.js)": assignment("web/src/galleryFormat.js", name, r"^export const {name} = (0[xX][0-9a-fA-F]+|\d+)"),
+        "simulated device": getattr(simdevice, name),
+    })
+
+
+def test_gallery_window():
+    """The window a picture is packed with decides how much memory the device needs to unpack it."""
+    web = assignment("web/src/galleryFormat.js", "GALLERY_WINDOW_BITS", r"^export const {name} = (\d+)")
+    assert_equal("GALLERY_WINDOW_BITS", {"web UI (galleryFormat.js)": web, "simulated device": simdevice.GALLERY_WINDOW_BITS})
+    assert 9 <= web <= 12, "Above 12 the device needs more than 4 KB in one piece, which the 13.3 inch frame may not have."
+
+
+def test_gallery_read_chunk():
+    assert_equal("GALLERY_READ_CHUNK", {
+        "firmware": firmware_define("GALLERY_READ_CHUNK"),
+        "simulated device": simdevice.GALLERY_READ_CHUNK,
+    })
+
+
+def test_gallery_picture_formats():
+    """Display type and picture size of a picture file: web UI and simulated device."""
+    source = read("web/src/galleryFormat.js")
+    web = {m.group(1): (int(m.group(2)), int(m.group(3))) for m in re.finditer(r"^\s*(\d+): \{ width: (\d+), height: (\d+)", source, re.MULTILINE)}
+    simulated = {display: (width, height) for display, width, height in simdevice.DISPLAYS.values()}
+    assert web == simulated, f"Picture formats differ: web UI {web}, simulated device {simulated}."
+
+
 def test_upload_buffer_size():
     assert_equal("BLE_BUFFER_SIZE", {
         "firmware": firmware_define("BLE_BUFFER_SIZE"),
@@ -149,6 +187,57 @@ def test_picture_sizes():
     firmware = sorted(int(w) * int(h) // 2 for w, h in zip(widths, heights))
     simulated = sorted(width * height // 2 for _, width, height in simdevice.DISPLAYS.values())
     assert firmware == simulated, f"Picture sizes differ: firmware {firmware} bytes, simulated device {simulated} bytes."
+
+
+def constant(path, pattern, name):
+    match = re.search(pattern.format(name=name), read(path), re.MULTILINE)
+    if not match:
+        pytest.fail(f"{name} was not found in {path}. If it was renamed, adjust webtest/test_consistency.py.")
+    return number(match.group(1))
+
+
+C_DEFINE = r"^\s*#define\s+{name}\s+(0[xX][0-9a-fA-F]+|\d+)"
+C_CONST = r"^\s*const \w+ {name} = (0[xX][0-9a-fA-F]+|\d+);"
+JS_CONST = r"^(?:export )?const {name} = (0[xX][0-9a-fA-F]+|\d+);"
+PY_CONST = r"^{name} = (0[xX][0-9a-fA-F]+|\d+)"
+
+
+def test_usb_link_limits():
+    """Speed, largest payload and session timeout of the USB link."""
+    assert_equal("USB_LINK_BAUD", {
+        "src/usb_link.h": constant("src/usb_link.h", C_DEFINE, "USB_LINK_BAUD"),
+        "webtest/simdevice.py": simdevice.USB_LINK_BAUD,
+        "hil/settings.py": constant("hil/settings.py", PY_CONST, "USB_LINK_BAUD"),
+    })
+    assert_equal("USB_LINK_MAX_PAYLOAD", {
+        "src/usb_link.h": constant("src/usb_link.h", C_DEFINE, "USB_LINK_MAX_PAYLOAD"),
+        "web/src/usbLink.js": constant("web/src/usbLink.js", JS_CONST, "USB_LINK_MAX_PAYLOAD"),
+        "webtest/simdevice.py": simdevice.USB_LINK_MAX_PAYLOAD,
+        "hil/settings.py": constant("hil/settings.py", PY_CONST, "USB_LINK_MAX_PAYLOAD"),
+    })
+    timeout = constant("src/usb_link.h", C_DEFINE, "USB_LINK_SESSION_TIMEOUT")
+    assert_equal("USB_LINK_SESSION_TIMEOUT", {
+        "src/usb_link.h": timeout,
+        "web/src/usbLink.js": constant("web/src/usbLink.js", JS_CONST, "USB_LINK_SESSION_TIMEOUT"),
+    })
+    keep_alive = constant("web/src/usbLink.js", JS_CONST, "KEEP_ALIVE_MS")
+    assert keep_alive * 2 < timeout * 1000, "The page must send a frame well before the device ends the session."
+    assert simdevice.USB_LINK_CHUNK + 1 <= simdevice.USB_LINK_MAX_PAYLOAD, "A data packet (sequence number + data) must fit into a frame."
+
+
+@pytest.mark.parametrize("name", ["HELLO", "PING", "BYE", "READ", "WRITE", "WRITE_NR", "NOTIFY", "ERROR", "ANSWER"])
+def test_usb_link_frame_type(name):
+    assert_equal(f"frame type {name}", {
+        "src/usb_link.cpp": constant("src/usb_link.cpp", C_CONST, f"TYPE_{name}"),
+        "web/src/usbLink.js": constant("web/src/usbLink.js", JS_CONST, f"TYPE_{name}"),
+        "webtest/simdevice.py": getattr(simdevice, f"USB_{name}"),
+    })
+
+
+def test_usb_link_frame_start():
+    firmware = bytes(constant("src/usb_link.cpp", C_CONST, f"START_{i}") for i in (0, 1))
+    web = bytes(constant("web/src/usbLink.js", JS_CONST, f"START_{i}") for i in (0, 1))
+    assert firmware == web == simdevice.USB_START
 
 
 def uuids_in(path):

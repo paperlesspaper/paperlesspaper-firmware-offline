@@ -115,6 +115,7 @@
 }
 
 html {
+  scrollbar-gutter: stable; /* a longer page must not shift the content sideways */
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
   scroll-padding-top: calc(var(--header-h) + 16px);
@@ -367,6 +368,16 @@ summary:focus-visible {
 .device-strip-inner::-webkit-scrollbar {
   display: none;
 }
+/* in the view "Gerät": a row of its own above the boxes */
+.view > .device-strip {
+  border-bottom: 0;
+  background: none;
+  margin-bottom: 12px;
+}
+.view > .device-strip > .device-strip-inner {
+  max-width: none;
+  padding: 0 2px 4px 0;
+}
 
 .chip {
   display: inline-flex;
@@ -421,6 +432,12 @@ summary:focus-visible {
 
 .view {
   animation: view-in var(--dur) var(--ease-out);
+}
+
+@keyframes view-fade {
+  from {
+    opacity: 0;
+  }
 }
 
 @keyframes view-in {
@@ -994,13 +1011,6 @@ summary:focus-visible {
 .field-error {
   font-size: 12px;
   font-weight: 700;
-  color: #c62828;
-}
-.field-note {
-  font-size: 12px;
-  font-weight: 600;
-}
-.field-note[data-tone="err"] {
   color: #c62828;
 }
 
@@ -1590,7 +1600,6 @@ input[type="range"]::-moz-range-thumb {
   gap: 4px;
   padding: 16px;
   text-align: center;
-  cursor: pointer;
   width: 100%;
 }
 .preview-empty .icon {
@@ -1711,6 +1720,309 @@ input[type="range"]::-moz-range-thumb {
     background: var(--text-primary);
     color: #ffffff;
   }
+}
+
+/* ---------- Gallery ---------- */
+.gallery-layout {
+  display: grid;
+  gap: var(--box-gap);
+  align-items: start;
+}
+.gallery-card {
+  transition: background-color var(--dur-press) ease;
+}
+.gallery-card.is-dragover {
+  background: var(--signal);
+}
+.gallery-device {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* storage of the device: how much is used */
+.meter {
+  height: 12px;
+  border: 2px solid var(--border);
+  background: #ffffff;
+}
+.meter-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--status-ok);
+  transition: width var(--dur) ease-out;
+}
+
+.tile-grid {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 10px;
+}
+.tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 2px solid var(--border);
+  background: var(--bg);
+}
+.tile.is-dragging {
+  opacity: 0.4;
+}
+.tile.is-droptarget {
+  outline: 3px solid var(--border);
+  outline-offset: 2px;
+}
+/* the picture: opens the editor */
+.tile-open {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: var(--epd-ratio, 800 / 480);
+  background: var(--muted-bg);
+  overflow: hidden;
+}
+.tile-open:focus-visible {
+  outline-offset: -3px;
+}
+.tile-open img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain; /* the whole picture */
+  display: block;
+}
+/* "Bearbeiten": over the picture on hover and focus; a small chip on touch screens */
+.tile-edit {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  padding: 2px 6px;
+  background: #000000;
+  color: #ffffff;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.tile-delete {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 28px;
+  height: 28px;
+  border: 2px solid var(--border);
+  background: #ffffff;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+}
+.tile-delete:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.tile-delete:not(:disabled):active {
+  background: var(--status-err);
+}
+/* the empty box at the end of the gallery: adds pictures */
+.tile-add {
+  display: flex;
+  min-width: 0;
+  aspect-ratio: var(--epd-ratio, 800 / 480);
+  border: 2px dashed var(--border);
+  background: var(--muted-bg);
+}
+.tile-add-btn {
+  flex: 1 1 auto;
+  font-family: var(--font-display);
+  font-size: 40px;
+  font-weight: 300;
+  line-height: 1;
+}
+.tile-add-btn:focus-visible {
+  outline-offset: -3px;
+}
+.tile-add-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.tile-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.tile-badge {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  max-width: calc(100% - 8px);
+  padding: 1px 5px;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* the picture the display shows right now */
+.tile-shown {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 2px 6px;
+  background: #000000;
+  color: #ffffff;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  text-align: left;
+}
+@media (hover: hover) {
+  .tile-add-btn:not(:disabled):hover {
+    background: var(--btn-face);
+  }
+  .tile-delete:not(:disabled):hover {
+    background: var(--status-err);
+  }
+  /* with a mouse the two actions only show on the picture they belong to */
+  .tile-edit {
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    background: rgba(0, 0, 0, 0.6);
+    font-size: 12px;
+    opacity: 0;
+    transition: opacity var(--dur-press) ease;
+  }
+  .tile-delete {
+    opacity: 0;
+  }
+  .tile:hover .tile-edit,
+  .tile-open:focus-visible .tile-edit,
+  .tile:hover .tile-delete,
+  .tile:focus-within .tile-delete {
+    opacity: 1;
+  }
+  .tile.is-dragging .tile-edit {
+    opacity: 0;
+  }
+}
+
+/* Bild: gallery or download from a URL */
+.source-switch {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+.source-switch .seg {
+  flex: 1 1 280px;
+  max-width: 460px;
+}
+/* a second, small line in a segment: "aktiv auf dem Gerät" */
+.seg-btn-stacked {
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* short facts below a description */
+.fact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 18px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.fact-list strong {
+  color: var(--text-primary);
+}
+
+/* The frame hangs the other way round than its display is built: preview and tiles show the
+   pictures upright, turned by a quarter. */
+.preview-frame[data-turned],
+.tile-grid[data-turned] .tile-open {
+  container-type: size;
+}
+.preview-frame[data-turned] .preview-stage,
+.tile-grid[data-turned] .tile-open img {
+  inset: auto;
+  top: 50%;
+  left: 50%;
+  width: 100cqh;
+  height: 100cqw;
+  transform: translate(-50%, -50%) rotate(90deg);
+}
+
+/* the two buttons below the sliders of the editor share one line */
+#expertControls .btn-row-pair > * {
+  padding-left: 6px;
+  padding-right: 6px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+/* firmware dialog: the backup button below its explanation */
+#offlineOtaBackupNote > span {
+  flex-basis: 100%;
+}
+
+/* Gerät: the log */
+.log-card .terminal {
+  height: min(38vh, 300px);
+}
+
+/* number and unit of the interval in one row */
+.interval-row > .neu-input {
+  flex: 0 0 96px;
+  min-width: 0;
+}
+.interval-row > .neu-select {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+}
+
+/* The editor in its dialog. Phones: a sheet over nearly the whole screen, the boxes edge to edge. */
+dialog.modal.modal-editor {
+  max-height: 96vh;
+  max-height: 96dvh;
+}
+.modal-editor .modal-body {
+  gap: 0;
+  padding: 0 0 calc(12px + var(--safe-b));
+}
+.modal-editor .modal-actions {
+  margin: 0;
+  padding: 12px var(--gutter) 0;
+}
+/* Phones: "Speichern" floats at the bottom right while the dialog scrolls and comes to rest
+   above the other two buttons at its end, so it never covers them. */
+.editor-foot {
+  display: contents;
+}
+.editor-save {
+  position: sticky;
+  bottom: 12px;
+  z-index: 2;
+  align-self: flex-end;
+  margin: 12px var(--gutter) 0;
+  padding: 0 2px 2px 0;
+}
+.editor-save .btn-neu {
+  min-width: 150px;
+  box-shadow: 4px 4px 0px #000000;
+}
+.editor-note {
+  margin-top: 14px;
 }
 
 /* ---------- Step list / FAQ ---------- */
@@ -1910,36 +2222,6 @@ input[type="range"]::-moz-range-thumb {
 }
 
 /* ---------- Help line and log at the end of the "Gerät" view ---------- */
-.view-foot {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 12px var(--gutter);
-}
-.view-foot-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.btn-neu.log-btn {
-  flex-shrink: 0;
-}
-/* pressed in while the log is open */
-.btn-neu.log-btn[aria-expanded="true"] {
-  background-color: #000000;
-  color: #ffffff;
-  box-shadow: 0px 0px 0px #000000;
-  left: 1px;
-  top: 1px;
-}
-.log-panel {
-  animation: view-in var(--dur) var(--ease-out);
-}
-.log-panel .terminal {
-  height: min(38vh, 300px);
-}
-
 /* ---------- Spinner ---------- */
 .spinner {
   width: 50px;
@@ -2050,6 +2332,11 @@ dialog::backdrop {
 }
 .modal-actions > .btn-grow {
   flex-grow: 2;
+}
+/* connect dialog: the two ways side by side, "Abbrechen" below them */
+#connectDialog .modal-actions > #btnCancelConnectDialog {
+  order: 1;
+  flex-basis: 100%;
 }
 
 .message-box {
@@ -2359,6 +2646,101 @@ dialog.transfer::backdrop {
   .modal-actions > .btn-grow {
     flex: 0 0 auto;
   }
+  /* connect dialog: Bluetooth, USB, and "Abbrechen" at the bottom */
+  #connectDialog .modal-actions > #btnCancelConnectDialog {
+    order: 0;
+    flex-basis: auto;
+  }
+  /* Gerät on a phone: the values of the device as one block from edge to edge, like the boxes
+     below it. The name gets a line of its own and is shown in full. */
+  .view > .device-strip {
+    margin-bottom: 0;
+  }
+  .view > .device-strip > .device-strip-inner {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0;
+    padding: 0;
+  }
+  .view > .device-strip .chip {
+    padding: 6px 10px;
+    border-width: 0 2px 2px 0;
+    box-shadow: none;
+  }
+  .view > .device-strip .chip:last-child,
+  .view > .device-strip #chipDevice {
+    border-right-width: 0;
+  }
+  .view > .device-strip #chipDevice {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .view > .device-strip #chipDevice [data-short] {
+    font-size: 12px;
+  }
+  .view > .device-strip #chipDevice [data-short]::after {
+    content: none;
+  }
+  /* the editor fills the whole screen */
+  dialog.modal.modal-editor {
+    height: 100vh;
+    height: 100dvh;
+    max-height: none;
+    border-top-width: 0;
+  }
+  /* Bild on a phone: the switch between gallery and URL from edge to edge, without gaps, and
+     it stays below the header while the page scrolls */
+  .source-switch {
+    position: sticky;
+    top: var(--header-h);
+    z-index: 50;
+    margin-bottom: 0;
+    background: var(--bg);
+  }
+  .source-switch .seg {
+    flex: 1 1 auto;
+    max-width: none;
+    gap: 0;
+    padding: 0;
+  }
+  .source-switch .seg-btn,
+  .source-switch .seg-btn[aria-pressed="true"] {
+    left: 0;
+    top: 0;
+    border-width: 0 2px 2px 0;
+    box-shadow: none;
+  }
+  .source-switch .seg-btn:last-child {
+    border-right-width: 0;
+  }
+  /* "Synchronisieren" floats at the bottom right, above the navigation */
+  .sync-float {
+    position: fixed;
+    z-index: 90;
+    right: var(--gutter);
+    bottom: calc(var(--nav-h) + var(--safe-b) + 12px);
+    padding: 0 4px 4px 0;
+    width: auto;
+  }
+  .sync-float > .btn-neu {
+    flex: 0 0 auto;
+    min-width: 170px;
+    box-shadow: 4px 4px 0px #000000;
+  }
+  /* room at the end of the page, so that the button covers nothing there */
+  #viewEditor {
+    padding-bottom: 72px;
+  }
+  /* a moving view would take the floating button with it */
+  .view {
+    animation-name: view-fade;
+  }
+  /* messages appear above the floating button */
+  .toast {
+    bottom: calc(var(--nav-h) + var(--safe-b) + 76px);
+  }
   /* two buttons side by side on a phone: slightly smaller type keeps each label on one line */
   .btn-row-pair > * {
     font-size: 14px;
@@ -2449,9 +2831,6 @@ dialog.transfer::backdrop {
   .bleed-pad {
     padding: 0;
   }
-  .view-foot {
-    padding: 12px 0 0;
-  }
   .editor-send > * {
     flex: 0 1 320px;
   }
@@ -2491,6 +2870,37 @@ dialog.transfer::backdrop {
   dialog.modal.modal-wide {
     width: min(640px, calc(100vw - 48px));
   }
+  dialog.modal.modal-editor {
+    width: min(1120px, calc(100vw - 48px));
+    overflow: hidden; /* the content scrolls inside */
+  }
+  .modal-editor .modal-body {
+    gap: 14px;
+    padding: 16px;
+  }
+  /* one row at the bottom right: close, download, save */
+  .editor-foot {
+    display: flex;
+    flex-direction: row-reverse;
+    justify-content: flex-start;
+    gap: 12px;
+  }
+  .editor-save {
+    position: static;
+    margin: 0;
+    padding: 2px 2px 4px 2px;
+  }
+  .editor-save .btn-neu {
+    width: 190px;
+    box-shadow: 2px 2px 0px #000000;
+  }
+  .modal-editor .modal-actions {
+    padding: 2px 2px 4px 2px;
+    flex: 0 0 auto;
+  }
+  .modal-editor .modal-actions > * {
+    flex: 0 0 190px;
+  }
   dialog.modal[open] {
     animation: dialog-in 0.16s var(--ease-out);
   }
@@ -2506,6 +2916,13 @@ dialog.transfer::backdrop {
   }
   .modal-actions > .btn-grow {
     flex-grow: 0;
+  }
+  /* connect dialog: USB and Bluetooth share the width, in line with "Abbrechen" below them */
+  #connectDialog .modal-actions > * {
+    flex: 1 1 0;
+  }
+  #connectDialog .modal-actions > #btnCancelConnectDialog {
+    flex: 1 1 100%;
   }
 }
 
@@ -2585,10 +3002,28 @@ dialog.transfer::backdrop {
   }
   .editor-preview {
     position: sticky;
-    top: calc(var(--header-h) + 16px);
+    top: 0; /* inside the scrolling dialog */
+  }
+  .gallery-layout {
+    grid-template-columns: minmax(0, 1.3fr) minmax(320px, 0.7fr);
+  }
+  .tile-grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   }
   .grid-2 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  #controls > #wifiCard {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  #controls > #deviceAside {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  #controls > #expertCard {
+    grid-column: 2;
+    grid-row: 1 / span 2;
   }
   .view-narrow {
     max-width: 780px;

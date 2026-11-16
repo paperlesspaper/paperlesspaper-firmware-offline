@@ -17,10 +17,10 @@ if sys.platform == "win32":
 
 
 @contextlib.asynccontextmanager
-async def open_app(device=None, files=None, bluetooth=True):
+async def open_app(device=None, files=None, bluetooth=True, init_script=None):
     """The web UI in a browser, connected to nothing yet. Yields (app, site)."""
     with Site(files=files) as site:
-        async with WebApp(site, device, bluetooth=bluetooth) as app:
+        async with WebApp(site, device, bluetooth=bluetooth, init_script=init_script) as app:
             yield app, site
             # Every test ends with these two checks: the page ran without script errors
             # and did not try to reach anything outside the test site.

@@ -3,8 +3,9 @@
 The page under test gets a replacement for navigator.bluetooth (webtest/shim.js) that
 forwards every GATT operation to this bridge, which performs it with the PC's Bluetooth
 (bleak). So the shipped page code drives the real firmware: connection setup, settings,
-picture upload and firmware update. Not covered is Chrome's own Bluetooth stack and its
-device chooser; they are replaced by the bridge.
+gallery sync and firmware update. The serial port of the page is forwarded to the serial
+port of the device in the same way (the USB link). Not covered are Chrome's own Bluetooth
+and serial stacks and their choosers; they are replaced by the bridge.
 """
 
 import asyncio
@@ -33,8 +34,10 @@ class GattError(Exception):
 class HardwareBridge:
     """BLE backend of webtest.harness.WebApp for one real device."""
 
-    def __init__(self, uid):
+    def __init__(self, uid, port=None):
         self.uid = uid
+        self.port = port  # serial port of the device, for the USB link of the page
+        self.serial = None
         self.session = None
         self.emit = None  # set by the harness: async (event) -> None
         self.commands = []  # commands the page wrote to the upload characteristic
@@ -54,7 +57,25 @@ class HardwareBridge:
         self.session = session
         self._watchdog = asyncio.get_running_loop().create_task(self._watch(session))
 
+    async def _serial_pump(self, ser):
+        """Bytes of the device go to the page as they arrive."""
+        try:
+            while self.serial is ser:
+                data = await asyncio.to_thread(ser.read, 4096)
+                if data and self.emit:
+                    await self.emit({"type": "serial", "data": bytes(data)})
+        except Exception:
+            if self.serial is ser and self.emit:
+                await self.emit({"type": "serial_lost"})
+
+    async def _serial_close(self):
+        ser, self.serial = self.serial, None
+        if ser:
+            await asyncio.sleep(0.1)  # the pump leaves its read
+            ser.close()
+
     async def close(self):
+        await self._serial_close()
         if self._watchdog:
             self._watchdog.cancel()
             self._watchdog = None
@@ -81,6 +102,25 @@ class HardwareBridge:
             return {}
         if op == "disconnect":
             await self.close()
+            return {}
+        if op == "request_port":
+            if not self.port:
+                raise GattError("NotFoundError", "No port selected by the user.")
+            return {}
+        if op == "serial_open":
+            import serial
+
+            await self._serial_close()
+            self.serial = serial.Serial(self.port, args["baud"], timeout=0.05)
+            asyncio.get_running_loop().create_task(self._serial_pump(self.serial))
+            return {}
+        if op == "serial_close":
+            await self._serial_close()
+            return {}
+        if op == "serial_write":
+            if self.serial is None:
+                raise GattError("NetworkError", "The port is closed.")
+            await asyncio.to_thread(self.serial.write, args["data"])
             return {}
 
         client = self._client()
@@ -121,8 +161,10 @@ def web_dist():
 
 
 @contextlib.asynccontextmanager
-async def web_ui(device, files=None):
-    """The web UI in a browser, connected to `device` in setup mode. Yields (app, bridge, site)."""
+async def web_ui(device, files=None, usb=False):
+    """The web UI in a browser, connected to `device` in setup mode. Yields (app, bridge, site).
+    usb: over the USB link instead of Bluetooth. The log of the device is not recorded meanwhile,
+    the page has the serial port."""
     try:
         from webtest.harness import Site, WebApp
     except ImportError as err:  # playwright is not installed
@@ -130,17 +172,21 @@ async def web_ui(device, files=None):
             raise
         pytest.skip(f"Browser tests need playwright: {err}")
 
-    bridge = HardwareBridge(device.uid)
+    bridge = HardwareBridge(device.uid, port=device.target.port if usb else None)
     with Site(dist_dir=web_dist(), files=files) as site:
         async with WebApp(site, bridge) as app:
             try:
                 # The page is loaded first: setup mode only lasts 30 s without a connection.
                 await asyncio.to_thread(device.enter_setup_mode)
+                if usb:
+                    await asyncio.to_thread(device.ctrl.disconnect)
                 try:
-                    await app.connect(timeout=120000)
+                    await (app.connect_usb(timeout=120000) if usb else app.connect(timeout=120000))
                 except Exception as err:
                     # The status line of the page says why (device not found, GATT error, ...).
                     raise AssertionError(f"The web UI did not connect to the device. Status line: {await app.status()}") from err
                 yield app, bridge, site
             finally:
                 await bridge.close()
+                if usb:
+                    await asyncio.to_thread(device.ctrl.connect, retries=20, retry_delay=0.5)

@@ -32,8 +32,6 @@ const statusLogOutput = $("statusLogOutput");
 const statusLive = $("statusLive");
 const toast = $("toast");
 const btnToastClose = $("btnToastClose");
-const btnLog = $("btnLog");
-const logPanel = $("logPanel");
 
 const MAX_LOG_LINES = 300;
 const LOG_PREFIX = { err: "✗", warn: "!", ok: "✓" };
@@ -118,19 +116,6 @@ if (appBar && typeof ResizeObserver !== "undefined") {
   new ResizeObserver(() => {
     document.documentElement.style.setProperty("--header-h", appBar.offsetHeight + "px");
   }).observe(appBar);
-}
-
-// Log: small button at the end of the "Gerät" view
-if (btnLog && logPanel) {
-  btnLog.addEventListener("click", () => {
-    const open = logPanel.hidden;
-    logPanel.hidden = !open;
-    btnLog.setAttribute("aria-expanded", String(open));
-    if (open) {
-      statusLogOutput.scrollTop = statusLogOutput.scrollHeight;
-      logPanel.scrollIntoView({ block: "nearest" });
-    }
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -231,6 +216,7 @@ export function closeDialog(dlg) {
 /** Tap on the scrim closes a dialog (the content fills the dialog, so target === dialog means scrim). */
 export function initDialogs() {
   document.querySelectorAll("dialog.modal").forEach((dlg) => {
+    if (dlg.dataset.scrimClose === "false") return; // a dialog with work in it (editor) closes by its button
     let downOnScrim = false;
     dlg.addEventListener("pointerdown", (e) => {
       downOnScrim = e.target === dlg;

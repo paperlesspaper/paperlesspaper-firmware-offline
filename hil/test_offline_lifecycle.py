@@ -8,8 +8,10 @@ device, test_99 always puts the cloud production firmware back.
 test_10 to test_13 use the device through the web UI: the built page (web/dist)
 runs in a headless browser and reaches the device over the PC's Bluetooth
 (hil/web_bridge.py). test_14 flashes over USB with esptool, with the steps of the web UI.
+test_15 uses the web UI over the USB cable.
 """
 
+import json
 import os
 
 import pytest
@@ -136,6 +138,96 @@ def test_02_gatt_contract(device, target, run_state):
     assert found["status"].is_v2, "Upload status must be the 8 byte V2 format."
 
 
+def _picture_size(target):
+    """Width and height of a picture row by row (the 13.3" display is used upright)."""
+    return (1200, 1600) if target.name == "epd13" else (800, 480)
+
+
+def test_03_gallery(device, target, run_state):
+    """Pictures are stored, listed and read back unchanged, shown on request, and two presses of the
+    button show the next one."""
+    _require_candidate(run_state)
+    from webtest import assets
+
+    containers = [assets.gallery_container(target.display, *_picture_size(target), seed=seed) for seed in (1, 2)]
+    device.enter_setup_mode()
+
+    async def fill():
+        async with BleSession(device.uid) as ble:
+            await ble.gallery_command("GAL_CLEAR")
+            ids = [await ble.gallery_put(container) for container in containers]
+            await ble.gallery_order([ids[1], ids[0]])
+            await ble.gallery_command("GAL_SET:0,1")
+            found = {
+                "ids": ids,
+                "list": await ble.gallery_list(),
+                "picture": await ble.read_stream(f"pic:{ids[0]}"),
+                "preview": await ble.read_stream(f"thumb:{ids[0]}"),
+                "state": await ble.gallery_state(),
+            }
+            found["show"] = (await ble.gallery_command(f"GAL_SHOW:{ids[1]}")).position
+            return found
+
+    found = ble_run(fill(), timeout=900)
+    ids = found["ids"]
+    preview_len = int.from_bytes(containers[0][4:6], "little")
+    assert [entry[0] for entry in found["list"]] == [ids[1], ids[0]], "The play order was not stored."
+    assert [entry[1] for entry in found["list"]] == [len(containers[1]), len(containers[0])]
+    assert found["picture"] == containers[0], "The picture file read back differs from the one sent."
+    assert found["preview"] == containers[0][16:16 + preview_len]
+    assert found["state"]["count"] == 2
+    assert found["state"]["storage"] == ("sd" if target.name == "epd13" else "flash")
+    assert (found["state"]["shuffle"], found["state"]["auto"]) == (0, 1)
+    assert found["show"] == 0, "The device refused to show the picture."
+
+    device.wait_for(rf"\[GALLERY\] Showing \S*{ids[1]}", timeout=60)
+    shown = device.wait_for(r"\[EPD\] Set Image Done: (-?\d+)", timeout=settings.REFRESH_TIMEOUT)
+    assert shown.group(1) == "0", "The picture was not displayed."
+
+    # Two presses skip the setup mode and show the next picture of the order.
+    device.press(2)
+    device.wait_for(rf"\[GALLERY\] Showing \S*{ids[0]}", timeout=60)
+    shown = device.wait_for(r"\[EPD\] Set Image Done: (-?\d+)", timeout=settings.REFRESH_TIMEOUT)
+    assert shown.group(1) == "0", "The next picture was not displayed."
+
+
+def test_04_usb_link(device, target, run_state):
+    """The USB serial line offers what Bluetooth offers: settings, uploads and downloads."""
+    _require_candidate(run_state)
+    from webtest import assets
+
+    from .usb_link import UsbLink
+
+    container = assets.gallery_container(target.display, *_picture_size(target), seed=3)
+    device.enter_setup_mode()
+    device.ctrl.disconnect()  # the session needs the serial port
+    try:
+        with UsbLink(target.port) as link:
+            found = {
+                "hello": dict(link.hello),
+                "system": link.read_json(settings.CHR_SYSTEM_INFO),
+                "before": link.read_json(settings.CHR_GALLERY_STATE),
+            }
+            link.write(settings.CHR_TIMEOUT, "1800")
+            found["timeout"] = link.read(settings.CHR_TIMEOUT).decode()
+            link.write(settings.CHR_TIMEOUT, settings.DEFAULT_TIMEOUT)
+            picture_id = link.gallery_put(container)
+            found["picture"] = link.read_stream(f"pic:{picture_id}")
+            found["list"] = [entry[0] for entry in json.loads(link.read_stream("list"))["items"]]
+            link.command("GAL_CLEAR")
+            found["after"] = link.read_json(settings.CHR_GALLERY_STATE)
+    finally:
+        device.ctrl.connect(retries=20, retry_delay=0.5)
+
+    assert found["hello"]["name"] == device.uid
+    assert found["system"]["fw"] == "offline" and found["system"]["version"] == run_state["candidate_version"]
+    assert found["before"]["count"] == 2, "The pictures of the Bluetooth test are missing."
+    assert found["timeout"] == "1800"
+    assert found["picture"] == container, "The picture file read back over USB differs from the one sent."
+    assert picture_id in found["list"] and len(found["list"]) == 3
+    assert found["after"]["count"] == 0
+
+
 # --- the device through the web UI ----------------------------------------
 
 WEB_URL = "http://frame.invalid/picture.bmp"
@@ -163,7 +255,7 @@ def test_10_web_ui_shows_the_device(device, target, run_state):
                 "warning_hidden": await app.page.evaluate("document.getElementById('firmwareVersionWarning').hidden"),
                 "voltage": await app.text("#systemVoltage"),
             }
-            await app.view("geraet")
+            await app.url_settings()
             shown["timeout"] = await app.page.input_value("#settingTimeout")
             shown["url"] = await app.page.input_value("#settingUrl")
             await app.disconnect()
@@ -189,7 +281,7 @@ def test_11_web_ui_saves_settings(device, run_state):
 
     async def save():
         async with web_ui(device) as (app, bridge, site):
-            await app.view("geraet")
+            await app.url_settings()
             for selector, value in WEB_SETTINGS.items():
                 await app.page.fill(selector, value)
             await app.page.fill("#settingHttpAuthPassword", "hil-probe-pw")
@@ -202,7 +294,7 @@ def test_11_web_ui_saves_settings(device, run_state):
 
     async def read_back():  # web_ui() power-cycles the device into setup mode again
         async with web_ui(device) as (app, bridge, site):
-            await app.view("geraet")
+            await app.url_settings()
             values = {selector: await app.page.input_value(selector) for selector in WEB_SETTINGS}
             values["password"] = await app.page.input_value("#settingHttpAuthPassword")
             return values
@@ -212,35 +304,37 @@ def test_11_web_ui_saves_settings(device, run_state):
     assert values == WEB_SETTINGS
 
 
-def test_12_web_ui_uploads_a_picture(device, target, run_state):
-    """A picture prepared in the browser reaches the flash of the device unchanged and is displayed."""
+def test_12_web_ui_syncs_the_gallery(device, target, run_state):
+    """A picture prepared in the browser reaches the gallery of the device unchanged and is displayed."""
     _require_candidate(run_state)
     from webtest import assets
 
-    width, height = (1200, 1600) if target.name == "epd13" else (800, 480)
-    image_bytes = width * height // 2
+    width, height = _picture_size(target)
 
     async def body():
         async with web_ui(device) as (app, bridge, site):
-            await app.load_image(assets.test_picture(width // 2, height // 2))
-            result = await app.transfer(lambda: app.click("#btnUploadImage"), timeout=600000)
-            return result, await app.status(), list(bridge.commands)
+            await app.add_pictures([assets.test_picture(width // 2, height // 2)])
+            result = await app.sync(timeout=600000)
+            return result, await app.status(), await app.tiles(), list(bridge.commands)
 
-    result, status, commands = ble_run(body(), timeout=900)
-    assert result is None, f"The web UI reported a failed upload: {result}"
-    assert "Upload abgeschlossen" in status
-    assert commands[-1] == "APPLY" and commands[-2].startswith("END:"), f"Unexpected end of the upload: {commands[-3:]}"
-    sent_crc = int(commands[-2][4:], 16)
+    result, status, tiles, commands = ble_run(body(), timeout=900)
+    assert result is None, f"The web UI reported a failed sync: {result}"
+    assert "Galerie synchronisiert" in status
+    assert [tile["status"] for tile in tiles if tile["key"]] == ["synced"]
+    put = next((cmd for cmd in commands if cmd.startswith("GAL_PUT:")), None)
+    assert put, f"The web UI sent no picture: {commands}"
+    picture_id, size = put[8:].split(",")
+    assert f"END:{picture_id}" in commands and f"GAL_SHOW:{picture_id}" in commands, f"Unexpected commands: {commands}"
 
     ended = device.wait_for(r"\[BLE\] Upload ENDED\. Bytes: (\d+), FlashCRC: 0x([0-9A-Fa-f]{8}) \((\w+)\)", timeout=30)
     assert ended.group(3) == "OK", "The device rejected the picture."
-    assert int(ended.group(1)) == image_bytes
-    assert int(ended.group(2), 16) == sent_crc, "The picture in the flash differs from what the browser sent."
+    assert int(ended.group(1)) == int(size)
+    assert ended.group(2).lower() == picture_id, "The picture file on the device differs from what the browser sent."
 
-    # What the display driver reads from the slot is the same picture.
-    slot = device.wait_for(r"\[IMAGE\] Slot CRC: 0x([0-9A-Fa-f]{8}) \(.*?(\d+) bytes\)", timeout=60)
-    assert (int(slot.group(1), 16), int(slot.group(2))) == (sent_crc, image_bytes)
-    device.wait_for(r"\[EPD\] Set Image Done", timeout=settings.REFRESH_TIMEOUT)
+    # The device shows the picture the page asked for.
+    device.wait_for(rf"\[GALLERY\] Showing \S*{picture_id}", timeout=60)
+    shown = device.wait_for(r"\[EPD\] Set Image Done: (-?\d+)", timeout=settings.REFRESH_TIMEOUT)
+    assert shown.group(1) == "0", "The picture was not displayed."
 
 
 def test_13_web_ui_updates_the_firmware(device, target, run_state):
@@ -264,7 +358,8 @@ def test_13_web_ui_updates_the_firmware(device, target, run_state):
     selected, result, commands = ble_run(body(), timeout=settings.BLE_FW_UPLOAD_TIMEOUT + 300)
     assert selected == target.name, "The web UI offers the firmware of another device type."
     assert result and result[0] == "Firmware installiert", f"The web UI reported: {result}"
-    assert commands[2] == f"FW_SIZE:{os.path.getsize(target.candidate_bin)}"
+    start = commands.index("START_FW")  # the page reads the gallery in the background before
+    assert commands[start:start + 3] == ["START_FW", "V2", f"FW_SIZE:{os.path.getsize(target.candidate_bin)}"]
 
     booted = device.wait_for_reboot(since["log"], timeout=90)
     assert booted.firmware == "offline"
@@ -289,6 +384,41 @@ def test_14_usb_flash_starts_the_flashed_firmware(device, target, run_state):
     assert booted.firmware == "offline"
     assert booted.version == run_state["candidate_version"]
     assert booted.slot == "app0", f"The firmware flashed over USB does not start: the device still runs from {booted.slot}."
+
+
+def test_15_web_ui_over_usb(device, target, run_state):
+    """The web UI over the USB cable: it shows the device, sends a picture to the gallery and reads the
+    gallery back. Bluetooth is not used."""
+    _require_candidate(run_state)
+    from webtest import assets
+
+    width, height = _picture_size(target)
+
+    async def body():
+        async with web_ui(device, usb=True) as (app, bridge, site):
+            found = {
+                "name_shown": device.uid in await app.text("#systemDeviceName"),
+                "firmware": await app.text("#systemFwVersion"),
+            }
+            await app.add_pictures([assets.test_picture(width // 4, height // 4)])
+            found["sync"] = await app.sync(timeout=600000)
+            found["status"] = await app.status()
+            # the picture of test_12 is only on the device: its preview is read over USB
+            await app.page.wait_for_function("() => document.querySelectorAll('#galleryGrid .tile[data-remote] img').length >= 1", timeout=120000)
+            found["tiles"] = await app.tiles()
+            found["bluetooth"] = bridge.connections
+            await app.disconnect()
+            return found
+
+    found = ble_run(body(), timeout=900)
+    assert found["name_shown"], "The web UI does not show the name of the device."
+    assert found["firmware"] == f"v{run_state['candidate_version']} ✓"
+    assert found["sync"] is None, f"The web UI reported a failed sync: {found['sync']}"
+    assert "Galerie synchronisiert" in found["status"]
+    local = [tile for tile in found["tiles"] if tile["key"]]
+    assert [tile["status"] for tile in local] == ["synced"]
+    assert local[0]["shown"], "The device does not report the new picture as the one on its display."
+    assert found["bluetooth"] == 0, "The page used Bluetooth."
 
 
 def test_99_restore_cloud_firmware(device, target):
