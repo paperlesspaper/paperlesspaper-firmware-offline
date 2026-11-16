@@ -2257,7 +2257,7 @@ function renderPlay() {
   $("btnPlayAuto").setAttribute("aria-pressed", String(auto));
   $("btnPlayManual").setAttribute("aria-pressed", String(!auto));
   $("playIntervalField").hidden = !auto;
-  $("playAutoHint").textContent = auto ? "Das E-Paper wacht im eingestellten Abstand auf und zeigt das nächste Bild. Ein Druck auf die Reset-Taste zeigt es sofort." : "Kein automatisches Aufwachen: Das Bild wechselt nur, wenn du die Reset-Taste drückst.";
+  $("playAutoHint").textContent = auto ? "Das E-Paper wacht im eingestellten Abstand auf und zeigt das nächste Bild. Die Reset-Taste zeigt es früher: zweimal drücken sofort, einmal drücken nach 10 Sekunden ohne Verbindung." : "Kein automatisches Aufwachen: Das Bild wechselt nur, wenn du die Reset-Taste drückst.";
 }
 
 let galleryHint = "";

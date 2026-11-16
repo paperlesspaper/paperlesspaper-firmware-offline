@@ -108,7 +108,8 @@
 #define FAILSAVE_TIMER 180 // Time to shutdown the device if no reaction or hangup
 #define SLEEP_RECALCULATION_PERIOD_SECONDS 30
 #define SETUP_MODE_TIMEOUT 30  // seconds to wait in setup mode for BLE connection before switching to fetch/refresh mode
-#define SETUP_IDLE_TIMEOUT 600 // seconds a connected BLE client may stay idle on battery power before the setup mode ends
+#define GALLERY_ADVANCE_DELAY 10 // seconds after one press until the next gallery picture, if no client connects
+#define SETUP_IDLE_TIMEOUT 600// seconds a connected BLE client may stay idle on battery power before the setup mode ends
 #define LED_DIM_VALUE 5        // brightness of led in percent (0-100)
 
 #define MAX_DOWNLOAD_SIZE 0x600000UL // largest picture file that is downloaded (6 MB), less if the flash is smaller
@@ -3242,8 +3243,9 @@ void runSetupMode() {
    unsigned long bleConnectedTime = 0;
    bool bleWasConnected = false;
    bool initialWifiCheckDone = false;
-   // A press of the button shows the next picture of the gallery, with or without the interval.
+   // One press shows the next picture of the gallery, unless a client connects first.
    bool advanceOnPress = settings.imageMode == 0 && Gallery::count() > 1;
+   bool advancing = false;
 
    // Wait for completion, disconnect, or timeout
    while (true) {
@@ -3336,11 +3338,14 @@ void runSetupMode() {
          }
       }
 
-      // Not before 3.5 s after the start: a second press (next picture at once) restarts the frame.
-      if (advanceOnPress && millis() > 3500 && !isBleTransferActive) {
+      if (advanceOnPress && clientConnected)
+         advanceOnPress = false; // the picture stays
+      if (advanceOnPress && millis() - setupModeStart > GALLERY_ADVANCE_DELAY * 1000UL) {
          advanceOnPress = false;
-         if (Gallery::next())
+         if (Gallery::next()) {
+            advancing = true;
             applyPending = true;
+         }
       }
 
       if (applyPending) {
@@ -3355,7 +3360,9 @@ void runSetupMode() {
          galleryShowPending = Gallery::showCurrent() != 0;
          bleImageApplied = !galleryShowPending;
          applyInProgress = false;
-         lastDisconnectTime = millis(); // the time to connect starts again once the picture is there
+         if (!advancing)
+            lastDisconnectTime = millis(); // the time to connect starts again once the picture is there
+         advancing = false;
          publishGalleryState();
       }
 

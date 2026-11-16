@@ -13,6 +13,7 @@ test_15 uses the web UI over the USB cable.
 
 import json
 import os
+import time
 
 import pytest
 
@@ -144,8 +145,8 @@ def _picture_size(target):
 
 
 def test_03_gallery(device, target, run_state):
-    """Pictures are stored, listed and read back unchanged, shown on request, and two presses of the
-    button show the next one."""
+    """Pictures are stored, listed and read back unchanged and shown on request. Two presses of the
+    button show the next one at once, one press after 10 s without a connection."""
     _require_candidate(run_state)
     from webtest import assets
 
@@ -190,14 +191,23 @@ def test_03_gallery(device, target, run_state):
     shown = device.wait_for(r"\[EPD\] Set Image Done: (-?\d+)", timeout=settings.REFRESH_TIMEOUT)
     assert shown.group(1) == "0", "The next picture was not displayed."
 
+    # One press and nobody connects: the next picture follows after 10 s.
+    device.press(1)
+    pressed = time.time()
+    device.wait_for(rf"\[GALLERY\] Showing \S*{ids[1]}", timeout=60)
+    waited = time.time() - pressed
+    shown = device.wait_for(r"\[EPD\] Set Image Done: (-?\d+)", timeout=settings.REFRESH_TIMEOUT)
+    assert shown.group(1) == "0", "The picture after one press was not displayed."
+    assert waited >= 8, f"The picture changed {waited:.0f} s after the press: no time to connect first."
+
 
 def test_04_usb_link(device, target, run_state):
-    """The USB serial line offers what Bluetooth offers: settings, uploads and downloads. The session
-    survives a display refresh."""
+    """The USB serial line offers what Bluetooth offers: settings, uploads, downloads and showing a
+    picture. The session survives the display refresh, and a connected client keeps the picture."""
     _require_candidate(run_state)
     from webtest import assets
 
-    from .usb_link import UsbLink
+    from .usb_link import STATUS_DISPLAY_BUSY, UsbLink
 
     container = assets.gallery_container(target.display, *_picture_size(target), seed=3)
     device.enter_setup_mode()
@@ -213,12 +223,18 @@ def test_04_usb_link(device, target, run_state):
             found["timeout"] = link.read(settings.CHR_TIMEOUT).decode()
             link.write(settings.CHR_TIMEOUT, settings.DEFAULT_TIMEOUT)
             try:
-                # The press shows the next of the two pictures: the session goes on after that refresh.
-                shown = link.wait_notification(settings.CHR_GALLERY_STATE, settings.REFRESH_TIMEOUT)
-                found["shown"] = json.loads(shown.decode("utf-8"))
                 picture_id = link.gallery_put(container)
                 found["picture"] = link.read_stream(f"pic:{picture_id}")
                 found["list"] = [entry[0] for entry in json.loads(link.read_stream("list"))["items"]]
+                # The session goes on after a display refresh; the new state is notified at its end.
+                link.notifications.clear()
+                found["show"] = link.command(f"GAL_SHOW:{picture_id}")[0]
+                shown = link.wait_notification(settings.CHR_GALLERY_STATE, settings.REFRESH_TIMEOUT)
+                found["shown"] = json.loads(shown.decode("utf-8"))
+                # A client is connected: the press that started the setup mode shows no other picture.
+                time.sleep(1)
+                link.write(settings.CHR_UPLOAD_CMD, "GAL_SET:0,1")
+                found["busy"] = link.status()[0] == STATUS_DISPLAY_BUSY
             finally:
                 link.command("GAL_CLEAR")  # the tests of the web UI start with an empty gallery
             found["after"] = link.read_json(settings.CHR_GALLERY_STATE)
@@ -229,9 +245,11 @@ def test_04_usb_link(device, target, run_state):
     assert found["system"]["fw"] == "offline" and found["system"]["version"] == run_state["candidate_version"]
     assert found["before"]["count"] == 2, "The pictures of the Bluetooth test are missing."
     assert found["timeout"] == "1800"
-    assert found["shown"]["count"] == 2 and found["shown"]["current"], "The device did not show the next picture."
     assert found["picture"] == container, "The picture file read back over USB differs from the one sent."
     assert picture_id in found["list"] and len(found["list"]) == 3
+    assert found["show"] == 0, "The device refused to show the picture."
+    assert found["shown"]["current"] == picture_id
+    assert not found["busy"], "The device showed the next picture although a client was connected."
     assert found["after"]["count"] == 0
 
 
@@ -455,7 +473,7 @@ def test_99_restore_cloud_firmware(device, target):
 
     ble_run(reset_settings())
     device.wait_for(r"\[MAIN\] Reset - WIFI 1", timeout=15)
-    # The press may have started the next gallery picture: the restart follows after that refresh.
+    # A connection later than 10 s after the press meets the next gallery picture: the restart follows that refresh.
     device.wait_for_reboot(since, timeout=30 + settings.REFRESH_TIMEOUT)
 
     device.enter_setup_mode()
