@@ -841,6 +841,55 @@ def test_firmware_update_without_connection_offers_to_connect(app_session):
     run(body())
 
 
+USB_STUBS = """usbDevice => {
+    const notFound = () => Promise.reject(new DOMException("No device selected.", "NotFoundError"));
+    navigator.serial.requestPort = notFound;
+    navigator.usb.requestDevice = usbDevice ? () => Promise.resolve({ productName: usbDevice }) : notFound;
+}"""
+
+
+@pytest.mark.parametrize("usb_device, title", [
+    ("CP2102N USB to UART Bridge Controller", "Treiber fehlt"),
+    (None, "Kein E-Paper am USB gefunden"),
+])
+def test_missing_serial_port_is_explained(app_session, usb_device, title):
+    """Without its driver the device is not offered as a serial port. The page says so and tells
+    a missing driver from a device that is not connected."""
+
+    async def body():
+        async with app_session(SimulatedDevice(), files={"firmware_offline_epd7.bin": assets.firmware_image()}) as (app, site):
+            await app.page.evaluate(USB_STUBS, usb_device)
+            await app.view("firmware")
+            await app.click("#btnOtaSerial")
+            await app.click("#btnUpdateOfflineFw")
+            await app.click("#btnConfirmOfflineOta")
+
+            await app.page.wait_for_selector("#messageDialog[open]")
+            assert "nicht in der Liste" in await app.text("#messageTitle")
+            assert "silabs.com" in await app.page.get_attribute("#messageLink a", "href")
+            await app.click("#messageOk")
+
+            await app.page.wait_for_function("title => document.getElementById('messageTitle').textContent.includes(title)", arg=title)
+            if usb_device:
+                assert usb_device in await app.text("#messageDetail")
+            await app.click("#messageOk")
+            assert not await app.page.evaluate("document.getElementById('transferDialog').open")
+
+    run(body())
+
+
+def test_help_link_opens_the_usb_section(app_session):
+    async def body():
+        async with app_session(SimulatedDevice()) as (app, site):
+            await app.view("firmware")
+            await app.click("#btnOtaSerial")
+            await app.click('[data-help-target="helpUsb"]')
+            await app.page.wait_for_selector("#viewHelp:not([hidden])")
+            assert await app.page.get_attribute('[aria-controls="helpUsb"]', "aria-expanded") == "true"
+
+    run(body())
+
+
 # --- check of the download URL --------------------------------------------
 
 

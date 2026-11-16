@@ -1752,6 +1752,47 @@ async function requestSerialPort() {
   return await navigator.serial.requestPort({ filters: SERIAL_FILTERS });
 }
 
+const DRIVER_LINK = { href: "https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers?tab=downloads", label: "Treiber von Silicon Labs ↗" };
+
+/** No port was picked: without its driver the device is missing in the list of the chooser. */
+async function explainMissingPort() {
+  const canCheck = "usb" in navigator;
+  const check = await showMessage({
+    title: "E-Paper nicht in der Liste?",
+    text: "Dann erkennt dein PC den USB-Anschluss des E-Paper nicht. Unter Windows fehlt meist der Treiber „CP210x Universal Windows Driver“: Im Geräte-Manager steht das E-Paper dann unter „Andere Geräte“. Auch ein USB-Kabel ohne Datenleitungen kommt in Frage.",
+    link: DRIVER_LINK,
+    okLabel: canCheck ? "USB prüfen" : "OK",
+    cancelLabel: canCheck ? "Schließen" : null,
+  });
+  if (!check || !canCheck) return;
+
+  // WebUSB lists the device also without a driver.
+  let device = null;
+  try {
+    device = await navigator.usb.requestDevice({ filters: SERIAL_FILTERS.map((f) => ({ vendorId: f.usbVendorId, productId: f.usbProductId })) });
+  } catch (e) {
+    if (e?.name !== "NotFoundError") {
+      setStatus("USB-Prüfung nicht möglich: " + e.message, "warn");
+      return;
+    }
+  }
+  if (device) {
+    await showMessage({
+      title: "Treiber fehlt",
+      tone: "warn",
+      text: "Das E-Paper ist per USB angeschlossen. Fehlte es eben in der Liste der seriellen Anschlüsse, ist sein Treiber nicht installiert. Installiere ihn und starte den Vorgang erneut.",
+      detail: device.productName || "",
+      link: DRIVER_LINK,
+    });
+  } else {
+    await showMessage({
+      title: "Kein E-Paper am USB gefunden",
+      tone: "warn",
+      text: "Dein PC sieht das E-Paper nicht. Nimm ein USB-C-Kabel mit Datenleitungen, stecke es direkt am PC an und prüfe, ob es am E-Paper ganz eingesteckt ist.",
+    });
+  }
+}
+
 /** Must run directly inside a click handler (the port chooser needs a user gesture). */
 async function pickSerialPort() {
   try {
@@ -1759,6 +1800,7 @@ async function pickSerialPort() {
   } catch (e) {
     if (e?.name === "NotFoundError" || e?.name === "AbortError") {
       setStatus("Kein COM-Port ausgewählt – Vorgang abgebrochen.", "warn");
+      await explainMissingPort();
     } else {
       setStatus("USB-Verbindung fehlgeschlagen: " + e.message, "err");
     }
@@ -1783,8 +1825,8 @@ const loaderTerminal = {
 const RECONNECT_NEXT_STEP = "Drücke danach die Reset-Taste am E-Paper und verbinde dich wieder per Bluetooth.";
 const CLOUD_NEXT_STEP = "Mit der Cloud-Firmware ist das E-Paper über die paperlesspaper-App erreichbar.";
 
-const BOOT_BUTTON_STEPS ="kleinen Knopf halten, Reset (großer Knopf) kurz drücken, kleinen Knopf loslassen";
-const BOOTLOADER_HELP = `Der Bootloader des E-Paper antwortet nicht. Bringe das Gerät von Hand in den Bootloader (${BOOT_BUTTON_STEPS}) und starte den Vorgang erneut.`;
+const BOOT_BUTTON_STEPS = "Holzabdeckung abnehmen, kleinen Knopf halten, Reset kurz drücken, kleinen Knopf loslassen";
+const BOOTLOADER_HELP = `Der Bootloader des E-Paper antwortet nicht. Starte den Vorgang erneut und drücke nach der Aufforderung kurz Reset. Klappt es weiter nicht, bringe das Gerät von Hand in den Bootloader: ${BOOT_BUTTON_STEPS} (Hilfe: „USB: Probleme beheben“).`;
 const AUTO_BOOTLOADER_MS = 4000;
 
 /** Brings the device into the bootloader (see serialBoot.js) and connects to it. */
@@ -1798,9 +1840,9 @@ async function openEspLoader(port) {
     setStatus("Prüfe, ob das E-Paper von selbst in den Bootloader wechselt…", "busy");
     let entered = await requestBootloader(port, { timeoutMs: AUTO_BOOTLOADER_MS });
     if (!entered) {
-      setStatus(`Das E-Paper wechselt nicht von selbst in den Bootloader. Drücke jetzt kurz die Reset-Taste (großer Knopf). Passiert danach nichts: ${BOOT_BUTTON_STEPS}.`, "busy");
+      setStatus(`Das E-Paper wechselt nicht von selbst in den Bootloader. Drücke jetzt kurz die Reset-Taste (großer Knopf).`, "busy");
       entered = await requestBootloader(port, {
-        onUnsupported: () => setStatus(`Diese Firmware wechselt nicht von selbst in den Bootloader. Bitte von Hand: ${BOOT_BUTTON_STEPS}.`, "busy"),
+        onUnsupported: () => setStatus(`Diese Firmware wechselt nicht von selbst in den Bootloader. Jetzt von Hand: ${BOOT_BUTTON_STEPS}.`, "busy"),
       });
     }
     if (entered) {
@@ -2495,6 +2537,16 @@ window.addEventListener("appinstalled", () => {
 initNavigation();
 initDialogs();
 initCollapsibles();
+// Links to one section of the help open that section.
+document.querySelectorAll("[data-help-target]").forEach((link) => {
+  link.addEventListener("click", (e) => {
+    e.preventDefault();
+    const section = $(link.dataset.helpTarget).closest("[data-collapsible]");
+    navigate("hilfe");
+    setCollapsible(section, true);
+    section.scrollIntoView({ block: "start" });
+  });
+});
 // With room for two columns the picture settings stand open next to the picture.
 if (window.matchMedia("(min-width: 900px)").matches) {
   setCollapsible($("imageSettingsDetails"), true);

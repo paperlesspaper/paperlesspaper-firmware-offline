@@ -538,7 +538,8 @@
                     </p>
                     <p id="serialModeNotice" class="callout callout-warn" hidden>
                         <span class="callout-caption">🔌 Anleitung für USB</span>
-                        Entferne die Holzabdeckung vom Bilderrahmen vorsichtig und verbinde das E-Paper per USB-Kabel mit dem PC. Die Seite schickt das E-Paper nach Möglichkeit von selbst in den Bootloader. Klappt das nicht, zeigt sie dir, welche Taste du drücken musst.
+                        Verbinde das E-Paper per USB-C-Kabel mit dem PC. Die Abdeckung kann dran bleiben: Wenn nötig, bittet dich die Seite um einen kurzen Druck auf die Reset-Taste. Wird das E-Paper nicht gefunden oder startet das Flashen nicht:
+                        <a href="#hilfe" data-help-target="helpUsb">Hilfe zu USB-Problemen</a>
                     </p>
                     <p id="serialUnsupportedNotice" class="callout callout-err" role="alert" hidden>
                         <span class="callout-caption">⚠️ Nicht unterstützt</span>
@@ -723,7 +724,7 @@
                                     </div>
                                     <div class="def-row">
                                         <dt>Klein + Reset</dt>
-                                        <dd>Bootloader-Modus für das USB-Kabel, nur noch bei älterer Firmware nötig: kleinen Knopf halten, Reset kurz drücken, kleinen Knopf loslassen.</dd>
+                                        <dd>Bootloader von Hand. Nur nötig, wenn das Flashen per USB sonst nicht startet, siehe „USB: Probleme beheben“. Der kleine Knopf sitzt unter der Holzabdeckung.</dd>
                                     </div>
                                 </dl>
                                 <p class="field-hint">Reset ist der große Knopf auf der Rückseite. Mehrfaches Drücken zählt, wenn jeder Druck innerhalb von 3 Sekunden auf den vorigen folgt.</p>
@@ -940,6 +941,50 @@
                     </div>
                 </div>
 
+                <div class="collapsible" data-collapsible>
+                    <button type="button" class="collapsible-head" aria-expanded="false" aria-controls="helpUsb">
+                        <span>🔌 USB: Probleme beheben</span>
+                        <span class="collapsible-icon" aria-hidden="true">▲</span>
+                    </button>
+                    <div class="collapsible-body" id="helpUsb">
+                        <div class="collapsible-inner">
+                            <div class="collapsible-content prose">
+                                <p>Normalerweise genügt das USB-C-Kabel und ein kurzer Druck auf Reset, die Abdeckung bleibt dran.</p>
+                                <p>Das Flashen startet nicht?</p>
+                                <dl class="def-list">
+                                    <div class="def-row">
+                                        <dt>Bootloader von Hand</dt>
+                                        <dd>Wechselt das E-Paper auch nach dem Druck auf Reset nicht in den Bootloader, etwa mit älterer Firmware oder wenn die Firmware nicht mehr startet: Holzabdeckung vorsichtig abnehmen, kleinen Knopf halten, Reset kurz drücken, kleinen Knopf loslassen. Danach den Vorgang erneut starten.</dd>
+                                    </div>
+                                </dl>
+                                <p>Das E-Paper fehlt in der Liste der seriellen Anschlüsse? Dann erkennt dein PC seinen USB-Anschluss nicht.</p>
+                                <dl class="def-list">
+                                    <div class="def-row">
+                                        <dt>Treiber (Windows)</dt>
+                                        <dd>
+                                            Im Geräte-Manager steht das E-Paper ohne Treiber unter „Andere Geräte“ als „CP2102N USB to UART Bridge Controller“. Lade den „CP210x Universal Windows Driver“ bei
+                                            <a href="https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers?tab=downloads" target="_blank" rel="noopener noreferrer">Silicon Labs ↗</a>
+                                            herunter, entpacke ihn und wähle per Rechtsklick auf „silabser.inf“ den Punkt „Installieren“. Danach steht das E-Paper unter „Anschlüsse (COM &amp; LPT)“.
+                                        </dd>
+                                    </div>
+                                    <div class="def-row">
+                                        <dt>macOS, Linux</dt>
+                                        <dd>Der Treiber ist in der Regel schon im System enthalten.</dd>
+                                    </div>
+                                    <div class="def-row">
+                                        <dt>Kabel</dt>
+                                        <dd>Manche USB-C-Kabel laden nur. Nimm ein Kabel mit Datenleitungen und stecke es direkt am PC an.</dd>
+                                    </div>
+                                    <div class="def-row">
+                                        <dt>USB prüfen</dt>
+                                        <dd>Schließt du die Liste ohne Auswahl, bietet die Seite „USB prüfen“ an. Erscheint das E-Paper dort, ist es angeschlossen und nur der Treiber fehlt.</dd>
+                                    </div>
+                                </dl>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <p class="field-hint mono bleed-pad" id="buildInfo" hidden></p>
                 <p class="field-hint bleed-pad">
                     Technische Details zur Offline-Firmware stehen in der
@@ -957,6 +1002,7 @@
             <h3 id="messageTitle">Hinweis</h3>
             <p class="modal-text" id="messageText"></p>
             <div class="message-box" id="messageDetail" hidden></div>
+            <p class="modal-text" id="messageLink" hidden><a href="#" target="_blank" rel="noopener noreferrer"></a></p>
             <div class="modal-actions">
                 <button type="submit" value="cancel" id="messageCancel" class="btn-neu">Abbrechen</button>
                 <button type="submit" value="ok" id="messageOk" class="btn-neu btn-neu-primary btn-grow">OK</button>

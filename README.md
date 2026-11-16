@@ -33,7 +33,9 @@ Requires Chrome, Edge or Opera (Web Bluetooth / Web Serial). The Web UI is in Ge
 4. Open **Firmware** and flash the **Offline Firmware**.
 5. Send an image in **Bild**, or set up WiFi and a download URL in **Gerät**.
 
-Still running the cloud firmware? It only offers Bluetooth after a factory reset: press the reset button 5 times in quick succession and wait for the WiFi setup screen. Alternatively, flash over USB (**Firmware → USB-Kabel**).
+Still running the cloud firmware? It only offers Bluetooth after a factory reset: press the reset button 5 times in quick succession and wait for the WiFi setup screen. Alternatively, flash over USB (**Firmware → USB-Kabel**). The wooden cover can stay on: only the reset button is needed.
+
+The frame is not offered as a serial port? On Windows the driver of its USB bridge may be missing: the frame is then listed in the Device Manager under "Other devices" as "CP2102N USB to UART Bridge Controller". Install the [CP210x Universal Windows Driver](https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers?tab=downloads) (right-click `silabser.inf` → Install). The Web UI explains this when no port is selected and can check whether the frame is connected at all (**USB prüfen**).
 
 ## Cloud vs. offline firmware
 
@@ -56,7 +58,7 @@ You can switch between both firmwares at any time in the Web UI.
 | Press reset **once** | Setup mode: Bluetooth is active for 30 seconds. Without a connection the frame continues with a normal update. On battery power the frame ends a connection after 10 minutes without input. |
 | Press reset **twice** | Skips setup mode and downloads the image again, even if it has not changed. |
 | Press reset **5 times** | Factory reset: deletes settings, WiFi credentials and the stored image. |
-| Hold the small button, press reset, release the small button | Bootloader mode for USB flashing. Only needed with older firmware: the Web UI switches the frame to the bootloader itself, a sleeping frame after one press of reset. |
+| Hold the small button, press reset, release the small button | Bootloader mode by hand. The small button sits under the wooden cover. Only needed if USB flashing does not start otherwise (older firmware, or a firmware that no longer starts): the Web UI switches the frame to the bootloader itself, a sleeping frame after one press of reset. |
 
 Multiple presses count when each press follows the previous one within 3 seconds.
 
@@ -177,7 +179,7 @@ The cloud firmware authenticates with device-specific AWS IoT certificates in th
 - **Restore:** **Zertifikate wiederherstellen** writes a backup, or a file from customer support, back to the frame.
 - **Back to the cloud firmware:** **Firmware → Original Cloud Firmware → Flashen**.
 
-Backup and restore need a USB cable. The Web UI tells you if a button has to be pressed.
+Backup and restore need a USB cable. The wooden cover can stay on: if needed, the Web UI asks for a press of reset.
 
 ## Build from source
 
@@ -293,7 +295,7 @@ A disconnect during an upload discards it.
 
 **USB flashing**
 
-The board has no auto reset. While the frame starts (it prints `[MAIN] test mode check...`) and while it is in setup mode, the character `B` on the serial line (115200 baud) restarts it into the ROM bootloader, if USB power is connected. The cloud firmware has the same command. The Web UI sends it, so the boot button is not needed: a frame in setup mode switches at once, a sleeping frame after one press of reset. The Web UI tries the first for 4 seconds and then shows which button to press.
+The board has no auto reset. While the frame starts (it prints `[MAIN] test mode check...`) and while it is in setup mode, the character `B` on the serial line (115200 baud) restarts it into the ROM bootloader, if USB power is connected. The cloud firmware has the same command. The Web UI sends it, so the boot button is not needed: a frame in setup mode switches at once, a sleeping frame after one press of reset. The Web UI tries the first for 4 seconds and then asks for a press of reset. The boot button (under the wooden cover) is only the fallback for a firmware without this command or one that no longer starts.
 
 The Web UI uses `esptool-js` over Web Serial at 921600 baud. The firmware is written to `0x10000` (app slot `app0`), the certificates to `0x3B0000`. With a firmware, `otadata` (`0xE000`) is erased as well, so that the bootloader starts `app0`: after an update over the air or over Bluetooth the frame may start `app1`.
 

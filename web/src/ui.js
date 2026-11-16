@@ -246,6 +246,7 @@ const messageDialog = $("messageDialog");
 const messageTitle = $("messageTitle");
 const messageText = $("messageText");
 const messageDetail = $("messageDetail");
+const messageLink = $("messageLink");
 const messageOk = $("messageOk");
 const messageCancel = $("messageCancel");
 let messageQueue = Promise.resolve();
@@ -262,8 +263,9 @@ let messageQueue = Promise.resolve();
  * @param {string} [opts.okLabel]
  * @param {string|null} [opts.cancelLabel]  null = plain alert with a single button
  * @param {"primary"|"signal"|"danger"} [opts.okVariant]
+ * @param {{href: string, label: string}|null} [opts.link]  opens in a new tab
  */
-export function showMessage({ title, text = "", detail = "", tone = "neutral", okLabel = "OK", cancelLabel = null, okVariant = "primary" }) {
+export function showMessage({ title, text = "", detail = "", tone = "neutral", okLabel = "OK", cancelLabel = null, okVariant = "primary", link = null }) {
   const run = () =>
     new Promise((resolve) => {
       messageTitle.textContent = (tone === "neutral" ? "" : "⚠️ ") + title;
@@ -273,6 +275,9 @@ export function showMessage({ title, text = "", detail = "", tone = "neutral", o
       messageDetail.textContent = detail;
       messageDetail.hidden = !detail;
       messageDetail.className = "message-box" + (tone === "err" ? " tint-err" : tone === "warn" ? " tint-warn" : "");
+      messageLink.hidden = !link;
+      messageLink.firstElementChild.textContent = link?.label || "";
+      messageLink.firstElementChild.href = link?.href || "#";
       messageOk.textContent = okLabel;
       messageOk.className = `btn-neu btn-grow btn-neu-${okVariant}`;
       messageCancel.textContent = cancelLabel || "";
