@@ -42,11 +42,6 @@
     <a class="skip-link" href="#main">Zum Inhalt springen</a>
 
     <header class="app-bar">
-        <!-- Only shown in the dev (preview) build -->
-        <div class="env-banner" id="channelBanner" hidden>
-            <span class="env-banner-text">🧪 Vorschau (dev)<span class="env-banner-more"> · wird noch getestet</span></span>
-            <button type="button" class="env-banner-btn" id="btnChannelBannerSwitch" hidden>Stabile Version</button>
-        </div>
         <div class="app-bar-inner">
             <div class="brand">
                 <h1 class="brand-title">Paperlesspaper</h1>
@@ -121,10 +116,9 @@
         </div>
 
         <!-- Connected device runs outdated firmware -->
-        <div id="firmwareVersionWarning" class="banner banner-warn" hidden>
+        <div id="firmwareVersionWarning" class="banner banner-warn banner-slim" hidden>
             <div class="banner-body">
-                <p class="banner-title" id="firmwareVersionWarningTitle">⚠️ Veraltete Firmware erkannt</p>
-                <p class="banner-text" id="firmwareVersionWarningText">Auf dem Gerät ist nicht die aktuelle Firmware-Version installiert.</p>
+                <p class="banner-title" id="firmwareVersionWarningTitle">⚠️ Firmware veraltet</p>
             </div>
             <button type="button" id="btnJumpToOta" class="btn-neu btn-util btn-neu-signal">Zum Update</button>
         </div>
@@ -151,6 +145,7 @@
                         <div class="badges">
                             <span class="badge" id="galleryCount">0 Bilder</span>
                             <span class="badge" id="galleryDisplayBadge">7.3"</span>
+                            <button type="button" class="help-btn" data-help-dialog="galleryHelpDialog" aria-label="Hilfe zur Galerie">?</button>
                         </div>
                     </div>
 
@@ -166,15 +161,14 @@
                         <button type="button" id="btnGalleryFirmware" class="btn-neu btn-util btn-neu-signal">Zum Update</button>
                     </div>
 
-                    <div class="gallery-device">
-                        <p class="field-hint" id="galleryDeviceText">Nicht verbunden. Die Bilder liegen in diesem Browser und werden beim Synchronisieren übertragen.</p>
+                    <div class="gallery-device" id="galleryDevice" hidden>
+                        <p class="field-hint" id="galleryDeviceText"></p>
                         <div class="meter" id="galleryMeter" hidden>
                             <div class="meter-fill" id="galleryMeterFill"></div>
                         </div>
                     </div>
 
                     <ul class="tile-grid" id="galleryGrid" aria-label="Bilder der Galerie"></ul>
-                    <p class="field-hint" id="galleryEmpty">Noch keine Bilder. Tippe auf „+“ oder ziehe Dateien hierher.</p>
 
                     <input type="file" id="galleryFileInput" accept="image/*" multiple class="visually-hidden" tabindex="-1" aria-hidden="true" />
                     <!-- Main action, centred below the pictures -->
@@ -184,16 +178,17 @@
                             <span class="btn-hint" id="syncHint" hidden></span>
                         </button>
                     </div>
-                    <p class="field-hint">„+“ bereitet neue Bilder automatisch auf. Ein Klick auf ein Bild öffnet es zum Anpassen, Ziehen ändert die Reihenfolge.</p>
                 </div>
 
                 <div class="stack">
                     <div class="neu-card" data-tone="ok" id="playCard">
                         <div class="card-head">
                             <h2>Wiedergabe</h2>
-                            <span id="syncBadgePlay" class="badge badge-ok" hidden>✓ Vom Gerät geladen</span>
+                            <div class="badges">
+                                <span id="syncBadgePlay" class="badge badge-ok" hidden>✓ Vom Gerät geladen</span>
+                                <button type="button" class="help-btn" data-help-dialog="galleryHelpDialog" aria-label="Hilfe zur Wiedergabe">?</button>
+                            </div>
                         </div>
-                        <p class="card-desc">So zeigt das E-Paper die Galerie. Die Einstellungen werden beim Synchronisieren übertragen.</p>
 
                         <div class="field">
                             <span class="form-label" id="playOrientationTitle">Ausrichtung</span>
@@ -201,7 +196,6 @@
                                 <button type="button" id="btnOrientLandscape" class="seg-btn" aria-pressed="true">Querformat</button>
                                 <button type="button" id="btnOrientPortrait" class="seg-btn" aria-pressed="false">Hochformat</button>
                             </div>
-                            <p class="field-hint">So hängt oder steht der Rahmen. Alle Bilder der Galerie werden dafür passend aufbereitet.</p>
                         </div>
 
                         <div class="field">
@@ -218,20 +212,18 @@
                                 <button type="button" id="btnPlayAuto" class="seg-btn" aria-pressed="true">Automatisch</button>
                                 <button type="button" id="btnPlayManual" class="seg-btn" aria-pressed="false">Nur per Taste</button>
                             </div>
-                            <p class="field-hint" id="playAutoHint">Das E-Paper wacht im eingestellten Abstand auf und zeigt das nächste Bild.</p>
                         </div>
 
                         <div class="field" id="playIntervalField">
                             <label class="form-label" for="galleryInterval">Wechsel alle</label>
                             <div class="input-group interval-row">
-                                <input type="number" id="galleryInterval" class="neu-input" inputmode="numeric" min="1" step="1" value="1" aria-describedby="galleryIntervalError galleryIntervalHint" />
+                                <input type="number" id="galleryInterval" class="neu-input" inputmode="numeric" min="1" step="1" value="1" aria-describedby="galleryIntervalError" />
                                 <select id="galleryIntervalUnit" class="neu-select" aria-label="Einheit">
                                     <option value="60">Minuten</option>
                                     <option value="3600" selected>Stunden</option>
                                     <option value="86400">Tage</option>
                                 </select>
                             </div>
-                            <p class="field-hint" id="galleryIntervalHint">1 Minute bis 30 Tage.</p>
                             <p class="field-error" id="galleryIntervalError" role="alert" hidden></p>
                         </div>
                     </div>
@@ -244,23 +236,11 @@
                     <div class="neu-card" data-tone="ok">
                         <div class="card-head">
                             <h2>Bild-Abruf</h2>
-                            <span id="syncBadgeSettings" class="badge badge-ok" hidden>✓ Vom Gerät geladen</span>
+                            <div class="badges">
+                                <span id="syncBadgeSettings" class="badge badge-ok" hidden>✓ Vom Gerät geladen</span>
+                                <button type="button" class="help-btn" data-help-dialog="urlHelpDialog" aria-label="Hilfe zum Abruf per URL">?</button>
+                            </div>
                         </div>
-                        <p class="card-desc">Das E-Paper lädt sein Bild im eingestellten Intervall selbst von einer Adresse im Netz.</p>
-                        <ul class="fact-list">
-                            <li>
-                                <strong>WLAN:</strong>
-                                unter „Gerät“ eintragen.
-                            </li>
-                            <li>
-                                <strong>Synchronisieren:</strong>
-                                speichert die Angaben auf dem E-Paper.
-                            </li>
-                            <li>
-                                <strong>Galerie oder URL:</strong>
-                                nur eines von beiden. Die URL löscht die Galerie vom Gerät, im Browser bleibt sie.
-                            </li>
-                        </ul>
 
                         <form id="settingsForm" class="form" novalidate>
                             <div class="field">
@@ -272,7 +252,7 @@
                             <div class="field">
                                 <label class="form-label" for="settingTimeout">Aktualisierungs-Intervall (Sekunden)</label>
                                 <input type="number" id="settingTimeout" class="neu-input" inputmode="numeric" min="60" max="2592000" step="1" placeholder="3600" aria-describedby="settingTimeoutError settingTimeoutHint" />
-                                <p class="field-hint" id="settingTimeoutHint">60 Sekunden bis 30 Tage.</p>
+                                <p class="field-hint" id="settingTimeoutHint" hidden></p>
                                 <p class="field-error" id="settingTimeoutError" role="alert" hidden></p>
                             </div>
 
@@ -303,12 +283,11 @@
                                     <span class="optional">optional</span>
                                 </label>
                                 <div class="input-affix">
-                                    <input type="password" id="settingHttpAuthPassword" class="neu-input" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Leer = gespeichertes behalten" aria-describedby="settingHttpAuthPasswordError settingHttpAuthPasswordHint" />
+                                    <input type="password" id="settingHttpAuthPassword" class="neu-input" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Leer = gespeichertes behalten" aria-describedby="settingHttpAuthPasswordError" />
                                     <button type="button" class="icon-btn" data-reveal="settingHttpAuthPassword" aria-label="Passwort anzeigen" aria-pressed="false">
                                         <svg class="icon" aria-hidden="true"><use href="#i-eye" /></svg>
                                     </button>
                                 </div>
-                                <p class="field-hint" id="settingHttpAuthPasswordHint">Das Gerät gibt das gespeicherte Passwort nicht zurück. Leer lassen, um es zu behalten.</p>
                                 <p class="field-error" id="settingHttpAuthPasswordError" role="alert" hidden></p>
                             </div>
 
@@ -354,7 +333,6 @@
                     <div class="card-head">
                         <h2>Kein Gerät verbunden</h2>
                     </div>
-                    <p class="card-desc">WLAN und Geräte-Optionen werden direkt auf dem E-Paper gespeichert. Verbinde es dazu per Bluetooth:</p>
                     <ol class="step-list">
                         <li class="step-item">
                             <span class="step-num">1</span>
@@ -458,15 +436,13 @@
                     <div class="stack" id="expertBody">
                         <div class="field">
                             <label class="form-label" for="connectWaySelect">Verbinden per</label>
-                            <select id="connectWaySelect" class="neu-select" aria-describedby="connectWayHint">
+                            <select id="connectWaySelect" class="neu-select">
                                 <option value="ask">Immer fragen</option>
                                 <option value="ble">Bluetooth</option>
                                 <option value="usb">USB-Kabel</option>
                             </select>
-                            <p class="field-hint" id="connectWayHint"></p>
                         </div>
                         <div class="stack" id="deviceSettings">
-                        <p class="field-hint">Die folgenden Optionen werden beim Umschalten sofort auf dem Gerät gespeichert.</p>
                         <label class="form-check-neu">
                             <input type="checkbox" id="settingMotionWakeup" />
                             <span class="check-text">
@@ -1201,6 +1177,122 @@
         </div>
     </dialog>
 
+    <!-- Help: gallery, editor and playback -->
+    <dialog id="galleryHelpDialog" class="modal modal-wide" aria-labelledby="galleryHelpTitle">
+        <form method="dialog" class="modal-body">
+            <h3 id="galleryHelpTitle">Hilfe: Galerie</h3>
+            <div class="prose">
+                <h4>Bilder</h4>
+                <dl class="def-list">
+                    <div class="def-row">
+                        <dt>Hinzufügen</dt>
+                        <dd>Auf „+“ tippen oder Dateien hierher ziehen, auch mehrere auf einmal. Jedes Bild wird automatisch an das Display angepasst und in dessen 6 Farben umgerechnet.</dd>
+                    </div>
+                    <div class="def-row">
+                        <dt>Anpassen</dt>
+                        <dd>Ein Klick auf ein Bild öffnet es im Editor, das ✕ auf dem Bild löscht es.</dd>
+                    </div>
+                    <div class="def-row">
+                        <dt>Reihenfolge</dt>
+                        <dd>Ziehen ändert die Reihenfolge (Tastatur: Umschalt + Pfeiltaste).</dd>
+                    </div>
+                    <div class="def-row">
+                        <dt>Synchronisieren</dt>
+                        <dd>Die Bilder liegen in diesem Browser, auch ohne Verbindung. „Synchronisieren“ überträgt neue Bilder auf das E-Paper, löscht entfernte und speichert Reihenfolge und Wiedergabe. Ohne Verbindung führt der Knopf erst durch das Verbinden.</dd>
+                    </div>
+                </dl>
+                <h4>Editor</h4>
+                <dl class="def-list">
+                    <div class="def-row">
+                        <dt>Vorschau</dt>
+                        <dd>Mit der kalibrierten Palette zeigt sie die echten Display-Farben; Antippen (am PC: mit der Maus darüberfahren) zeigt die Rohdaten. ↻ dreht das Bild um 90°.</dd>
+                    </div>
+                    <div class="def-row">
+                        <dt>Bild-Einstellungen</dt>
+                        <dd>Helligkeit, Kontrast, Sättigung, Palette und Dithering. „Auto-Optimieren“ wählt passende Werte. Serpentine Dithering wechselt die Richtung pro Zeile und vermeidet sichtbare Muster.</dd>
+                    </div>
+                    <div class="def-row">
+                        <dt>Bild vom Gerät</dt>
+                        <dd>Es liegt nur in den 6 Display-Farben vor, das Original fehlt. Unverändert gespeichert bleibt es, wie es ist. Jede Anpassung rechnet es neu um und kostet Qualität.</dd>
+                    </div>
+                    <div class="def-row">
+                        <dt>BMP-Download</dt>
+                        <dd>Speichert das aufbereitete Bild als Datei, zum Beispiel für den Abruf per URL.</dd>
+                    </div>
+                </dl>
+                <h4>Wiedergabe</h4>
+                <dl class="def-list">
+                    <div class="def-row">
+                        <dt>Übertragen</dt>
+                        <dd>So zeigt das E-Paper die Galerie. Die Einstellungen werden beim Synchronisieren übertragen.</dd>
+                    </div>
+                    <div class="def-row">
+                        <dt>Ausrichtung</dt>
+                        <dd>So hängt oder steht der Rahmen. Alle Bilder der Galerie werden dafür passend aufbereitet.</dd>
+                    </div>
+                    <div class="def-row">
+                        <dt>Automatisch</dt>
+                        <dd>Das E-Paper wacht im eingestellten Abstand auf (1 Minute bis 30 Tage) und zeigt das nächste Bild.</dd>
+                    </div>
+                    <div class="def-row">
+                        <dt>Nur per Taste</dt>
+                        <dd>Kein automatisches Aufwachen: Das Bild wechselt nur, wenn du die Reset-Taste drückst.</dd>
+                    </div>
+                    <div class="def-row">
+                        <dt>Reset-Taste</dt>
+                        <dd>Zweimal drücken zeigt sofort das nächste Bild, einmal drücken nach 10 Sekunden ohne Verbindung.</dd>
+                    </div>
+                </dl>
+            </div>
+            <div class="modal-actions">
+                <button type="submit" class="btn-neu btn-neu-primary btn-grow">Schließen</button>
+            </div>
+        </form>
+    </dialog>
+
+    <!-- Help: download from a URL -->
+    <dialog id="urlHelpDialog" class="modal modal-wide" aria-labelledby="urlHelpTitle">
+        <form method="dialog" class="modal-body">
+            <h3 id="urlHelpTitle">Hilfe: Abruf per URL</h3>
+            <div class="prose">
+                <p>Das E-Paper lädt sein Bild im eingestellten Intervall selbst von einer Adresse im Netz.</p>
+                <dl class="def-list">
+                    <div class="def-row">
+                        <dt>WLAN</dt>
+                        <dd>Unter „Gerät“ eintragen.</dd>
+                    </div>
+                    <div class="def-row">
+                        <dt>Download-URL</dt>
+                        <dd>Adresse eines Bildes auf deinem Server (http oder https). Am besten ein BMP aus dem Editor („BMP-Download“); JPEG und BMP mit 24 oder 32 Bit rechnet das Gerät selbst um.</dd>
+                    </div>
+                    <div class="def-row">
+                        <dt>Intervall</dt>
+                        <dd>60 Sekunden bis 30 Tage.</dd>
+                    </div>
+                    <div class="def-row">
+                        <dt>Settings-JSON-URL</dt>
+                        <dd>Eine JSON-Datei auf deinem Server ändert Intervall, Download-URL und Geräte-Optionen, ohne das Gerät zu verbinden. „Prüfen“ zeigt die Datei an und übernimmt sie.</dd>
+                    </div>
+                    <div class="def-row">
+                        <dt>HTTP-Auth</dt>
+                        <dd>Benutzername und Passwort für einen geschützten Server. Das Gerät gibt das gespeicherte Passwort nicht zurück: leer lassen, um es zu behalten.</dd>
+                    </div>
+                    <div class="def-row">
+                        <dt>Synchronisieren</dt>
+                        <dd>Speichert die Angaben auf dem E-Paper.</dd>
+                    </div>
+                    <div class="def-row">
+                        <dt>Galerie oder URL</dt>
+                        <dd>Nur eines von beiden. Die URL löscht die Galerie vom Gerät, im Browser bleibt sie.</dd>
+                    </div>
+                </dl>
+            </div>
+            <div class="modal-actions">
+                <button type="submit" class="btn-neu btn-neu-primary btn-grow">Schließen</button>
+            </div>
+        </form>
+    </dialog>
+
     <!-- Version switch: stable (main) / preview (dev) -->
     <dialog id="versionDialog" class="modal" aria-labelledby="versionTitle">
         <div class="modal-body">
@@ -1260,7 +1352,7 @@
 
                     <p class="callout callout-warn editor-note" id="editorDeviceNote" hidden>
                         <span class="callout-caption">Bild vom Gerät</span>
-                        Dieses Bild liegt nur in den 6 Display-Farben vor, das Original fehlt. Unverändert gespeichert bleibt es wie es ist. Jede Anpassung rechnet es neu um und kostet Qualität.
+                        Das Original fehlt: Jede Anpassung kostet Qualität.
                     </p>
 
                 </div>
@@ -1332,7 +1424,6 @@
                                         <input type="checkbox" id="serpentine" checked />
                                         <span class="check-text">
                                             <span class="check-title">Serpentine Dithering</span>
-                                            <span class="check-desc">Wechselt die Richtung pro Zeile – vermeidet sichtbare Muster.</span>
                                         </span>
                                     </label>
                                 </div>

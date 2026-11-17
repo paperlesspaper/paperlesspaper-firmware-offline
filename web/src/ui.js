@@ -109,8 +109,7 @@ export function onStatus(fn) {
   return () => statusListeners.delete(fn);
 }
 
-// The header changes its height (dev banner). Sticky elements and the scroll padding follow
-// the real height.
+// The scroll padding follows the real height of the header.
 const appBar = document.querySelector(".app-bar");
 if (appBar && typeof ResizeObserver !== "undefined") {
   new ResizeObserver(() => {

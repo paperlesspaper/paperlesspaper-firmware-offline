@@ -55,6 +55,34 @@ def test_page_starts_clean(app_session):
     run(body())
 
 
+@pytest.mark.parametrize("source, box, dialog, word", [
+    ("gallery", "#galleryCard", "galleryHelpDialog", "Reihenfolge"),
+    ("gallery", "#playCard", "galleryHelpDialog", "Reset-Taste"),
+    ("url", "#sourceUrl", "urlHelpDialog", "Settings-JSON-URL"),
+])
+def test_explanations_open_with_the_help_button(app_session, source, box, dialog, word):
+    """Bild shows the names of its fields only; the explanations are in the help dialog of a box."""
+
+    async def body():
+        async with app_session(SimulatedDevice()) as (app, site):
+            if source == "url":
+                await app.url_settings()
+            shown = await app.page.evaluate(
+                """() => [...document.querySelectorAll('#viewEditor .field-hint, #viewEditor .card-desc')]
+                    .filter((el) => el.offsetParent).map((el) => el.textContent.trim())"""
+            )
+            assert shown == [], "No explanation stands in the page itself."
+
+            is_open = "id => document.getElementById(id).open"
+            await app.click(f"{box} [data-help-dialog]")
+            assert await app.page.evaluate(is_open, dialog)
+            assert word in await app.text(f"#{dialog}")
+            await app.click(f"#{dialog} button[type=submit]")
+            assert not await app.page.evaluate(is_open, dialog)
+
+    run(body())
+
+
 NO_SERIAL = "Object.defineProperty(Navigator.prototype, 'serial', { get: () => undefined, configurable: true }); delete Navigator.prototype.serial;"
 
 
@@ -269,8 +297,13 @@ def test_outdated_firmware_is_announced(app_session, version, legacy, chip):
             await app.connect()
             assert not await hidden(app, "#firmwareVersionWarning")
             assert await app.text("#systemFwVersion") == chip
+            for width in (1200, 360):
+                await app.page.set_viewport_size({"width": width, "height": 800})
+                note, bar = await app.page.evaluate("() => ['#firmwareVersionWarning', '.app-bar-inner'].map((s) => document.querySelector(s).offsetHeight)")
+                assert note <= bar, f"At {width}px the warning is taller than the header above it."
             await app.click("#btnJumpToOta")
             assert not await hidden(app, "#viewOta"), "The warning must lead to the firmware view."
+            assert await hidden(app, "#firmwareVersionWarning"), "There the warning has done its job."
 
     run(body())
 
@@ -614,14 +647,14 @@ def test_quick_add_of_several_files(app_session):
 
     async def body():
         async with app_session(SimulatedDevice()) as (app, site):
-            assert not await hidden(app, "#galleryEmpty")
+            assert await app.text("#galleryCount") == "0 Bilder"
             await app.add_pictures(distinct_pictures(3))
 
             tiles = await app.tiles()
             assert len(tiles) == 3 and all(tile["key"] and tile["has_image"] for tile in tiles)
             assert all(tile["status"] is None for tile in tiles), "Without a device there is nothing to compare with."
             assert await app.text("#galleryCount") == "3 Bilder"
-            assert await hidden(app, "#galleryEmpty") and await hidden(app, "#galleryStoreNote")
+            assert await hidden(app, "#galleryStoreNote")
             assert "3 Bilder hinzugefügt" in await app.status()
 
             # a file that is no picture is not added
@@ -683,8 +716,8 @@ def test_gallery_without_browser_storage(app_session):
             assert len(await app.tiles()) == 1
 
             await app.page.reload()
-            await app.page.wait_for_selector("#galleryEmpty:not([hidden])")
-            assert len(await app.tiles()) == 0
+            await app.page.wait_for_selector("#galleryGrid .tile-add")
+            assert len(await app.tiles()) == 0 and await app.text("#galleryCount") == "0 Bilder"
 
     run(body())
 

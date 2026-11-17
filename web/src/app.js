@@ -163,7 +163,6 @@ const settingChargerMode = $("settingChargerMode");
 const settingAutoRotation = $("settingAutoRotation");
 
 const galleryGrid = $("galleryGrid");
-const galleryEmpty = $("galleryEmpty");
 const galleryFileInput = $("galleryFileInput");
 const galleryDisplayBadge = $("galleryDisplayBadge");
 // The last box of the grid: adds pictures.
@@ -250,7 +249,6 @@ const serialLogOutput = $("serialLogOutput");
 
 const firmwareVersionWarning = $("firmwareVersionWarning");
 const firmwareVersionWarningTitle = $("firmwareVersionWarningTitle");
-const firmwareVersionWarningText = $("firmwareVersionWarningText");
 const btnJumpToOta = $("btnJumpToOta");
 
 const jsonPreviewModal = $("jsonPreviewModal");
@@ -567,10 +565,6 @@ function renderConnectWay() {
   const way = effectiveConnectWay();
   connectWaySelect.value = way;
   connectWaySelect.disabled = !bluetoothAvailable || !serialAvailable;
-  $("connectWayHint").textContent =
-    !bluetoothAvailable || !serialAvailable
-      ? `Dieser Browser kann das E-Paper nur per ${serialAvailable ? "USB-Kabel" : "Bluetooth"} verbinden.`
-      : { ask: "„Verbinden“ fragt jedes Mal, ob per Bluetooth oder USB-Kabel.", ble: "„Verbinden“ nimmt ohne Nachfrage Bluetooth.", usb: "„Verbinden“ nimmt ohne Nachfrage das USB-Kabel." }[way];
 }
 
 connectWaySelect.addEventListener("change", () => {
@@ -637,12 +631,10 @@ function updateFirmwareVersionUI(versionInfo) {
 
   firmwareVersionWarning.hidden = false;
   if (devVer) {
-    firmwareVersionWarningTitle.textContent = `⚠️ Firmware-Update verfügbar (v${devVer} → v${EXPECTED_FW_VERSION})`;
-    firmwareVersionWarningText.textContent = `Auf deinem E-Paper läuft Version v${devVer} (aktuell ist v${EXPECTED_FW_VERSION}). Bitte aktualisiere die Firmware für maximale Stabilität und Fehlerkorrektur.`;
+    firmwareVersionWarningTitle.textContent = `⚠️ Firmware-Update: v${devVer} → v${EXPECTED_FW_VERSION}`;
     setChip("systemFwVersion", `v${devVer} ⚠`, "warn");
   } else {
-    firmwareVersionWarningTitle.textContent = "⚠️ Veraltete oder abweichende Firmware erkannt";
-    firmwareVersionWarningText.textContent = `Auf deinem E-Paper ist nicht die aktuelle Offline-Firmware v${EXPECTED_FW_VERSION} installiert. Ein Update wird empfohlen.`;
+    firmwareVersionWarningTitle.textContent = `⚠️ Firmware veraltet: Update auf v${EXPECTED_FW_VERSION}`;
     setChip("systemFwVersion", "Veraltet ⚠", "warn", "alt ⚠");
   }
 }
@@ -652,6 +644,7 @@ bleInterface.onFirmwareVersionCheck = (versionInfo) => {
 };
 
 btnJumpToOta.addEventListener("click", () => {
+  firmwareVersionWarning.hidden = true; // the view it leads to is open now
   navigate("firmware");
   setOtaMode("ble");
   $("offlineFirmwareCard").scrollIntoView({ behavior: "smooth", block: "center" });
@@ -890,7 +883,8 @@ function markSettingsDirty(dirty) {
 function updateTimeoutHint() {
   const seconds = parseInt(settingTimeout.value, 10);
   const readable = formatDuration(seconds);
-  settingTimeoutHint.textContent = readable ? `= ${readable} · erlaubt sind 60 Sekunden bis 30 Tage.` : "60 Sekunden bis 30 Tage.";
+  settingTimeoutHint.textContent = readable ? `= ${readable}` : "";
+  settingTimeoutHint.hidden = !readable;
 }
 
 bleInterface.onSettingsLoaded = (settings) => {
@@ -2212,10 +2206,8 @@ function renderGalleryDevice(display) {
   $("galleryFirmwareNote").hidden = !connected || bleInterface.gallerySupported;
   meter.hidden = true;
 
-  if (!connected) {
-    text.textContent = "Nicht verbunden. Die Bilder liegen in diesem Browser und werden beim Synchronisieren übertragen.";
-  } else if (!bleInterface.gallerySupported) {
-    text.textContent = "Verbunden. Die Galerie lässt sich erst nach dem Firmware-Update übertragen.";
+  if (!connected || !bleInterface.gallerySupported) {
+    text.textContent = "";
   } else if (!deviceState) {
     text.textContent = "Lese die Galerie des E-Paper…";
   } else {
@@ -2239,6 +2231,7 @@ function renderGalleryDevice(display) {
       $("galleryMeterFill").style.width = percent + "%";
     }
   }
+  $("galleryDevice").hidden = !text.textContent;
 }
 
 function renderPlay() {
@@ -2251,7 +2244,6 @@ function renderPlay() {
   $("btnPlayAuto").setAttribute("aria-pressed", String(auto));
   $("btnPlayManual").setAttribute("aria-pressed", String(!auto));
   $("playIntervalField").hidden = !auto;
-  $("playAutoHint").textContent = auto ? "Das E-Paper wacht im eingestellten Abstand auf und zeigt das nächste Bild. Die Reset-Taste zeigt es früher: zweimal drücken sofort, einmal drücken nach 10 Sekunden ohne Verbindung." : "Kein automatisches Aufwachen: Das Bild wechselt nur, wenn du die Reset-Taste drückst.";
 }
 
 let galleryHint = "";
@@ -2262,7 +2254,6 @@ function renderGallery() {
   const tiles = gallery.items.map((item, index) => itemTile(item, index, display, shownId));
   gallery.remoteOnly(display).forEach((entry) => tiles.push(remoteTile(entry, shownId)));
   galleryGrid.replaceChildren(...tiles, addTile);
-  galleryEmpty.hidden = tiles.length > 0;
   $("galleryCount").textContent = pictures(tiles.length);
   $("galleryStoreNote").hidden = gallery.persistent;
   renderGalleryDevice(display);
@@ -3493,11 +3484,6 @@ async function initReleaseChannel() {
   fwBadge.classList.toggle("badge-mode", IS_DEV_CHANNEL);
   fwBadge.hidden = false;
 
-  if (IS_DEV_CHANNEL) {
-    $("channelBanner").hidden = false;
-    document.documentElement.classList.add("has-env-banner");
-  }
-
   // Offer the switch only if the other version is really deployed next to this one.
   const other = IS_DEV_CHANNEL ? "main" : "dev";
   let otherInfo = null;
@@ -3529,12 +3515,6 @@ async function initReleaseChannel() {
   btnVersion.setAttribute("aria-label", `Version: ${CHANNEL_LABEL[RELEASE_CHANNEL]} (${RELEASE_CHANNEL}). Version wechseln`);
   btnVersion.hidden = false;
   btnVersion.addEventListener("click", openVersionDialog);
-
-  if (IS_DEV_CHANNEL) {
-    const bannerSwitch = $("btnChannelBannerSwitch");
-    bannerSwitch.hidden = false;
-    bannerSwitch.addEventListener("click", openVersionDialog);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3608,6 +3588,14 @@ window.addEventListener("appinstalled", () => {
 initNavigation();
 initDialogs();
 initCollapsibles();
+// "?" in a box head opens the help dialog of that box.
+document.querySelectorAll("[data-help-dialog]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const dialog = $(btn.dataset.helpDialog);
+    openDialog(dialog);
+    dialog.querySelector(".modal-body").scrollTop = 0; // the focus is on the button at its end
+  });
+});
 // Links to one section of the help open that section.
 document.querySelectorAll("[data-help-target]").forEach((link) => {
   link.addEventListener("click", (e) => {

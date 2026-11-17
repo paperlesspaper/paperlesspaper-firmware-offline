@@ -80,7 +80,7 @@
   /* Layout */
   --gutter: 12px;
   --appbar-h: 56px;
-  --header-h: var(--appbar-h); /* whole sticky header; taller when the dev banner is shown */
+  --header-h: var(--appbar-h); /* real height of the sticky header, see ui.js */
   --nav-h: 60px;
   --safe-b: env(safe-area-inset-bottom, 0px);
   --content-max: 1120px;
@@ -554,7 +554,41 @@ summary:focus-visible {
 .badges {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
+}
+
+/* "?" in a box head: opens the help dialog of that box */
+.help-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  background: #ffffff;
+  border: 2px solid var(--border);
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1;
+  transition:
+    background-color var(--dur-press) ease-out,
+    color var(--dur-press) ease-out;
+}
+.help-btn:active {
+  background: var(--btn-pressed);
+  color: #ffffff;
+}
+@media (hover: hover) {
+  .help-btn:hover {
+    background: var(--text-primary);
+    color: #ffffff;
+  }
+}
+.prose h4 {
+  margin-top: 4px;
+  font-size: 13px;
 }
 
 .badge {
@@ -1377,6 +1411,27 @@ input[type="range"]::-moz-range-thumb {
   background: var(--tint-info);
   border-left: 6px solid var(--cat-info);
 }
+/* at most two short lines, never taller than the header above it */
+.banner-slim {
+  flex-wrap: nowrap;
+  max-height: var(--appbar-h);
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.banner-slim .banner-body {
+  flex-basis: 0;
+}
+.banner-slim .banner-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.2;
+}
+.banner-slim .btn-neu {
+  flex-shrink: 0;
+}
 .banner-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1931,20 +1986,6 @@ input[type="range"]::-moz-range-thumb {
 .seg-btn-stacked {
   flex-direction: column;
   gap: 1px;
-}
-
-/* short facts below a description */
-.fact-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-left: 18px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-muted);
-}
-.fact-list strong {
-  color: var(--text-primary);
 }
 
 /* The frame hangs the other way round than its display is built: preview and tiles show the
@@ -2540,56 +2581,6 @@ dialog.transfer::backdrop {
   border-left: 6px solid var(--status-err);
 }
 
-/* ---------- Environment banner (dev / preview build) ---------- */
-.env-banner {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 3px var(--gutter);
-  white-space: nowrap; /* always one line: the long text is shortened on phones */
-  background-color: var(--status-warn);
-  border-bottom: 2px solid var(--border);
-  font-family: var(--font-display);
-  font-weight: 800;
-  font-size: 12px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  text-align: center;
-}
-.env-banner-more {
-  display: none; /* shown from 600px up */
-}
-.env-banner-btn {
-  flex-shrink: 0;
-  min-height: 32px;
-  padding: 2px 12px;
-  background: #ffffff;
-  border: 2px solid var(--border);
-  font-family: var(--font-display);
-  font-weight: 800;
-  font-size: 11px;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  transition:
-    background-color var(--dur-press) ease-out,
-    color var(--dur-press) ease-out;
-}
-.env-banner-btn:active {
-  background: var(--btn-pressed);
-  color: #ffffff;
-}
-@media (hover: hover) {
-  .env-banner-btn:hover {
-    background: var(--text-primary);
-    color: #ffffff;
-  }
-}
-/* the sticky header is taller while the banner is shown */
-.has-env-banner {
-  --header-h: 100px;
-}
-
 /* ---------- Breakpoints ---------- */
 /* Phones: the header (title, version switch, connect button) stays on one line.
    Ordered from wide to narrow, so the narrower rule wins. */
@@ -2647,13 +2638,8 @@ dialog.transfer::backdrop {
     flex: 0 0 auto;
   }
   /* explanations take less room on a phone */
-  .card-desc,
-  .fact-list {
+  .card-desc {
     line-height: 1.35;
-  }
-  .fact-list {
-    gap: 2px;
-    padding-left: 16px;
   }
   /* connect dialog: Bluetooth, USB, and "Abbrechen" at the bottom */
   #connectDialog .modal-actions > #btnCancelConnectDialog {
@@ -2699,14 +2685,9 @@ dialog.transfer::backdrop {
     max-height: none;
     border-top-width: 0;
   }
-  /* Bild on a phone: the switch between gallery and URL from edge to edge, without gaps, and
-     it stays below the header while the page scrolls */
+  /* Bild on a phone: the switch between gallery and URL from edge to edge, without gaps */
   .source-switch {
-    position: sticky;
-    top: var(--header-h);
-    z-index: 50;
     margin-bottom: 0;
-    background: var(--bg);
   }
   .source-switch .seg {
     flex: 1 1 auto;
@@ -2862,9 +2843,6 @@ dialog.transfer::backdrop {
   .banner-err,
   .banner-info {
     border-left-width: 6px;
-  }
-  .env-banner-more {
-    display: inline;
   }
 
   /* centred dialog card instead of a bottom sheet */

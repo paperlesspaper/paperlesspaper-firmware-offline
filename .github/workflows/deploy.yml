@@ -203,17 +203,17 @@ jobs:
         include: ${{ fromJson(needs.plan.outputs.web) }}
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ matrix.ref }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 20
 
       - name: Cache Node Modules
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: web/node_modules
           key: ${{ runner.os }}-node-${{ hashFiles('web/package-lock.json') }}
@@ -250,7 +250,7 @@ jobs:
           cat web/dist/channel.json
 
       - name: Upload Web UI Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: web_${{ matrix.channel }}
           path: web/dist
@@ -267,12 +267,12 @@ jobs:
         include: ${{ fromJson(needs.plan.outputs.rebuild_firmware) }}
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ matrix.ref }}
 
       - name: Setup Python for PlatformIO
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -289,7 +289,7 @@ jobs:
           grep -q "\"$FW_VERSION\"" src/types.h
 
       - name: Cache PlatformIO
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.platformio
@@ -323,7 +323,7 @@ jobs:
           pio run -e ${{ matrix.target }}
 
       - name: Upload Firmware Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: offline_firmware_${{ matrix.channel }}_${{ matrix.target }}
           path: .pio/build/${{ matrix.target }}/firmware.bin
@@ -347,7 +347,7 @@ jobs:
     steps:
       # -> built/web_main and/or built/web_dev
       - name: Download the web UIs built in this run
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: web_*
           path: built
@@ -375,7 +375,7 @@ jobs:
       # -> fw/offline_firmware_<channel>_<target>/firmware.bin
       - name: Download the rebuilt firmware of the other channel (fallback)
         if: needs.plan.outputs.rebuild_firmware != '[]'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: offline_firmware_*
           path: fw
@@ -441,7 +441,7 @@ jobs:
 
       # Every successful run holds both complete channels, so the next run can take over from it.
       - name: Keep the main site for the next run
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: site_main
           path: built/site_main
@@ -449,7 +449,7 @@ jobs:
           overwrite: true # a re-run of this job uploads it again
 
       - name: Keep the dev site for the next run
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: site_dev
           path: built/site_dev
@@ -489,7 +489,7 @@ jobs:
           if [ -d site/dev ]; then ls -la site/dev; fi
 
       - name: Upload Pages Artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
@@ -507,4 +507,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
