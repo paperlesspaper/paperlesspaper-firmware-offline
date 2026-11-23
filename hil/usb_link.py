@@ -38,28 +38,34 @@ def encode_frame(kind, seq, key=0, payload=b""):
     return START + body + struct.pack("<I", zlib.crc32(body) & 0xFFFFFFFF)
 
 
-def decode_frames(buffer):
+def decode_frames(buffer, text=None):
     """Takes complete frames out of `buffer` (a bytearray) and returns them as (kind, seq, key, payload).
-    Text between frames (the log of the device) is dropped."""
+    What is between frames (the log of the device) goes to `text` (a bytearray), or is dropped."""
     frames = []
+
+    def drop(count):
+        if text is not None:
+            text.extend(buffer[:count])
+        del buffer[:count]
+
     while True:
         start = buffer.find(START)
         if start < 0:
-            del buffer[:max(0, len(buffer) - 1)]
+            drop(max(0, len(buffer) - 1))
             return frames
-        del buffer[:start]
+        drop(start)
         if len(buffer) < 10:
             return frames
         kind, seq, length, key = struct.unpack_from("<BBHI", buffer, 2)
         if length > settings.USB_LINK_MAX_PAYLOAD:
-            del buffer[:2]  # not a frame
+            drop(2)  # not a frame
             continue
         end = 10 + length + 4
         if len(buffer) < end:
             return frames
         (crc,) = struct.unpack_from("<I", buffer, 10 + length)
         if crc != zlib.crc32(bytes(buffer[2:10 + length])) & 0xFFFFFFFF:
-            del buffer[:2]
+            drop(2)
             continue
         frames.append((kind, seq, key, bytes(buffer[10:10 + length])))
         del buffer[:end]
@@ -73,6 +79,7 @@ class UsbLink:
         self.ser = None
         self.seq = 0
         self.buffer = bytearray()
+        self.text = bytearray()  # what the device logged between its frames
         self.notifications = []
         self.hello = {}
 
@@ -103,17 +110,27 @@ class UsbLink:
         finally:
             self.ser.close()
 
+    def log_lines(self):
+        """The log of the device during the session."""
+        return [line.strip() for line in self.text.decode("utf-8", errors="replace").splitlines() if line.strip()]
+
     def _wait(self, kind, seq, timeout, fail=True):
         end = time.time() + timeout
         while True:
             self.buffer += self.ser.read(4096)
-            for frame_kind, frame_seq, key, payload in decode_frames(self.buffer):
+            answer = refused = None
+            # every frame that was read: a notification may follow the answer at once
+            for frame_kind, frame_seq, key, payload in decode_frames(self.buffer, self.text):
                 if frame_kind == NOTIFY:
                     self.notifications.append((key, payload))
                 elif frame_kind == ERROR and frame_seq == seq:
-                    raise UsbLinkError(f"The device refused the request (characteristic {key:08x}).")
-                elif frame_kind == kind and frame_seq == seq:
-                    return payload
+                    refused = key
+                elif frame_kind == kind and frame_seq == seq and answer is None:
+                    answer = payload
+            if refused is not None:
+                raise UsbLinkError(f"The device refused the request (characteristic {refused:08x}).")
+            if answer is not None:
+                return answer
             if time.time() > end:
                 if fail:
                     raise UsbLinkError(f"No answer to request 0x{kind & 0x7F:02x} within {timeout} s.")

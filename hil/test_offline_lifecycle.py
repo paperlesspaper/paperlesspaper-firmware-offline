@@ -223,8 +223,9 @@ def test_04_usb_link(device, target, run_state):
     container = assets.gallery_container(target.display, *_picture_size(target), seed=3)
     device.enter_setup_mode()
     device.ctrl.disconnect()  # the session needs the serial port
+    link = UsbLink(target.port)
     try:
-        with UsbLink(target.port) as link:
+        with link:
             found = {
                 "hello": dict(link.hello),
                 "system": link.read_json(settings.CHR_SYSTEM_INFO),
@@ -240,6 +241,7 @@ def test_04_usb_link(device, target, run_state):
                 # The session goes on after a display refresh; the new state is notified at its end.
                 link.notifications.clear()
                 found["show"] = link.command(f"GAL_SHOW:{picture_id}")[0]
+                assert found["show"] == 0, "The device refused to show the picture."
                 shown = link.wait_notification(settings.CHR_GALLERY_STATE, settings.REFRESH_TIMEOUT)
                 found["shown"] = json.loads(shown.decode("utf-8"))
                 # A client is connected: the press that started the setup mode shows no other picture.
@@ -250,6 +252,7 @@ def test_04_usb_link(device, target, run_state):
                 link.command("GAL_CLEAR")  # the tests of the web UI start with an empty gallery
             found["after"] = link.read_json(settings.CHR_GALLERY_STATE)
     finally:
+        device.ctrl.add_lines(link.log_lines())  # a failed test shows them, a crash is found in them
         device.ctrl.connect(retries=20, retry_delay=0.5)
 
     assert found["hello"]["name"] == device.uid
@@ -258,7 +261,6 @@ def test_04_usb_link(device, target, run_state):
     assert found["timeout"] == "1800"
     assert found["picture"] == container, "The picture file read back over USB differs from the one sent."
     assert picture_id in found["list"] and len(found["list"]) == 3
-    assert found["show"] == 0, "The device refused to show the picture."
     assert found["shown"]["current"] == picture_id
     assert not found["busy"], "The device showed the next picture although a client was connected."
     assert found["after"]["count"] == 0

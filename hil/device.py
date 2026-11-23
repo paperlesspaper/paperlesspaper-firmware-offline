@@ -64,6 +64,11 @@ class _Controller(ESP32HardwareController):
         with self._lock:
             return self.archive + list(self.log_history)
 
+    def add_lines(self, lines):
+        """Log lines read elsewhere while the port was not open here (a USB session)."""
+        with self._lock:
+            self.log_history.extend(lines)
+
 
 class OfflineDevice:
     def __init__(self, target):
