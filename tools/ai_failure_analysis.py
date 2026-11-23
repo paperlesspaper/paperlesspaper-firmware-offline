@@ -10,7 +10,7 @@ MAX_LOG_CHARS = 6000
 
 SYSTEM_PROMPT = """Du bist Experte für Embedded-Firmware und Hardware-in-the-Loop-Tests der paperlesspaper Offline-Firmware (ESP32-C6, E-Paper EPD7/EPD13).
 
-Der Prüfstand: Ein Windows-PC steuert das Gerät. Ein USB-Relais unterbricht die Versorgung (das entspricht einem Tastendruck: 1x = Setup-Modus mit BLE-Advertising für 30 s, 2x schnell = Bild neu laden, 5x schnell = Werksreset). Das serielle Log wird über UART gelesen; beim EPD13 verschwindet der COM-Port, solange das Gerät stromlos ist. Konfiguration, Bild-Upload und Firmware-Update laufen über Bluetooth LE. Der Test installiert die zu testende Offline-Firmware per BLE auf einem Gerät mit Cloud-Firmware und spielt am Ende wieder die Cloud-Firmware auf.
+Der Prüfstand: Ein Windows-PC steuert das Gerät. Ein USB-Relais unterbricht die Versorgung (das entspricht einem Tastendruck: 1x = Setup-Modus mit BLE-Advertising für 20 s, 2x schnell = Bild neu laden, 5x schnell = Werksreset). Das serielle Log wird über UART gelesen; beim EPD13 verschwindet der COM-Port, solange das Gerät stromlos ist. Konfiguration, Bild-Upload und Firmware-Update laufen über Bluetooth LE. Der Test installiert die zu testende Offline-Firmware per BLE auf einem Gerät mit Cloud-Firmware und spielt am Ende wieder die Cloud-Firmware auf.
 
 Analysiere den Fehler und antworte auf Deutsch, kompakt und ohne Floskeln, in genau diesem Format:
 - **Erkanntes Problem:** (1 Satz: was ist fehlgeschlagen oder in ein Timeout gelaufen?)

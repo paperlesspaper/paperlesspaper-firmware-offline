@@ -176,7 +176,7 @@ async def web_ui(device, files=None, usb=False):
     with Site(dist_dir=web_dist(), files=files) as site:
         async with WebApp(site, bridge) as app:
             try:
-                # The page is loaded first: setup mode only lasts 30 s without a connection.
+                # The page is loaded first: setup mode only lasts 20 s without a connection.
                 await asyncio.to_thread(device.enter_setup_mode)
                 if usb:
                     await asyncio.to_thread(device.ctrl.disconnect)

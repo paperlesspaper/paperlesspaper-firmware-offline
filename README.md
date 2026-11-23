@@ -29,7 +29,7 @@ Requires Chrome, Edge or Opera (Web Bluetooth / Web Serial). The Web UI is in Ge
 ## Quick start
 
 1. Open the [Web UI](https://paperlesspaper.github.io/paperlesspaper-firmware-offline/).
-2. Press the **reset button** (big button on the back) once. Bluetooth is now active for 30 seconds.
+2. Press the **reset button** (big button on the back) once. Bluetooth is now active for 20 seconds.
 3. Click **Verbinden** and select your frame (`epd7-…` or `epd13-…`).
 4. Open **Firmware** and flash the **Offline Firmware**.
 5. Add images in **Bild** and press **Synchronisieren**. Or set up WiFi in **Gerät** and a download URL in **Bild** → **Abruf per URL**.
@@ -56,7 +56,7 @@ You can switch between both firmwares at any time in the Web UI.
 
 | Action | Result |
 | :--- | :--- |
-| Press reset **once** | Setup mode: Bluetooth is active for 30 seconds, and the Web UI can connect over USB. Without a connection the frame continues with a normal update. On battery power the frame ends a connection after 10 minutes without input. With a gallery of several pictures the frame shows the next one if nobody connects within 10 seconds; a connection keeps the picture. Bluetooth stays active while the picture changes. |
+| Press reset **once** | Setup mode: Bluetooth is active for 20 seconds, and the Web UI can connect over USB. Without a connection the frame continues with a normal update. On battery power the frame ends a connection after 10 minutes without input. With a gallery of several pictures the frame shows the next one if nobody connects within 10 seconds; a connection keeps the picture. Bluetooth stays active while the picture changes. |
 | Press reset **twice** | Skips setup mode. Gallery: shows the next picture at once. Download: downloads the image again, even if it has not changed. |
 | Press reset **5 times** | Factory reset: deletes settings, WiFi credentials, the gallery and the stored image. |
 | Hold the small button, press reset, release the small button | Bootloader mode by hand. The small button sits under the wooden cover. Only needed if USB flashing does not start otherwise (older firmware, or a firmware that no longer starts): the Web UI switches the frame to the bootloader itself, a sleeping frame after one press of reset. |

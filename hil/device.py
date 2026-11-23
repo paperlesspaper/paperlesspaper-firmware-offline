@@ -242,7 +242,7 @@ class OfflineDevice:
             except TimeoutError:
                 if not self.ctrl.get_logs():
                     # The COM port came back after the boot log (13" board). Setup mode
-                    # lasts 30 s, so the BLE scan that follows shows whether it is active.
+                    # lasts 20 s, so the BLE scan that follows shows whether it is active.
                     print(f"ℹ️ [{self.target.name}] Boot log missed, continuing with the BLE scan.")
                     return
                 if attempt == 2:

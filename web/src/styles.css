@@ -246,6 +246,7 @@ summary:focus-visible {
   top: 0;
   z-index: 100;
   background: var(--bg);
+  background-clip: padding-box; /* not below the line: its edge shows what follows, see .app-main */
   border-bottom: 3px solid var(--border);
 }
 
@@ -418,7 +419,7 @@ summary:focus-visible {
 /* ---------- Main / views ---------- */
 .app-main {
   max-width: var(--content-max);
-  margin: 0 auto;
+  margin: -1px auto 0; /* under the line of the header: no seam at fractional display scales */
   padding: 0; /* phones: boxes run from edge to edge, directly below the header */
   display: flex;
   flex-direction: column;
@@ -747,7 +748,6 @@ summary:focus-visible {
 }
 
 /* Full-width buttons. Same height and type as every other button: they only differ in width. */
-.btn-hero,
 .btn-sys {
   width: 100%;
 }
@@ -1814,6 +1814,7 @@ input[type="range"]::-moz-range-thumb {
   gap: 10px;
 }
 .tile {
+  container-type: inline-size; /* see .tile-edit-text */
   position: relative;
   display: flex;
   flex-direction: column;
@@ -1848,18 +1849,53 @@ input[type="range"]::-moz-range-thumb {
   object-fit: contain; /* the whole picture */
   display: block;
 }
-/* "Bearbeiten": over the picture on hover and focus; a small chip on touch screens */
-.tile-edit {
+/* Over the lower edge of a picture: "Bearbeiten" (a label, the picture itself opens the editor)
+   and "Anzeigen" (a button, for a picture the connected device holds). */
+.tile-actions {
   position: absolute;
+  left: 4px;
   right: 4px;
   bottom: 4px;
-  padding: 2px 6px;
-  background: #000000;
-  color: #ffffff;
+  display: flex;
+  flex-direction: row-reverse; /* "Bearbeiten" on the right */
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 4px;
+  pointer-events: none; /* a tap next to the button opens the editor */
+}
+.tile-edit,
+.tile-show {
   font-family: var(--font-mono);
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
+  white-space: nowrap;
+}
+.tile-edit {
+  padding: 2px 6px;
+  background: #000000;
+  color: #ffffff;
+}
+.tile-edit-text {
+  margin-left: 0.6em;
+}
+/* a narrow picture has no room for both: the pencil stands for "Bearbeiten" */
+@container (max-width: 180px) {
+  .tile-actions.has-show .tile-edit-text {
+    display: none;
+  }
+}
+.tile-show {
+  flex-shrink: 0;
+  min-height: 28px;
+  padding: 2px 8px;
+  border: 2px solid var(--border);
+  background: var(--signal);
+  pointer-events: auto;
+}
+.tile-show:active {
+  background: var(--btn-pressed);
+  color: #ffffff;
 }
 .tile-delete {
   position: absolute;
@@ -1939,6 +1975,12 @@ input[type="range"]::-moz-range-thumb {
   text-transform: uppercase;
   text-align: left;
 }
+/* the display is still building the picture up */
+.tile-shown.is-loading {
+  background-image: linear-gradient(45deg, #555555 25%, transparent 25%, transparent 50%, #555555 50%, #555555 75%, transparent 75%);
+  background-size: 24px 24px;
+  animation: progress-stripe 1.2s linear infinite;
+}
 @media (hover: hover) {
   .tile-add-btn:not(:disabled):hover {
     background: var(--btn-face);
@@ -1946,8 +1988,16 @@ input[type="range"]::-moz-range-thumb {
   .tile-delete:not(:disabled):hover {
     background: var(--status-err);
   }
-  /* with a mouse the two actions only show on the picture they belong to */
+  .tile-show:hover {
+    background: var(--text-primary);
+    color: #ffffff;
+  }
+  /* with a mouse the actions only show on the picture they belong to */
+  .tile-actions {
+    inset: 0;
+  }
   .tile-edit {
+    position: absolute;
     inset: 0;
     display: flex;
     align-items: center;
@@ -1958,11 +2008,22 @@ input[type="range"]::-moz-range-thumb {
     opacity: 0;
     transition: opacity var(--dur-press) ease;
   }
+  .tile-actions.has-show .tile-edit-text {
+    display: inline;
+  }
+  .tile-show {
+    position: absolute;
+    right: 4px;
+    bottom: 4px;
+    opacity: 0;
+  }
   .tile-delete {
     opacity: 0;
   }
   .tile:hover .tile-edit,
-  .tile-open:focus-visible .tile-edit,
+  .tile-open:focus-visible + .tile-actions .tile-edit,
+  .tile:hover .tile-show,
+  .tile:focus-within .tile-show,
   .tile:hover .tile-delete,
   .tile:focus-within .tile-delete {
     opacity: 1;
@@ -2016,9 +2077,27 @@ input[type="range"]::-moz-range-thumb {
   flex-basis: 100%;
 }
 
-/* Gerät: the log */
-.log-card .terminal {
-  height: min(38vh, 300px);
+#logDialog .terminal {
+  height: min(50vh, 420px);
+}
+/* the playback settings: a box next to the gallery, or a dialog behind the gear in its head */
+#btnPlaySettings .icon {
+  width: 20px;
+  height: 20px;
+  stroke-width: 1.8;
+}
+#playFields {
+  gap: 14px;
+}
+@media (max-width: 899px) {
+  #playCard {
+    display: none;
+  }
+}
+@media (min-width: 900px) {
+  #btnPlaySettings {
+    display: none;
+  }
 }
 
 /* number and unit of the interval in one row */
@@ -2157,9 +2236,12 @@ dialog.modal.modal-editor {
   }
 }
 
+/* a box that is its head alone */
 .empty-state {
-  align-items: stretch;
-  gap: 16px;
+  padding-bottom: 0;
+}
+.empty-state .card-head {
+  border-bottom: 0;
 }
 
 /* ---------- Terminal ---------- */
@@ -2816,6 +2898,7 @@ dialog.transfer::backdrop {
   }
   /* from here on the boxes float on the canvas: side margin, full border */
   .app-main {
+    margin-top: 0;
     padding: var(--gutter);
   }
   .bleed-pad {
@@ -2999,19 +3082,6 @@ dialog.transfer::backdrop {
   }
   .grid-2 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  #controls > #notConnectedState,
-  #controls > #wifiCard {
-    grid-column: 1;
-    grid-row: 1;
-  }
-  #controls > #deviceAside {
-    grid-column: 1;
-    grid-row: 2;
-  }
-  #controls > #expertCard {
-    grid-column: 2;
-    grid-row: 1 / span 2;
   }
   .view-narrow {
     max-width: 780px;

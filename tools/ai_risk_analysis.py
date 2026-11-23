@@ -35,7 +35,7 @@ Das Produkt: E-Paper-Bilderrahmen (ESP32-C6, 7,5" EPD7 mit 800x480 und 13,3" EPD
 - Einrichtung über Bluetooth LE mit der Web-App (Web Bluetooth, GitHub Pages). Die BLE-Schnittstelle hat keine Authentifizierung.
 - Bildquelle: HTTP(S)-Download von einer konfigurierten URL (optional Basic Auth, ETag-Caching, optionale Einstellungen per JSON-URL) oder Bild-Upload über BLE.
 - Firmware-Update ausschließlich über BLE (Upload-Protokoll V2 mit Sequenznummern und CRC). Das ist auch der einzige Weg zurück zur Cloud-Firmware. Nutzer können nicht per USB flashen: ein Gerät, das nicht mehr in den Setup-Modus kommt oder kein BLE-Update mehr annimmt, ist verloren.
-- Taster (Stromunterbrechung): 1x = Setup-Modus (BLE-Advertising, 30 s), 2x schnell = Setup überspringen und Bild neu laden, 5x schnell = Werksreset.
+- Taster (Stromunterbrechung): 1x = Setup-Modus (BLE-Advertising, 20 s), 2x schnell = Setup überspringen und Bild neu laden, 5x schnell = Werksreset.
 - Einstellungen liegen im EEPROM (festes Layout), Bilder im Dateisystem. Zwischen den Aktualisierungen schläft das Gerät im Deep Sleep (Timer-Wakeup).
 
 Prüfe die Code-Änderungen (Git-Diff) auf Risiken für Geräte im Feld. Der vollständige Quellcode dient als Kontext. Achte besonders auf:

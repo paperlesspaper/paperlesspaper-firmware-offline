@@ -202,6 +202,8 @@ class SimulatedDevice:
         self.setup_timeout = False  # the device announced the end of its setup mode
         self.display_busy_commands = 0  # number of gallery commands refused because the display is refreshing
         self.notify_limit = None  # bytes a notification carries (MTU - 3), None = unlimited
+        self.refresh_seconds = 0  # time the display takes for GAL_SHOW; gallery commands are refused meanwhile
+        self._refreshing = False
         self._display_busy = False
 
         # Gallery
@@ -353,6 +355,10 @@ class SimulatedDevice:
         if list_changed:
             self.rev += 1
         await self._notify(CHR_GALLERY_STATE)
+
+    async def _refresh_done(self):
+        self._refreshing = False
+        await self._gallery_changed(list_changed=False)
 
     def scan_result(self):
         return "".join(f"{ssid}´{rssi}´´" for ssid, (_, rssi) in self.networks.items())
@@ -631,6 +637,9 @@ class SimulatedDevice:
         elif cmd.startswith(("GAL_", "READ:")):
             if not self.gallery_supported:
                 return  # a firmware before the gallery does not know these commands
+            if self._refreshing:
+                self._display_busy = True
+                return
             if self.display_busy_commands > 0:
                 self.display_busy_commands -= 1
                 self._display_busy = True
@@ -712,7 +721,12 @@ class SimulatedDevice:
                 self.shown.append(arg)
                 self.settings["image_mode"] = 0
                 self.saved_settings = dict(self.settings)
-                await self._gallery_changed(list_changed=False)
+                if self.refresh_seconds:
+                    # like the firmware: the state is reported once the picture is on the display
+                    self._refreshing = True
+                    self._later(self.refresh_seconds, self._refresh_done)
+                else:
+                    await self._gallery_changed(list_changed=False)
             else:
                 self._command_error = STATUS_UPLOAD_ERROR
         elif name == "READ":

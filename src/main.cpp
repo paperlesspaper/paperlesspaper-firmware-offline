@@ -107,7 +107,7 @@
 #define DEFAULT_SLEEP 3600 // Default time how long to sleep after update
 #define FAILSAVE_TIMER 180 // Time to shutdown the device if no reaction or hangup
 #define SLEEP_RECALCULATION_PERIOD_SECONDS 30
-#define SETUP_MODE_TIMEOUT 30  // seconds to wait in setup mode for BLE connection before switching to fetch/refresh mode
+#define SETUP_MODE_TIMEOUT 20  // seconds to wait in setup mode for BLE connection before switching to fetch/refresh mode
 #define GALLERY_ADVANCE_DELAY 10 // seconds after one press until the next gallery picture, if no client connects
 #define SETUP_IDLE_TIMEOUT 600// seconds a connected BLE client may stay idle on battery power before the setup mode ends
 #define LED_DIM_VALUE 5        // brightness of led in percent (0-100)
@@ -3355,10 +3355,12 @@ void runSetupMode() {
          if (settings.autoRotation) {
             accUpdateOrient();
          }
+         ledBlink(500, true); // slow while the display refreshes
          // Not enough memory next to Bluetooth and WiFi: the picture follows after the setup mode.
          galleryShowPending = Gallery::showCurrent() != 0;
          bleImageApplied = !galleryShowPending;
          applyInProgress = false;
+         ledBlink(200, true); // fast again: the setup mode goes on
          if (!advancing)
             lastDisconnectTime = millis(); // the time to connect starts again once the picture is there
          advancing = false;

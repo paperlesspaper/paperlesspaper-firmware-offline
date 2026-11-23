@@ -294,7 +294,7 @@ class UsbGatt {
       let hello = null;
       for (const end = Date.now() + HELLO_WAIT_MS; !hello; ) {
         this._checkAbort();
-        if (Date.now() > end) throw linkError("Das E-Paper antwortet nicht über USB. Drücke einmal die Reset-Taste am E-Paper: Danach ist es 30 Sekunden bereit.");
+        if (Date.now() > end) throw linkError("Das E-Paper antwortet nicht über USB. Drücke einmal die Reset-Taste am E-Paper: Danach ist es 20 Sekunden bereit.");
         hello = await this._exchange(TYPE_HELLO, 0, new Uint8Array(0), 500, true);
       }
       const info = JSON.parse(new TextDecoder().decode(hello));

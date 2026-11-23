@@ -164,7 +164,6 @@ const settingAutoRotation = $("settingAutoRotation");
 
 const galleryGrid = $("galleryGrid");
 const galleryFileInput = $("galleryFileInput");
-const galleryDisplayBadge = $("galleryDisplayBadge");
 // The last box of the grid: adds pictures.
 const btnAddPictures = document.createElement("button");
 btnAddPictures.type = "button";
@@ -282,14 +281,10 @@ function syncUi() {
   btnConnect.disabled = !canConnect;
   btnDisconnect.hidden = !(connected || pending);
   btnDisconnect.textContent = connected ? "Trennen" : "Abbrechen";
-  document.querySelectorAll('[data-action="connect"]').forEach((btn) => {
-    btn.disabled = !canConnect || pending;
-    btn.textContent = pending ? "Verbinde…" : "Mit E-Paper verbinden";
-  });
 
   systemStatusBar.hidden = !connected;
   notConnectedState.hidden = connected;
-  // left box: the WLAN of a connected device, else the hint how to connect
+  // left box: the WLAN of a connected device, else the hint that nothing is connected
   $("wifiCard").hidden = !connected;
   $("deviceSettings").hidden = !connected; // without a device the settings only hold the way to connect
   $("bleCloudHint").hidden = connected || state.otaMethod !== "ble"; // a connected device is reachable
@@ -535,11 +530,12 @@ bleInterface.onDisconnected = () => {
   state.deviceMode = null;
   syncBadgeSettings.hidden = true;
   $("syncBadgePlay").hidden = true;
+  clearTimeout(showingTimer);
+  showingId = "";
   gallery.clearDevice(); // renders the gallery and the buttons
 };
 
 btnConnect.addEventListener("click", () => startConnect());
-document.querySelectorAll('[data-action="connect"]').forEach((btn) => btn.addEventListener("click", () => startConnect()));
 btnDisconnect.addEventListener("click", () => bleInterface.disconnect());
 
 // --- Bluetooth or USB: asked every time, or chosen once under "Gerät" ---
@@ -1245,7 +1241,6 @@ function applyDisplayProfile(isPaperL, lockToDevice = false) {
 
   applyOrientationLayout();
   displayBadge.textContent = isPaperL ? '13.3" · 1200×1600' : '7.3" · 800×480';
-  galleryDisplayBadge.textContent = isPaperL ? '13.3"' : '7.3"';
   displaySizeSelect.value = isPaperL ? "13" : "7";
   displaySizeSelect.disabled = lockToDevice;
   displaySizeSelect.title = lockToDevice ? `Automatisch an verbundenes Gerät angepasst (${isPaperL ? '13.3"' : '7.3"'})` : "";
@@ -2063,7 +2058,7 @@ const TILE_STATUS = {
 
 let dragKey = null; // key of the tile that is being dragged
 
-function buildTile({ label, thumb, status, shown, onOpen, onDelete }) {
+function buildTile({ label, thumb, status, shown, showing, onOpen, onShow, onDelete }) {
   const tile = document.createElement("li");
   tile.className = "tile";
   if (status) tile.dataset.status = status;
@@ -2071,7 +2066,7 @@ function buildTile({ label, thumb, status, shown, onOpen, onDelete }) {
   const open = document.createElement("button");
   open.type = "button";
   open.className = "tile-open";
-  open.setAttribute("aria-label", [label, status ? TILE_STATUS[status].label : "", shown ? "wird gerade angezeigt" : "", "Bearbeiten"].filter(Boolean).join(", "));
+  open.setAttribute("aria-label", [label, status ? TILE_STATUS[status].label : "", showing ? "Bildaufbau läuft" : shown ? "wird gerade angezeigt" : "", "Bearbeiten"].filter(Boolean).join(", "));
   if (thumb) {
     const img = document.createElement("img");
     img.alt = "";
@@ -2090,20 +2085,37 @@ function buildTile({ label, thumb, status, shown, onOpen, onDelete }) {
     badge.textContent = TILE_STATUS[status].label;
     open.appendChild(badge);
   }
-  if (shown) {
+  if (shown || showing) {
     const flag = document.createElement("span");
-    flag.className = "tile-shown";
-    flag.textContent = "▶ Auf dem Display";
+    flag.className = showing ? "tile-shown is-loading" : "tile-shown";
+    flag.textContent = showing ? "Bildaufbau…" : "▶ Auf dem Display";
     open.appendChild(flag);
   }
-  // shown over the picture on hover and focus, always on touch screens
+  open.addEventListener("click", onOpen);
+  tile.appendChild(open);
+
+  // over the picture on hover and focus, always on touch screens
+  const actions = document.createElement("div");
+  actions.className = "tile-actions";
   const edit = document.createElement("span");
   edit.className = "tile-edit";
   edit.setAttribute("aria-hidden", "true");
-  edit.textContent = "✎ Bearbeiten";
-  open.appendChild(edit);
-  open.addEventListener("click", onOpen);
-  tile.appendChild(open);
+  const editText = document.createElement("span");
+  editText.className = "tile-edit-text";
+  editText.textContent = "Bearbeiten";
+  edit.append("✎", editText);
+  actions.appendChild(edit);
+  if (onShow) {
+    actions.classList.add("has-show");
+    const show = document.createElement("button");
+    show.type = "button";
+    show.className = "tile-show";
+    show.textContent = "▶ Anzeigen";
+    show.setAttribute("aria-label", `${label} auf dem E-Paper anzeigen`);
+    show.addEventListener("click", onShow);
+    actions.appendChild(show);
+  }
+  tile.appendChild(actions);
 
   const remove = document.createElement("button");
   remove.type = "button";
@@ -2116,6 +2128,61 @@ function buildTile({ label, thumb, status, shown, onOpen, onDelete }) {
   return tile;
 }
 
+const SHOWING_MAX_MS = 90000; // a refresh takes up to about 45 s: a lost report ends here
+let showingId = ""; // picture the display is building up
+let showingTimer = 0;
+
+function setShowing(id) {
+  clearTimeout(showingTimer);
+  showingId = id;
+  renderGallery();
+}
+
+/** The display has the picture: the device has reported it with its gallery state. */
+function finishShowing() {
+  setShowing("");
+  if (!state.busy) setStatus("Das E-Paper zeigt das Bild jetzt an.", "ok");
+}
+
+/** GAL_SHOW. The picture counts as being built up until the device reports it. */
+async function showPicture(id) {
+  setShowing(id);
+  try {
+    await bleInterface.galleryShow(id);
+  } catch (err) {
+    if (showingId === id) setShowing("");
+    throw err;
+  }
+  state.deviceMode = 0;
+  if (gallery.deviceState) gallery.setDeviceState({ ...gallery.deviceState, current: id });
+  if (showingId === id) showingTimer = setTimeout(finishShowing, SHOWING_MAX_MS);
+}
+
+/** "Anzeigen" is offered for a picture the connected device holds and does not show. */
+function canShow(id, shownId) {
+  return bleInterface.isConnected && bleInterface.gallerySupported && id !== showingId && (id !== shownId || state.deviceMode === 1);
+}
+
+/** The display shows this picture of the device now. It stays until the next change is due. */
+async function showOnDisplay(id) {
+  if (state.busy || !bleInterface.isConnected) return;
+  state.busy = true;
+  syncUi();
+  try {
+    await showPicture(id);
+    // not "busy": the toast goes by itself, the picture carries the progress
+    if (showingId === id) setStatus("Das E-Paper baut das Bild auf. Das dauert einen Moment.", "idle");
+    else setStatus("Das E-Paper zeigt das Bild jetzt an.", "ok");
+  } catch (err) {
+    console.error(err);
+    setStatus(`Anzeigen fehlgeschlagen: ${err?.message || err}`, "err");
+  } finally {
+    state.busy = false;
+    syncUi();
+    renderGallery();
+  }
+}
+
 function itemTile(item, index, display, shownId) {
   const status = gallery.status(item, display);
   const id = gallery.idFor(item, display);
@@ -2123,8 +2190,10 @@ function itemTile(item, index, display, shownId) {
     label: `Bild ${index + 1}: ${item.name}`,
     thumb: item.thumb,
     status: status === "local" ? null : status,
-    shown: Boolean(id) && id === shownId,
+    shown: Boolean(id) && id === shownId && !showingId,
+    showing: Boolean(id) && id === showingId,
     onOpen: () => openEditor(item),
+    onShow: status === "synced" && canShow(id, shownId) ? () => showOnDisplay(id) : null,
     onDelete: () => deletePicture({ item }),
   });
   tile.dataset.key = item.key;
@@ -2179,8 +2248,10 @@ function remoteTile(entry, shownId) {
     label: `Bild auf dem Gerät (${formatBytes(entry.size)})`,
     thumb: gallery.remoteThumbs.get(entry.id) || null,
     status: "remote",
-    shown: entry.id === shownId,
+    shown: entry.id === shownId && !showingId,
+    showing: entry.id === showingId,
     onOpen: () => openRemotePicture(entry),
+    onShow: canShow(entry.id, shownId) ? () => showOnDisplay(entry.id) : null,
     onDelete: () => deletePicture({ remote: entry }),
   });
   tile.dataset.remote = entry.id;
@@ -2254,7 +2325,6 @@ function renderGallery() {
   const tiles = gallery.items.map((item, index) => itemTile(item, index, display, shownId));
   gallery.remoteOnly(display).forEach((entry) => tiles.push(remoteTile(entry, shownId)));
   galleryGrid.replaceChildren(...tiles, addTile);
-  $("galleryCount").textContent = pictures(tiles.length);
   $("galleryStoreNote").hidden = gallery.persistent;
   renderGalleryDevice(display);
   renderPlay();
@@ -2446,6 +2516,17 @@ function onGalleryIntervalInput() {
 galleryInterval.addEventListener("input", onGalleryIntervalInput);
 galleryIntervalUnit.addEventListener("change", onGalleryIntervalInput);
 
+// Below 900px the playback settings are in a dialog, opened by the gear in the gallery head.
+const playDialog = $("playDialog");
+const playWide = window.matchMedia("(min-width: 900px)");
+function placePlayFields() {
+  if (playWide.matches) closeDialog(playDialog);
+  $(playWide.matches ? "playCard" : "playDialogFields").append($("playFields"));
+}
+playWide.addEventListener("change", placePlayFields);
+placePlayFields();
+$("btnPlaySettings").addEventListener("click", () => openDialog(playDialog));
+
 // --- The gallery of the connected device ---
 
 let listRev = null; // `rev` of the device state the list was read for
@@ -2457,7 +2538,8 @@ bleInterface.onGalleryStateChange = (deviceState) => {
     gallery.setPlay({ shuffle: Boolean(deviceState.shuffle), auto: Boolean(deviceState.auto) }, { dirty: false });
   }
   $("syncBadgePlay").hidden = gallery.play.dirty;
-  renderGallery();
+  if (showingId && deviceState.current === showingId) finishShowing();
+  else renderGallery();
   if (state.conn === "connected" && deviceState.rev !== listRev) refreshDeviceGallery();
 };
 
@@ -2635,7 +2717,7 @@ async function syncGallery() {
     const mode = await bleInterface.readImageMode();
     const current = latest?.current && onDevice.has(latest.current) ? latest.current : "";
     if (!current || mode !== 0) {
-      await bleInterface.galleryShow(current || gallery.orderFor(display, list)[0] || list[0].id);
+      await showPicture(current || gallery.orderFor(display, list)[0] || list[0].id);
       shown = true;
     }
   }
@@ -2657,6 +2739,7 @@ async function startGallerySync() {
   }
   if (gallery.play.auto && galleryIntervalSeconds() === null) {
     setFieldError(galleryInterval, "Erlaubt sind 1 Minute bis 30 Tage, in ganzen Zahlen.");
+    if (!playWide.matches) openDialog(playDialog);
     galleryInterval.focus();
     return;
   }
@@ -2665,8 +2748,8 @@ async function startGallerySync() {
   refreshDeviceGallery();
 }
 
-// "Synchronisieren" without a connected device: a dialog explains how to connect (the steps of
-// the device view). Its button opens the Bluetooth device chooser, and once the device is
+// "Synchronisieren" without a connected device: a dialog explains how to connect.
+// Its button opens the Bluetooth device chooser, and once the device is
 // connected the sync starts by itself (see onConnected).
 const connectDialog = $("connectDialog");
 let syncAfterConnect = false;
@@ -2676,10 +2759,6 @@ let connectDialogSync = false; // the dialog was opened by a sync button
 
 function openConnectDialog(sync) {
   connectDialogSync = sync;
-  const steps = $("connectDialogSteps");
-  if (!steps.hasChildNodes()) {
-    steps.append(document.querySelector("#notConnectedState .step-list").cloneNode(true));
-  }
   $("connectDialogTitle").textContent = sync ? "Kein Gerät verbunden" : "Mit E-Paper verbinden";
   $("connectDialogText").textContent = sync
     ? "Zum Synchronisieren wird das E-Paper per Bluetooth oder USB-Kabel verbunden. Sobald die Verbindung steht, startet die Übertragung von selbst."
@@ -3595,6 +3674,11 @@ document.querySelectorAll("[data-help-dialog]").forEach((btn) => {
     openDialog(dialog);
     dialog.querySelector(".modal-body").scrollTop = 0; // the focus is on the button at its end
   });
+});
+$("btnLog").addEventListener("click", () => {
+  openDialog($("logDialog"));
+  const log = $("statusLogOutput");
+  log.scrollTop = log.scrollHeight; // the latest lines
 });
 // Links to one section of the help open that section.
 document.querySelectorAll("[data-help-target]").forEach((link) => {

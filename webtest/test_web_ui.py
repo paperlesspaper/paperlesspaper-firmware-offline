@@ -50,6 +50,7 @@ def test_page_starts_clean(app_session):
             assert await expected_version(app), "The page does not name the firmware version it expects."
             await app.view("geraet")
             assert not await hidden(app, "#notConnectedState")
+            assert await app.text("#notConnectedState") == "Kein Gerät verbunden", "The hint alone: connecting is the button of the header."
             assert await hidden(app, "#wifiCard") and await hidden(app, "#deviceSettings")
 
     run(body())
@@ -525,32 +526,79 @@ def test_changing_the_wifi_can_be_cancelled(app_session):
     run(body())
 
 
-def test_log_is_always_shown_in_the_device_view(app_session):
+def test_log_opens_from_the_device_settings(app_session):
+    """The log is a dialog behind "Log zeigen", with or without a device."""
+
     async def body():
         device = SimulatedDevice()
         async with app_session(device) as (app, site):
+            is_open = "() => document.getElementById('logDialog').open"
+            positions = "ids => Object.fromEntries(ids.map(id => { const r = document.getElementById(id).getBoundingClientRect(); return [id, [r.left, r.top]]; }))"
             await app.view("geraet")
-            assert await app.locator("#statusLogOutput").is_visible(), "Also without a device: it says why connecting fails."
+            assert not await app.locator("#statusLogOutput").is_visible()
             # the settings are on the right, with or without a device
-            boxes = await app.page.evaluate(
-                "() => Object.fromEntries(['notConnectedState', 'logCard', 'expertCard'].map(id => { const r = document.getElementById(id).getBoundingClientRect(); return [id, [r.left, r.top]]; }))"
-            )
-            assert boxes["logCard"][0] == boxes["notConnectedState"][0] and boxes["logCard"][1] > boxes["notConnectedState"][1]
+            boxes = await app.page.evaluate(positions, ["notConnectedState", "expertCard"])
             assert boxes["expertCard"][0] > boxes["notConnectedState"][0] and boxes["expertCard"][1] == boxes["notConnectedState"][1]
-            assert await app.page.locator("#btnLog").count() == 0
+
+            await app.click("#btnLog")
+            assert await app.page.evaluate(is_open), "Also without a device: it says why connecting fails."
+            assert await app.locator("#statusLogOutput").is_visible() and "Warte auf Verbindung" in await app.status_log()
+            await app.click("#logDialog button[type=submit]")
+            assert not await app.page.evaluate(is_open)
+
             await app.connect()
-            assert await app.locator("#statusLogOutput").is_visible()
-            assert "Erfolgreich Verbunden" in await app.status_log()
-            # wide screens: below the WLAN box, next to the expert settings
-            boxes = await app.page.evaluate(
-                "() => Object.fromEntries(['wifiCard', 'logCard', 'expertCard'].map(id => { const r = document.getElementById(id).getBoundingClientRect(); return [id, [r.left, r.top]]; }))"
-            )
-            assert boxes["logCard"][0] == boxes["wifiCard"][0] and boxes["logCard"][1] > boxes["wifiCard"][1]
-            assert boxes["expertCard"][0] > boxes["wifiCard"][0]
-            # phones: at the end of the page
+            boxes = await app.page.evaluate(positions, ["wifiCard", "expertCard"])
+            assert boxes["expertCard"][0] > boxes["wifiCard"][0] and boxes["expertCard"][1] == boxes["wifiCard"][1]
+
+            # a long log opens at its latest line
+            await app.page.evaluate("() => document.getElementById('statusLogOutput').append('Zeile '.repeat(2000))")
             await app.page.set_viewport_size({"width": 390, "height": 800})
-            tops = await app.page.evaluate("() => ['wifiCard', 'expertCard', 'logCard'].map(id => document.getElementById(id).getBoundingClientRect().top)")
-            assert tops == sorted(tops)
+            await app.click("#btnLog")
+            assert "Erfolgreich Verbunden" in await app.status_log()
+            at_end = await app.page.evaluate("() => { const log = document.getElementById('statusLogOutput'); return log.scrollTop > 0 && log.scrollTop + log.clientHeight >= log.scrollHeight - 1; }")
+            assert at_end
+
+    run(body())
+
+
+def test_playback_settings_are_a_dialog_below_the_desktop_width(app_session):
+    """Below 900px the gear in the gallery head opens the playback settings; their box is not shown."""
+
+    async def body():
+        device = SimulatedDevice()
+        async with app_session(device) as (app, site):
+            is_open = "() => document.getElementById('playDialog').open"
+            assert await app.locator("#playCard #btnPlayShuffle").is_visible()
+            assert not await app.locator("#btnPlaySettings").is_visible()
+
+            await app.page.set_viewport_size({"width": 390, "height": 800})
+            await app.page.wait_for_selector("#playDialogFields #btnPlayShuffle", state="attached")
+            assert not await app.locator("#playCard").is_visible() and not await app.locator("#btnPlayShuffle").is_visible()
+            await app.click("#btnPlaySettings")
+            assert await app.page.evaluate(is_open)
+            await app.click("#btnPlayShuffle")
+            await app.click("#playDialog button[type=submit]")
+            assert not await app.page.evaluate(is_open)
+
+            # a value that is not allowed does not lock the dialog; syncing leads back to the field
+            await app.connect()
+            await app.view("bild")
+            await app.click("#btnPlaySettings")
+            await app.page.fill("#galleryInterval", "0")
+            await app.click("#playDialog button[type=submit]")
+            assert not await app.page.evaluate(is_open)
+            await app.click("#btnSyncGallery")
+            assert await app.page.evaluate(is_open)
+            assert not await hidden(app, "#galleryIntervalError")
+            assert await app.page.evaluate("() => document.activeElement.id") == "galleryInterval"
+            await app.page.fill("#galleryInterval", "2")
+
+            # wide again: the same fields in their box
+            await app.page.set_viewport_size({"width": 1280, "height": 900})
+            await app.page.wait_for_function("() => !document.getElementById('playDialog').open")
+            assert await app.locator("#playCard #btnPlayShuffle").is_visible()
+            assert await app.page.get_attribute("#btnPlayShuffle", "aria-pressed") == "true"
+            assert await app.page.input_value("#galleryInterval") == "2"
 
     run(body())
 
@@ -647,13 +695,12 @@ def test_quick_add_of_several_files(app_session):
 
     async def body():
         async with app_session(SimulatedDevice()) as (app, site):
-            assert await app.text("#galleryCount") == "0 Bilder"
+            assert len(await app.tiles()) == 0
             await app.add_pictures(distinct_pictures(3))
 
             tiles = await app.tiles()
             assert len(tiles) == 3 and all(tile["key"] and tile["has_image"] for tile in tiles)
             assert all(tile["status"] is None for tile in tiles), "Without a device there is nothing to compare with."
-            assert await app.text("#galleryCount") == "3 Bilder"
             assert await hidden(app, "#galleryStoreNote")
             assert "3 Bilder hinzugefügt" in await app.status()
 
@@ -717,7 +764,7 @@ def test_gallery_without_browser_storage(app_session):
 
             await app.page.reload()
             await app.page.wait_for_selector("#galleryGrid .tile-add")
-            assert len(await app.tiles()) == 0 and await app.text("#galleryCount") == "0 Bilder"
+            assert len(await app.tiles()) == 0
 
     run(body())
 
@@ -1170,6 +1217,93 @@ def test_sync_reports_pictures_that_do_not_fit(app_session):
     run(body(), timeout=300)
 
 
+def test_show_button_puts_a_picture_of_the_device_on_the_display(app_session):
+    """A connected device shows a picture it holds at once: "Anzeigen" on that picture."""
+
+    async def body():
+        device = SimulatedDevice()
+        only_there = device.add_picture(assets.gallery_container(device.display, device.width, device.height, seed=4))
+        async with app_session(device) as (app, site):
+            await app.connect()
+            await gallery_loaded(app)
+            await app.add_pictures(distinct_pictures(2))
+            assert await app.page.locator("#galleryGrid .tile[data-key] .tile-show").count() == 0, "Not on the device yet."
+            assert await app.page.locator(f'#galleryGrid .tile[data-remote="{only_there}"] .tile-show').count() == 1
+            assert await app.sync() is None
+            shown = device.current
+            assert shown and len(device.shown) == 1
+
+            # every picture of the device but the one on the display
+            offered = await app.page.evaluate(
+                "() => [...document.querySelectorAll('#galleryGrid .tile')].map((tile) => [Boolean(tile.querySelector('.tile-shown')), Boolean(tile.querySelector('.tile-show'))])"
+            )
+            assert len(offered) == 3 and all(on_display != has_button for on_display, has_button in offered), offered
+
+            await app.click(f'#galleryGrid .tile[data-remote="{only_there}"] .tile-show')
+            await app.wait_status("zeigt das Bild jetzt an")
+            assert device.shown[-1] == only_there and device.current == only_there
+            tiles = {tile["remote"] or tile["key"]: tile["shown"] for tile in await app.tiles()}
+            assert tiles[only_there] and list(tiles.values()).count(True) == 1
+            assert await app.page.locator(f'#galleryGrid .tile[data-remote="{only_there}"] .tile-show').count() == 0
+            assert not await app.page.evaluate("() => document.getElementById('editorDialog').open"), "The button does not open the editor."
+
+            # a phone: the button is inside its picture
+            await app.page.set_viewport_size({"width": 360, "height": 800})
+            inside = await app.page.evaluate(
+                """() => [...document.querySelectorAll('#galleryGrid .tile-show')].map((btn) => {
+                    const b = btn.getBoundingClientRect(), t = btn.closest('.tile').getBoundingClientRect();
+                    return b.left >= t.left && b.right <= t.right && b.bottom <= t.bottom && b.width > 40;
+                })"""
+            )
+            assert inside and all(inside)
+
+            # without a device there is nothing to show
+            await app.click("#btnDisconnect")
+            await app.page.wait_for_function("() => !document.querySelector('#galleryGrid .tile-show')")
+
+    run(body(), timeout=240)
+
+
+def test_picture_is_marked_as_loading_until_the_display_has_it(app_session):
+    """The display takes a while for a picture. Its tile says so until the device reports the picture."""
+
+    async def body():
+        device = SimulatedDevice()
+        first, second = (device.add_picture(assets.gallery_container(device.display, device.width, device.height, seed=seed)) for seed in (4, 5))
+        async with app_session(device) as (app, site):
+            await app.connect()
+            await gallery_loaded(app)
+            device.refresh_seconds = 3
+
+            def tile(pid, part):
+                return f'#galleryGrid .tile[data-remote="{pid}"] {part}'
+
+            await app.click(tile(first, ".tile-show"))
+            await app.page.wait_for_selector(tile(first, ".tile-shown.is-loading"))
+            assert "Bildaufbau" in await app.text(tile(first, ".tile-shown"))
+            await app.wait_status("baut das Bild auf")
+            assert await app.page.locator(tile(first, ".tile-show")).count() == 0
+
+            # the next picture waits for the display and is then marked the same way
+            await app.click(tile(second, ".tile-show"))
+            await app.page.wait_for_selector(tile(second, ".tile-shown.is-loading"))
+            assert await app.page.locator("#galleryGrid .tile-shown").count() == 1
+            await app.page.wait_for_selector(tile(second, ".tile-shown:not(.is-loading)"), timeout=30000)
+            assert device.shown == [first, second]
+            assert "aktualisiert noch das Display" in await app.status_log()
+            await app.wait_status("zeigt das Bild jetzt an")
+            assert "Auf dem Display" in await app.text(tile(second, ".tile-shown"))
+            assert await app.page.locator("#galleryGrid .tile-shown").count() == 1
+
+            # a connection that ends takes the mark with it
+            await app.click(tile(first, ".tile-show"))
+            await app.page.wait_for_selector(tile(first, ".tile-shown.is-loading"))
+            await app.click("#btnDisconnect")
+            await app.page.wait_for_function("() => !document.querySelector('#galleryGrid .tile-shown')")
+
+    run(body(), timeout=240)
+
+
 def test_sync_waits_for_the_display_refresh(app_session):
     """While the device draws a picture it refuses gallery commands. The page waits and tries again."""
 
@@ -1202,8 +1336,7 @@ def test_sync_without_connection_connects_first(app_session):
             async def connect_and_sync():
                 await app.click("#btnSyncGallery")
                 await app.page.wait_for_selector("#connectDialog[open]")
-                # the same steps as in the device view while nothing is connected
-                assert await app.text("#connectDialogSteps") == await app.text("#notConnectedState .step-list")
+                assert "Reset-Taste drücken" in await app.text("#connectDialogSteps")
                 await app.click("#btnConnectAndSend")
 
             result = await app.transfer(connect_and_sync, timeout=180000)

@@ -69,7 +69,7 @@ class BleSession:
         # tearing down the previous connection to the same address and then rejects the new one
         # (OSError "The parameter is incorrect" / WinError -2147024809, or a bleak error). That
         # state clears within seconds, so scan again and retry. The setup mode of the device
-        # lasts SETUP_MODE_TIMEOUT (30 s), the retries below stay well inside it.
+        # lasts SETUP_MODE_TIMEOUT (20 s), the retries below stay well inside it.
         last_error = None
         for attempt in range(1, CONNECT_ATTEMPTS + 1):
             try:

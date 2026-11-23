@@ -67,7 +67,7 @@ EXPECTED_CANDIDATE_VERSION = os.environ.get("OFFLINE_CANDIDATE_VERSION", "")
 
 # Firmware timing (src/main.cpp)
 STARTUP_COUNTER_WINDOW = 3.0  # counter of quick button presses is cleared after 3 s
-SETUP_MODE_TIMEOUT = 30  # setup mode ends after 30 s without BLE connection
+SETUP_MODE_TIMEOUT = 20  # setup mode ends after 20 s without BLE connection
 FACTORY_RESET_PRESSES = 5
 
 # Timeouts in seconds
