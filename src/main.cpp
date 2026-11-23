@@ -1060,8 +1060,21 @@ void WiFiEvent(WiFiEvent_t event) {
    }
 }
 
+// Ends a series of button presses before its 3 s are over: the count must not wait for a later press.
+static void clearStartupCounter() {
+   tickerStatupCounter.detach();
+   if (StartCounter == 0)
+      return;
+   Preferences store; // not the shared object: the ticker may be using it
+   store.begin("my-app", false);
+   store.putUInt("counter", 0);
+   store.end();
+   StartCounter = 0;
+}
+
 // Restarts into the download mode of the ROM, as if the boot button was held during a reset.
 void rebootIntoRomBootloader() {
+   clearStartupCounter();
    Serial.println("[SYSTEM] Rebooting into ROM Download Bootloader...");
    Serial.flush();
    delay(100);
@@ -2718,6 +2731,7 @@ void setDeviceUid() {
 // sleep x seconds
 void gotToDeepSleep(int wakeuptimeout, bool showScreen, bool motionWake) {
    Serial.printf("[MAIN] Going to Sleep for %d seconds (MotionWake: %d)\n", wakeuptimeout, motionWake);
+   clearStartupCounter();
    // Standby: the charger is off and stays off (pin held low through deep sleep). Only if the
    // user switched "Charger Mode" on, it keeps charging while the frame sleeps.
    chargeMode(settings.chargerMode);
@@ -2849,6 +2863,11 @@ int calculateSleepDuration(int defaultTimeout, bool forceReset, bool getDataOnly
    return predictedSleep;
 }
 
+// The reset button, or power applied: a power-on reset and no wake-up from sleep.
+static bool startedByButton() {
+   return esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_UNDEFINED && rtc_get_reset_reason(0) == 1 && rtc_get_reset_reason(1) == 1;
+}
+
 wakeup_reason_t getWakeupReason() {
    int resetReason0 = rtc_get_reset_reason(0);
    int resetReason1 = rtc_get_reset_reason(1);
@@ -2858,7 +2877,7 @@ wakeup_reason_t getWakeupReason() {
    Serial.printf("[WAKE] Reset Reason 1: %d\n", resetReason1);
    Serial.printf("[WAKE] Wake Reason: %d\n", wakeupReason);
 #endif
-   if (wakeupReason == esp_sleep_wakeup_cause_t::ESP_SLEEP_WAKEUP_UNDEFINED && resetReason0 == 1 && resetReason1 == 1) {
+   if (startedByButton()) {
       Serial.printf("[WAKE] Got Button Wakeup or Power Loss Wakeup\n");
       return wakeup_reason_t::BUTTON;
    }
@@ -3713,6 +3732,9 @@ void test() {
 }
 
 void setup() {
+   // Counted before anything else: a quick second press must find the first one stored.
+   if (startedByButton())
+      startupCounter(false);
    chargeMode(false); // charger off until the stored setting is known
    powerSupplyDisplay(false);
    pinMode(BAT_VOLT_EN_PIN, OUTPUT);
@@ -3761,10 +3783,8 @@ void setup() {
    }
    resumeState = 0;
 
-   if (systemData.wakeupCause == wakeup_reason_t::BUTTON) {
+   if (systemData.wakeupCause == wakeup_reason_t::BUTTON)
       buttonWake = true;
-      startupCounter(false);
-   }
 
    EepromInit(EEPROM_SIZE);
    const bool wipePending = EEPROM.read(EEPROM_WIPE_ADR) == 1; // read before the memory is set up anew

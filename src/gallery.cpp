@@ -7,7 +7,6 @@
 #include <rom/crc.h>
 
 // main.cpp
-int showStoredImage(const String &fileName);
 void setDisplayContent(uint8_t content);
 
 namespace {
@@ -521,15 +520,23 @@ bool verifyPicture(InflateReader &reader, uint32_t rawCrc) {
    return !reader.failed && reader.total == RAW_SIZE && reader.crc == rawCrc;
 }
 
-#ifndef EPD_TYPE_13INCH
+struct PictureRows
+{
+   InflateReader *reader;
+   uint32_t crc;
+};
+
 bool rowRewind(void *context) {
-   return ((InflateReader *)context)->rewind();
+   return ((PictureRows *)context)->reader->rewind();
 }
 
+// A damaged picture fails at its last row at the latest: the display is not refreshed.
 bool rowRead(void *context, uint8_t *row, int len) {
-   return ((InflateReader *)context)->read(row, (uint32_t)len) == (uint32_t)len;
+   PictureRows *rows = (PictureRows *)context;
+   if (rows->reader->read(row, (uint32_t)len) != (uint32_t)len)
+      return false;
+   return rows->reader->total < RAW_SIZE || rows->reader->crc == rows->crc;
 }
-#endif
 
 // Upload in progress
 uint32_t putId = 0;
@@ -671,41 +678,19 @@ int showCurrent() {
    if (!reader.begin(&file, dataOffset, fileSize - dataOffset, windowBits(header)))
       return -1;
 
-#ifdef EPD_TYPE_13INCH
-   // The flash holds the picture on the display, as with a download.
-   StoreFile out;
-   bool ok = out.openWrite("tmp.bmp");
-   if (ok) {
-      uint8_t *buf = (uint8_t *)malloc(4096);
-      ok = buf != nullptr;
-      while (ok) {
-         const uint32_t n = reader.read(buf, 4096);
-         if (n == 0)
-            break;
-         ok = out.write(buf, n) == n;
-      }
-      free(buf);
-      ok = out.close() && ok && !reader.failed && reader.total == RAW_SIZE && reader.crc == rawCrc;
-   }
-   reader.end();
-   file.close();
-   if (!ok) {
-      Serial.println("[GALLERY] Picture could not be unpacked.");
-      Storage::remove("tmp.bmp");
-      return -1;
-   }
-   return showStoredImage("tmp.bmp");
-#else
+#ifndef EPD_TYPE_13INCH
+   // drawn in several passes: checked before the first one (13.3": one pass, checked at its end)
    if (!verifyPicture(reader, rawCrc) || !reader.rewind()) {
       Serial.println("[GALLERY] Picture could not be unpacked.");
       return -1;
    }
-   const int result = setImageFromRows(rowRewind, rowRead, &reader);
+#endif
+   PictureRows rows = {&reader, rawCrc};
+   const int result = setImageFromRows(rowRewind, rowRead, &rows);
    Serial.printf("[EPD] Set Image Done: %d\n", result);
    if (result == 0)
       setDisplayContent(DISPLAY_PICTURE);
    return result;
-#endif
 }
 
 uint16_t beginPut(uint32_t id, uint32_t size) {

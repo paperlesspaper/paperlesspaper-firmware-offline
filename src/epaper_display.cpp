@@ -311,8 +311,131 @@ static int storedImageOffset(StoreFile &imageFile) {
    return offsetData;
 }
 
-#ifndef EPD_TYPE_13INCH
-int setImageFromRows(ImageRowRewind rewind, ImageRowReader readRow, void *context) {
+#ifdef EPD_TYPE_13INCH
+// The panel is 1200 x 1600: two controllers side by side, each takes 600 pixels (300 bytes) of a row.
+int setImageFromRows(ImageRowRewind rewind, ImageRowReader readRow, void *context, bool doRefresh) {
+   epaperIsUpdating = true;
+   const int rowBytes = EPD_HEIGHT / 2;
+   const int halfBytes = rowBytes / 2;
+   const int height = EPD_WIDTH;
+
+   // Rows per block: an even divisor of the height (the window counts in double rows).
+   static const int blockSizes[] = {50, 20, 10};
+   int blockRows = 0;
+   uint8_t *block = nullptr;
+   for (int size : blockSizes) {
+      block = (uint8_t *)malloc(size * rowBytes);
+      if (block) {
+         blockRows = size;
+         break;
+      }
+   }
+   if (!block) {
+      Serial.println("[EPD] Not enough memory to send the picture.");
+      epaperIsUpdating = false;
+      return -1;
+   }
+
+   display.enableQuickRefresh(displaySettings.displayQuickRefreshTime, false);
+   displayInit();
+   display.epd2.writeImage(nullptr, 0, 0, 0, 0); // an empty area: only sets the controllers up
+
+   Serial.println("[EPD] Streaming Image to Display... ");
+   const uint32_t start = millis();
+   const bool rotate180 = (displaySettings.rotationPicture > 0);
+   bool ok = rewind(context);
+   for (int y = 0; y < height && ok; y += blockRows) {
+      ok = readRow(context, block, blockRows * rowBytes);
+      if (!ok)
+         break;
+
+      // colour codes of the picture -> codes of the panel
+      for (int i = 0; i < blockRows * rowBytes; i++)
+         block[i] = (getColor(block[i] >> 4) << 4) | getColor(block[i] & 0x0F);
+      if (rotate180) {
+         // every half row backwards, pixel by pixel
+         for (uint8_t *half = block; half < block + blockRows * rowBytes; half += halfBytes) {
+            for (int a = 0, b = halfBytes - 1; a < b; a++, b--) {
+               const uint8_t left = half[a];
+               half[a] = (half[b] << 4) | (half[b] >> 4);
+               half[b] = (left << 4) | (left >> 4);
+            }
+         }
+      }
+
+      // The window is set per block, so the blocks may come in any order: turned by 180°, the
+      // first rows of the picture are the last ones of the panel.
+      const int firstRow = rotate180 ? (height - y - blockRows) : y;
+      const uint16_t HRED = rowBytes * 2 - 1; // 1199
+      const uint16_t VRST = firstRow / 2;
+      const uint16_t VRED = (firstRow + blockRows) / 2 - 1;
+
+      SPI.beginTransaction(SPISettings(DISPLAY_SPI_SPEED, MSBFIRST, SPI_MODE0));
+      for (int half = 0; half < 2; half++) {
+         const int csPin = (half == 0) ? CS_EPD_PIN : EPD_CS_S;
+         // PTLW (Partial Window) Command Setting 0x83
+         digitalWrite(csPin, LOW);
+         SPI.transfer(0x83);
+         SPI.transfer(0x00); // HRST
+         SPI.transfer(0x00);
+         SPI.transfer(HRED >> 8);
+         SPI.transfer(HRED & 0xFF);
+         SPI.transfer(VRST >> 8);
+         SPI.transfer(VRST & 0xFF);
+         SPI.transfer(VRED >> 8);
+         SPI.transfer(VRED & 0xFF);
+         SPI.transfer(0x01); // PTLW_ENABLE
+         digitalWrite(csPin, HIGH);
+         // PTIN (Partial In) command 0x91
+         digitalWrite(csPin, LOW);
+         SPI.transfer(0x91);
+         digitalWrite(csPin, HIGH);
+         // DTM command 0x10
+         digitalWrite(csPin, LOW);
+         SPI.transfer(0x10);
+         const int sourceHalf = rotate180 ? (1 - half) : half;
+         for (int i = 0; i < blockRows; i++) {
+            const int row = rotate180 ? (blockRows - 1 - i) : i;
+            SPI.writeBytes(block + row * rowBytes + sourceHalf * halfBytes, halfBytes);
+         }
+         digitalWrite(csPin, HIGH);
+      }
+      SPI.endTransaction();
+      delay(1);
+   }
+   free(block);
+
+   if (!ok) {
+      Serial.println("[EPD] Picture not readable, display not refreshed");
+      epaperIsUpdating = false;
+      return -1;
+   }
+   Serial.printf("[EPD] Image sent in %u ms. Refreshing now.\n", (unsigned)(millis() - start));
+
+   // PTLW (Partial Window) für beide Controller wieder deaktivieren,
+   // damit der nachfolgende Refresh (DRF) den gesamten Bildschirm erfasst!
+   SPI.beginTransaction(SPISettings(DISPLAY_SPI_SPEED, MSBFIRST, SPI_MODE0));
+   digitalWrite(CS_EPD_PIN, LOW);
+   SPI.transfer(0x83);
+   for (int i = 0; i < 9; i++)
+      SPI.transfer(0x00);
+   digitalWrite(CS_EPD_PIN, HIGH);
+
+   digitalWrite(EPD_CS_S, LOW);
+   SPI.transfer(0x83);
+   for (int i = 0; i < 9; i++)
+      SPI.transfer(0x00);
+   digitalWrite(EPD_CS_S, HIGH);
+   SPI.endTransaction();
+
+   if (doRefresh) {
+      display.refresh();
+   }
+   epaperIsUpdating = false;
+   return 0;
+}
+#else
+int setImageFromRows(ImageRowRewind rewind, ImageRowReader readRow, void *context, bool doRefresh) {
    epaperIsUpdating = true;
    const int width = EPD_WIDTH;
    const int height = EPD_HEIGHT;
@@ -358,6 +481,7 @@ int setImageFromRows(ImageRowRewind rewind, ImageRowReader readRow, void *contex
    epaperIsUpdating = false;
    return ok ? 0 : -1;
 }
+#endif
 
 struct StoredRows
 {
@@ -373,200 +497,21 @@ static bool storedRowsRewind(void *context) {
 static bool storedRowsRead(void *context, uint8_t *row, int len) {
    return ((StoredRows *)context)->file->read(row, len) == (uint32_t)len;
 }
-#endif
-
-int setImageFromFS_7inch(String fileName) {
-#ifdef EPD_TYPE_13INCH
-   return -1;
-#else
-   StoreFile imageFile;
-   if (!imageFile.openRead(fileName.c_str())) {
-      Serial.println("[BMP] File missing");
-      return -1;
-   }
-   const int offsetData = storedImageOffset(imageFile);
-   if (offsetData < 0)
-      return -1;
-   Serial.printf("[BMP] Loading Image H: %d W: %d\n", EPD_HEIGHT, EPD_WIDTH);
-   StoredRows rows = {&imageFile, (uint32_t)offsetData};
-   return setImageFromRows(storedRowsRewind, storedRowsRead, &rows);
-#endif
-}
-
-int setImageFromFS_13inch(String fileName, bool doRefresh) {
-   epaperIsUpdating = true;
-   StoreFile imageFile;
-   if (!imageFile.openRead(fileName.c_str())) {
-      Serial.println("[BMP] File missing");
-      epaperIsUpdating = false;
-      return -1;
-   }
-
-   uint16_t width = EPD_WIDTH;
-   uint16_t height = EPD_HEIGHT;
-   const int offsetData = storedImageOffset(imageFile);
-   if (offsetData < 0) {
-      epaperIsUpdating = false;
-      return -1;
-   }
-
-   Serial.printf("[BMP] Loading Image H: %d W: %d\n", height, width);
-
-   display.enableQuickRefresh(displaySettings.displayQuickRefreshTime, false);
-   displayInit();
-   display.clearScreen(0x01); // Clear screen memory
-
-   // EPD physical resolution is 1200x1600 (2 controllers of 600x1600 each)
-   const int physWidth = EPD_HEIGHT;
-   const int physHeight = EPD_WIDTH;
-
-   int numChunks = 16;
-   int linesPerChunk = physHeight / numChunks;
-   int bytesPerHalfLine = physWidth / 4;
-
-   uint8_t *chunkBuffer = (uint8_t *)malloc(linesPerChunk * bytesPerHalfLine);
-   if (!chunkBuffer) {
-      Serial.println("[BMP] Malloc for 16 chunks failed! Trying 32 chunks...");
-      numChunks = 32;
-      linesPerChunk = physHeight / numChunks;
-      chunkBuffer = (uint8_t *)malloc(linesPerChunk * bytesPerHalfLine);
-
-      if (!chunkBuffer) {
-         Serial.println("[BMP] Malloc for 32 chunks failed! Trying 64 chunks...");
-         numChunks = 64;
-         linesPerChunk = physHeight / numChunks;
-         chunkBuffer = (uint8_t *)malloc(linesPerChunk * bytesPerHalfLine);
-
-         if (!chunkBuffer) {
-            Serial.println("[BMP] Malloc for 64 chunks failed! Aborting.");
-            imageFile.close();
-            epaperIsUpdating = false;
-            return -1;
-         }
-      }
-   }
-
-   Serial.println("[EPD] Streaming Partial Image to Display... ");
-   const bool rotate180 = (displaySettings.rotationPicture > 0);
-
-   for (int half = 0; half < 2; half++) {
-      int csPin = (half == 0) ? CS_EPD_PIN : EPD_CS_S;
-
-      for (int chunk = 0; chunk < numChunks; chunk++) {
-         int yImageStart = chunk * linesPerChunk;
-
-         uint16_t xStartCtrl = 0;
-         uint16_t xPixel = physWidth / 2; // 600 Pixel
-         uint16_t HRST = xStartCtrl * 2;
-         uint16_t HRED = (xStartCtrl + xPixel) * 2 - 1; // 1199
-         uint16_t VRST = yImageStart / 2;
-         uint16_t VRED = (yImageStart + linesPerChunk) / 2 - 1;
-
-         for (int i = 0; i < linesPerChunk; i++) {
-            int lineOnDisplay = yImageStart + i;
-            int lineInImage = rotate180 ? (physHeight - 1 - lineOnDisplay) : lineOnDisplay;
-            int srcHalf = rotate180 ? (1 - half) : half;
-
-            int byteOffsetInImage = (lineInImage * 600) + (srcHalf * 300);
-            imageFile.seek(offsetData + byteOffsetInImage);
-
-            if (rotate180) {
-               uint8_t tempLine[300];
-               if (imageFile.read(tempLine, bytesPerHalfLine) != (uint32_t)bytesPerHalfLine) {
-                  free(chunkBuffer);
-                  imageFile.close();
-                  epaperIsUpdating = false;
-                  return -1;
-               }
-               for (int b = 0; b < bytesPerHalfLine; b++) {
-                  uint8_t origByte = tempLine[bytesPerHalfLine - 1 - b];
-                  // swap nibbles: left pixel becomes right pixel, right pixel becomes left pixel
-                  chunkBuffer[i * bytesPerHalfLine + b] = ((origByte & 0x0F) << 4) | (origByte >> 4);
-               }
-            }
-            else {
-               if (imageFile.read(chunkBuffer + i * bytesPerHalfLine, bytesPerHalfLine) != (uint32_t)bytesPerHalfLine) {
-                  free(chunkBuffer);
-                  imageFile.close();
-                  epaperIsUpdating = false;
-                  return -1;
-               }
-            }
-         }
-         SPI.beginTransaction(SPISettings(DISPLAY_SPI_SPEED, MSBFIRST, SPI_MODE0));
-
-         // PTLW (Partial Window) Command Setting 0x83
-         digitalWrite(csPin, LOW);
-         SPI.transfer(0x83);
-         SPI.transfer(HRST >> 8);
-         SPI.transfer(HRST & 0xFF);
-         SPI.transfer(HRED >> 8);
-         SPI.transfer(HRED & 0xFF);
-         SPI.transfer(VRST >> 8);
-         SPI.transfer(VRST & 0xFF);
-         SPI.transfer(VRED >> 8);
-         SPI.transfer(VRED & 0xFF);
-         SPI.transfer(0x01); // PTLW_ENABLE
-         digitalWrite(csPin, HIGH);
-         // PTIN (Partial In) command 0x91
-         digitalWrite(csPin, LOW);
-         SPI.transfer(0x91);
-         digitalWrite(csPin, HIGH);
-         // DTM command 0x10
-         digitalWrite(csPin, LOW);
-         SPI.transfer(0x10);
-
-         // Hardware LUT conversion
-         for (int i = 0; i < linesPerChunk * bytesPerHalfLine; i++) {
-            uint8_t low = getColor(chunkBuffer[i] & 0x0F);
-            uint8_t high = getColor(chunkBuffer[i] >> 4);
-            // uint8_t raw = chunkBuffer[i];
-            chunkBuffer[i] = (high << 4) | low;
-         }
-
-         SPI.writeBytes(chunkBuffer, linesPerChunk * bytesPerHalfLine);
-         digitalWrite(csPin, HIGH);
-
-         SPI.endTransaction();
-         delay(1);
-      }
-   }
-
-   free(chunkBuffer);
-
-   Serial.println("[EPD] End Partial Streaming... Refreshing now.");
-
-   // PTLW (Partial Window) für beide Controller wieder deaktivieren,
-   // damit der nachfolgende Refresh (DRF) den gesamten Bildschirm erfasst!
-   SPI.beginTransaction(SPISettings(DISPLAY_SPI_SPEED, MSBFIRST, SPI_MODE0));
-   digitalWrite(CS_EPD_PIN, LOW);
-   SPI.transfer(0x83);
-   for (int i = 0; i < 9; i++)
-      SPI.transfer(0x00);
-   digitalWrite(CS_EPD_PIN, HIGH);
-
-   digitalWrite(EPD_CS_S, LOW);
-   SPI.transfer(0x83);
-   for (int i = 0; i < 9; i++)
-      SPI.transfer(0x00);
-   digitalWrite(EPD_CS_S, HIGH);
-   SPI.endTransaction();
-
-   if (doRefresh) {
-      display.refresh();
-   }
-
-   imageFile.close();
-   epaperIsUpdating = false;
-   return 0;
-}
 
 int setImageFromFS(String fileName, bool doRefresh) {
-#ifdef EPD_TYPE_13INCH
-   int result = setImageFromFS_13inch(fileName, doRefresh);
-#else
-   int result = setImageFromFS_7inch(fileName);
-#endif
+   int result = -1;
+   StoreFile imageFile;
+   if (!imageFile.openRead(fileName.c_str())) {
+      Serial.println("[BMP] File missing");
+   }
+   else {
+      const int offsetData = storedImageOffset(imageFile);
+      if (offsetData >= 0) {
+         Serial.printf("[BMP] Loading Image H: %d W: %d\n", EPD_HEIGHT, EPD_WIDTH);
+         StoredRows rows = {&imageFile, (uint32_t)offsetData};
+         result = setImageFromRows(storedRowsRewind, storedRowsRead, &rows, doRefresh);
+      }
+   }
    // Stable marker line for the HIL testbench (0 = image shown, <0 = error)
    Serial.printf("[EPD] Set Image Done: %d\n", result);
    return result;

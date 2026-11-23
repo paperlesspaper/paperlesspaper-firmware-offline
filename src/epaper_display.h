@@ -67,12 +67,11 @@ void displaySetQuickRefresh(bool enable, int refreshTime = 0, int wipeTime = 0);
 void displaySetOverlayOption(DisplayInfoKey key, bool value);
 void displayTypeDetect();
 void displayOverlays(DisplayType &display, DisplayInfo displayData, bool invertColors, bool fullcolor = false);
-// Rows of a picture, top to bottom, EPD_WIDTH / 2 bytes each. The picture may be read several times.
+// Rows of a picture, top to bottom, IMG_WIDTH / 2 bytes each. 7.3": row by row, the picture is read
+// several times. 13.3": once, several rows per call.
 typedef bool (*ImageRowRewind)(void *context);
 typedef bool (*ImageRowReader)(void *context, uint8_t *row, int len);
-int setImageFromRows(ImageRowRewind rewind, ImageRowReader readRow, void *context); // 7.3" only
-int setImageFromFS_7inch(String fileName);
-int setImageFromFS_13inch(String fileName, bool doRefresh = true);
+int setImageFromRows(ImageRowRewind rewind, ImageRowReader readRow, void *context, bool doRefresh = true); // doRefresh: 13.3" only
 int setImageFromFS(String fileName, bool doRefresh = true);
 void displayWipe(bool quick);
 void displaySetText(String info, bool isBlackboard, bool quickRefresh = true, String info2 = ""); // info2: second, smaller line
