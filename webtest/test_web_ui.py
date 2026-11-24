@@ -740,6 +740,34 @@ def test_gallery_survives_a_reload(app_session):
     run(body())
 
 
+def test_display_of_the_gallery_survives_a_reload(app_session):
+    """The pictures were prepared for the 13.3 inch display: after a reload they are shown for it, not
+    turned as for the display the page starts with."""
+
+    async def body():
+        device = SimulatedDevice("epd13")
+        async with app_session(device) as (app, site):
+            shape = """() => {
+                const grid = document.getElementById('galleryGrid');
+                const tile = grid.querySelector('.tile[data-key] .tile-open').getBoundingClientRect();
+                const img = grid.querySelector('.tile[data-key] img').getBoundingClientRect();
+                return { display: document.getElementById('displaySizeSelect').value, turned: grid.hasAttribute('data-turned'),
+                         tile: tile.height > tile.width, img: img.height > img.width };
+            }"""
+            await app.connect()
+            await app.add_pictures(distinct_pictures(1))
+            upright = {"display": "13", "turned": False, "tile": True, "img": True}
+            assert await app.page.evaluate(shape) == upright
+
+            await app.page.reload()
+            await app.page.wait_for_function("() => document.querySelectorAll('#galleryGrid .tile[data-key] img').length === 1")
+            assert not await app.is_connected()
+            assert await app.page.evaluate(shape) == upright
+            assert await app.locator("#displaySizeSelect").is_enabled(), "Without a device the display can be chosen."
+
+    run(body())
+
+
 def test_tiles_are_reordered_by_dragging(app_session):
     async def body():
         async with app_session(SimulatedDevice()) as (app, site):

@@ -1238,6 +1238,11 @@ function applyDisplayProfile(isPaperL, lockToDevice = false) {
   EPD_WIDTH = nextWidth;
   EPD_HEIGHT = nextHeight;
   displayLockedToDevice = lockToDevice;
+  try {
+    localStorage.setItem("display", isPaperL ? "13" : "7");
+  } catch (e) {
+    // private mode: the choice lasts for this visit
+  }
 
   applyOrientationLayout();
   displayBadge.textContent = isPaperL ? '13.3" · 1200×1600' : '7.3" · 800×480';
@@ -3697,6 +3702,12 @@ if (window.matchMedia("(min-width: 900px)").matches) {
 renderPaletteEditor();
 updateSliderOutputs();
 setOtaMode("ble");
+// The display of the last visit: the pictures of the gallery were prepared for it.
+try {
+  if (localStorage.getItem("display") === "13") applyDisplayProfile(true);
+} catch (e) {
+  // private mode
+}
 applyOrientationLayout();
 setGalleryInterval(3600);
 renderGallery();
